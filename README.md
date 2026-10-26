@@ -123,16 +123,51 @@ grants **no** clinical access; nobody can assign roles to themselves.
 
 ## Testing
 
+Backend tests need PostgreSQL — start it first. The suite runs against the isolated
+`clinical_demo_test` database and skips loudly if Postgres is unreachable:
+
 ```bash
+docker compose up -d db
 cd backend
-uv run pytest        # (unverified until Phase 12)
+uv sync
+uv run pytest -q
+uv run ruff check .
 ```
 
-Covers permission mapping, API auth/roles/validation/pagination, migrations and seed
-behavior, MCP authorization and bounds, mocked LLM behavior, escalation attempts, and
-audit events. Frontend checks (lint/tests) run via Node tooling once Phase 12 lands —
-exact commands will be listed here. CI runs all of it on pull requests
-(`.github/workflows/ci.yml`).
+Frontend checks need Node 24 but no `npm install` — the frontend is buildless:
+
+```bash
+cd frontend
+node tests/smoke.mjs
+node tests/render-smoke.mjs
+```
+
+Repository security scan (stdlib-only Python, safe to run anywhere):
+
+```bash
+python3 scripts/security_check.py
+```
+
+The backend suite covers permission mapping, API auth/roles/validation/pagination,
+migrations and seed behavior, MCP authorization and bounds, mocked LLM behavior,
+escalation attempts, and audit events. The frontend checks cover static hygiene, module
+import safety, api.js behaviour against a stubbed fetch, and render-path scenarios
+against a DOM shim. The security scan checks tracked files for committed key material,
+forbidden files (`.env`, keys, dumps), `.gitignore` coverage, frontend hygiene
+(no external resources, web storage, or console logging), and database credentials —
+it reports `file:line` and pattern names only, never secret values.
+
+CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`,
+in three jobs: `backend` (ruff + pytest against a `postgres:16` service container, and
+the job fails if DB-backed tests were skipped), `frontend` (both Node check scripts),
+and `security` (`scripts/security_check.py` plus a dependency audit of `backend/uv.lock`
+via `pip-audit`, with advisory severity resolved through the OSV database). The
+dependency audit **fails on HIGH/CRITICAL advisories** and warns on MODERATE/LOW; to
+accept a specific advisory while a fix is prepared, set the repository variable
+`SECURITY_AUDIT_ALLOW` to its comma-separated IDs and track a remediation issue, or set
+`SECURITY_AUDIT_MODE=warn` to downgrade the gate temporarily. CI uses only mocks and
+synthetic fixtures — no live LLM or external API calls — and references no secrets, so
+pull requests from forks receive nothing sensitive.
 
 ---
 

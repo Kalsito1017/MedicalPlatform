@@ -234,7 +234,7 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 9 | Frontend experience | NOT STARTED | — | |
 | 10 | Admin panel and staff management | NOT STARTED | — | |
 | 11 | Audit, privacy, and security hardening | NOT STARTED | — | |
-| 12 | Automated tests and CI | NOT STARTED | — | |
+| 12 | Automated tests and CI | IN PROGRESS | — | CI workflow + secret scanner + dependency audit landed (3 jobs, no secrets to fork PRs); blocked on MCP/LLM tests (Wave 3) and dependency bumps (starlette/mcp HIGH advisories) before green |
 | 13 | Docker and local end-to-end validation | NOT STARTED | — | |
 | 14 | Public demo deployment preparation | NOT STARTED | — | |
 | 15 | Deploy publicly and verify website | NOT STARTED | — | |

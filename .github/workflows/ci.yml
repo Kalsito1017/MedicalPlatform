@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# No secrets are referenced anywhere in this workflow: everything is synthetic.
+# Pull requests from forks therefore receive nothing sensitive.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Matches backend/tests/conftest.py: TEST_DATABASE_URL, DB clinical_demo_test.
+      TEST_DATABASE_URL: postgresql+asyncpg://app:change-me@localhost:5432/clinical_demo_test
+      APP_SECRET_KEY: ci-only-not-a-real-secret
+      LLM_ENABLED: "false"
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: change-me
+          POSTGRES_DB: clinical_demo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U app -d clinical_demo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: uv sync
+
+      - name: Lint
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Tests
+        working-directory: backend
+        run: |
+          set -o pipefail
+          uv run pytest -q -rs 2>&1 | tee "$RUNNER_TEMP/pytest.txt"
+          if grep -q "PostgreSQL is not reachable" "$RUNNER_TEMP/pytest.txt"; then
+            echo "::error::DB-backed tests skipped because Postgres is unreachable - the service container is broken"
+            exit 1
+          fi
+          if ! grep -qE "[0-9]+ passed" "$RUNNER_TEMP/pytest.txt"; then
+            echo "::error::No tests passed - refusing a green run on an empty suite"
+            exit 1
+          fi
+
+  frontend:
+    name: frontend (buildless checks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      # No npm install: the frontend is buildless and the tests are dependency-free.
+      - name: Static hygiene + api unit checks
+        run: node frontend/tests/smoke.mjs
+
+      - name: Render-path scenarios
+        run: node frontend/tests/render-smoke.mjs
+
+  security:
+    name: security (repo scan + dependency audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Optional overrides, set as repository *variables* (never secrets):
+      #   SECURITY_AUDIT_ALLOW  comma-separated advisory IDs accepted while a fix
+      #                         is prepared (each with a tracked remediation issue)
+      #   SECURITY_AUDIT_MODE   "warn" downgrades the dependency gate to warnings
+      SECURITY_AUDIT_ALLOW: ${{ vars.SECURITY_AUDIT_ALLOW }}
+      SECURITY_AUDIT_MODE: ${{ vars.SECURITY_AUDIT_MODE }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Repository security scan
+        run: python3 scripts/security_check.py
+
+      - name: Export locked backend dependencies
+        working-directory: backend
+        run: uv export --frozen --no-hashes --no-dev --no-emit-project -o "$RUNNER_TEMP/requirements.txt"
+
+      - name: Dependency audit (fail on HIGH/CRITICAL)
+        run: |
+          uvx pip-audit==2.10.1 -r "$RUNNER_TEMP/requirements.txt" \
+            --progress-spinner off --format json -o "$RUNNER_TEMP/pip-audit.json" \
+            && status=0 || status=$?
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ]; then
+            echo "::error::pip-audit could not run (exit $status)"
+            exit "$status"
+          fi
+          python3 scripts/security_check.py --audit-json "$RUNNER_TEMP/pip-audit.json"
