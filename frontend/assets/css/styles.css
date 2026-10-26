@@ -270,22 +270,6 @@ code,
   top: var(--space-2);
 }
 
-.demo-notice {
-  background: var(--color-notice-bg);
-  color: var(--color-notice-text);
-  border-bottom: 2px solid var(--color-notice-border);
-  font-size: var(--text-sm);
-}
-
-.demo-notice__inner {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-1) var(--space-3);
-  align-items: baseline;
-  padding-top: var(--space-2);
-  padding-bottom: var(--space-2);
-}
-
 .site-header {
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);

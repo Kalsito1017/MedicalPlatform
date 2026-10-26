@@ -537,7 +537,7 @@ Deliver a cohesive, responsive website rather than a set of disconnected test pa
 - [ ] Consistent typography, spacing, colors, buttons, tables, cards, and feedback messages.
 - [ ] Confirmation for destructive or high-impact admin actions.
 - [ ] Friendly 401/403/404/500 and offline/backend-unavailable states.
-- [ ] Display “Synthetic demo data — not for clinical use” prominently in the app.
+- [x] Display “Synthetic demo data — not for clinical use” prominently in the app. **DEVIATION (user decision, 2026-10-26): the persistent header banner was removed from all pages at the owner's request.** Disclosure remains in the footer, the "About this demo" dialog, per-record provenance badges, and all documentation; this decision is recorded in the progress log.
 - [ ] Avoid third-party analytics, trackers, and external scripts unless explicitly justified and reviewed.
 - [ ] Do not put clinical data in local storage, analytics events, or browser console logs.
 
@@ -764,7 +764,7 @@ Run this checklist against the **public deployed URL**, not only localhost:
 12. Reload the website and verify data remains available.
 13. Inspect network requests to ensure no database credential, LLM key, or privileged secret reaches the browser.
 14. Check logs and audit events.
-15. Verify the visible synthetic-data and non-clinical-use notice.
+15. Verify the visible synthetic-data and non-clinical-use notice. *(Adjusted for the 2026-10-26 user decision: the header banner is gone; verify the footer + "About this demo" dialog disclosures and per-record provenance badges instead.)*
 
 ## Final completion report
 
@@ -870,6 +870,17 @@ Append one dated entry after every completed phase:
 - Security notes: CSP hash ties header strength to actual markup (drift = CI failure); Referrer-Policy `no-referrer` chosen because patient ids live in page URLs; image contains no secrets and no dev tooling; edge-header gap for Pages documented and closed via `frontend/_headers` + scanner gate.
 - Blockers: none. Phases 14–15 remain deferred by user decision (hosting later; AI enabled at deploy).
 - Next phase: user publishes the commit range to GitHub and confirms the CI run goes green; then Phase 14/15 resumes when hosting access is provided.
+
+### 2026-10-26 — UI change (user decision): header demo banner removed
+- Status: DONE
+- Implemented: Removed the persistent header banner ("Synthetic demo data — not for clinical use. / All patient records are fictional. This platform is not clinically validated and is not a medical device.") from all five pages at the owner's explicit request. Disclosure is NOT eliminated: it remains in the page footer and the "About this demo" dialog (which still states the platform is not clinically validated and is not a medical device), in per-record "Data provenance: Synthetic demo data" badges, in `<meta>` descriptions, and throughout the documentation. The banner's CSS (`.demo-notice`) was deleted as dead code and the `smoke.mjs` required-chrome assertion that enforced the banner was removed.
+- Files changed: frontend/{index,dashboard,patients,patient,admin}.html, frontend/assets/css/styles.css, frontend/tests/smoke.mjs, docs/API.md, docs/BACKLOG.md, PLAN.md
+- Commands run: `node tests/smoke.mjs` → 74/74; `node tests/render-smoke.mjs` → 26/26; `docker compose up --build -d` → banner absent from served HTML (grep = 0), app 200.
+- Tests: all frontend checks green after the change (assertion removed deliberately, nothing weakened elsewhere).
+- Acceptance criteria: PLAN.md Phase 9 task "display the notice prominently in the app" and Phase 15 smoke item 15 are adjusted by owner decision — recorded inline in both places. All other criteria unchanged and passing.
+- Security notes: the removed text is a disclosure/liability notice, not a security control. The actual data remains synthetic and DB constraints still force `DEMO-%` MRNs and `synthetic` provenance. If this demo is ever shown publicly, the owner should be aware that PLAN.md's Phase 15 disclosure checks were written around a visible in-app notice; the footer/About dialog now carry that weight. Re-introducing a banner is a five-line revert.
+- Blockers: none.
+- Next phase: unchanged — user publishes; Phases 14–15 resume when hosting access is provided.
 
 ## Final instruction to the coding agent
 

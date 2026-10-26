@@ -66,7 +66,7 @@ Mapped to the phase/controls that implement each item.
 | No clinical data in local storage, analytics, browser console | Frontend rules; no third-party analytics | Phase 9 |
 | Keyboard navigation and accessible markup for primary workflows | Built in (formal audit deferred — see B) | Phase 9 |
 | Staff list/create/activate/roles; audited; CSRF-protected; last-admin protection; backend enforces all | Admin panel | Phase 10 |
-| Explicit statement: not clinically validated, not a medical device | README + `docs/SECURITY.md` non-claims + in-app notice | Done (docs), Phase 9 (UI) |
+| Explicit statement: not clinically validated, not a medical device | README + `docs/SECURITY.md` non-claims + footer/About-dialog disclosure + provenance badges (header banner removed at owner request, 2026-10-26) | Done (docs + UI) |
 | Architecture decision records | Decision log in `docs/ARCHITECTURE.md` | Done |
 | README that gets a new engineer running in under an hour | `README.md` | Done (commands verified in Phase 13: Docker build + E2E smoke) |
 | Documented data-retention and reset procedures | Demo-data reset in `docs/DEPLOYMENT.md` §9; retention deferred (see B) | Done (reset, Phase 13) |

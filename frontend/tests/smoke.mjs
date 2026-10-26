@@ -9,7 +9,7 @@
  *
  * What this covers without a browser or a backend:
  *   1. Static hygiene of the app assets (no console logging, no web storage of
- *      data, no external/third-party resources, required demo-notice chrome).
+ *      data, no external/third-party resources, required page chrome).
  *   2. Every ES module parses and is import-safe outside the browser.
  *   3. api.js unit behaviour: URL building, CSRF cookie parsing, error mapping.
  *   4. api.js request behaviour against a stubbed fetch (headers, credentials,
@@ -85,7 +85,6 @@ for (const file of htmlFiles) {
   await check(`${file}: required chrome present`, () => {
     assert(source.includes('lang="en"'), 'missing lang attribute');
     assert(source.includes('class="skip-link"'), 'missing skip link');
-    assert(source.includes('Synthetic demo data \u2014 not for clinical use'), 'missing demo notice');
     assert(source.includes('data-open-about'), 'missing "About this demo" control');
     assert(source.includes('mailto:'), 'missing issue-reporting mailto');
     assert(source.includes('id="main"'), 'missing main landmark');

@@ -82,8 +82,9 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 | GET | `/api/v1/patients/{patient_id}/prescriptions` | `prescription:read` | Paginated. |
 | GET | `/api/v1/encounters/{encounter_id}` | `patient:read` | Returns 404 (not 403) when concealed. |
 
-Every clinical payload includes `"provenance": "synthetic"` and the UI renders a persistent
-"Synthetic demo data — not for clinical use" notice.
+Every clinical payload includes `"provenance": "synthetic"`; the UI marks synthetic data
+via per-record provenance badges plus footer and "About this demo" dialog disclosures
+(the persistent header banner was removed at the owner's request, 2026-10-26).
 
 ### Staff & roles (admin)
 
