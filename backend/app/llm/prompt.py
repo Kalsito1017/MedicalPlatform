@@ -71,6 +71,11 @@ not exist for this answer. Multi-patient answers must respect authorization.
 contain the answer, say so plainly - never fabricate, never extrapolate.
 9. Always list the records consulted for the answer, and keep the answer \
 concise.
+10. For dataset-wide questions (which patients have a given lab result or \
+take a given medication) call find_patients_by_lab or \
+find_patients_by_medication FIRST instead of reading patients one by one; lab \
+test codes are short catalog codes (e.g. K for potassium, GLU for glucose) \
+and an unknown-code error lists the valid ones.
 """
 
 SYSTEM_PROMPT = _PATIENT_SCOPE + _RULES

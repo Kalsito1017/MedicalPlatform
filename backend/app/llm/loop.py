@@ -2,7 +2,7 @@
 
 The model may only *suggest* tool calls; this loop is the gate:
 
-* only the four registered MCP tools can be reached (server-side allowlist in
+* only the six registered MCP tools can be reached (server-side allowlist in
   app/mcp/server.py); anything else is rejected and audited (`mcp.<name>`,
   outcome `error`) and the model is told the tool is unavailable,
 * every executed tool call re-authorizes against the verified session identity
@@ -10,8 +10,8 @@ The model may only *suggest* tool calls; this loop is the gate:
   can never change who the caller is or what they may read,
 * bounds are enforced per question: at most `LLM_MAX_TOOL_CALLS` tool-call
   rounds and tool calls (patient-scoped mode) or `LLM_MAX_TOOL_CALLS_GENERAL`
-  (general lookup mode, default 6 - general questions typically need a search
-  plus follow-up reads), per-tool-result size caps (app/mcp/limits.py),
+  (general lookup mode, default 10 - dataset-wide questions typically resolve
+  in one or two lookup calls, the extra headroom is for follow-ups), per-tool-result size caps (app/mcp/limits.py),
   `LLM_MAX_ANSWER_TOKENS` completion cap, and a total wall-clock budget of
   `LLM_REQUEST_TIMEOUT_SECONDS` plus a small margin (each model call receives
   at most the remaining budget as its timeout),
@@ -43,12 +43,13 @@ TOTAL_BUDGET_MARGIN_SECONDS = 5.0
 MAX_ANSWER_TOKENS = 1024
 
 # General lookup mode (no patient_id) gets a slightly higher tool-call bound:
-# a typical answer needs one search plus several follow-up reads. ONE setting,
+# dataset-wide questions resolve in one or two lookup calls (find_patients_by_lab
+# / find_patients_by_medication) and the headroom is for follow-ups. ONE setting,
 # env-driven with this default (the frozen config module stays untouched):
 # `LLM_MAX_TOOL_CALLS_GENERAL` (integer, clamped to 1..20). Patient-scoped mode
 # keeps the existing `LLM_MAX_TOOL_CALLS` setting (default 4).
 GENERAL_MODE_MAX_TOOL_CALLS_ENV = "LLM_MAX_TOOL_CALLS_GENERAL"
-DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS = 6
+DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS = 10
 GENERAL_MODE_MAX_TOOL_CALLS_CAP = 20
 
 BUDGET_EXCEEDED_MESSAGE = (
@@ -64,7 +65,7 @@ def general_mode_max_tool_calls() -> int:
     """Tool-call bound for general lookup mode (see GENERAL_MODE_* above).
 
     Reads `LLM_MAX_TOOL_CALLS_GENERAL` from the environment; blank or invalid
-    values fall back to the default of 6 and the result is always clamped to
+    values fall back to the default of 10 and the result is always clamped to
     1..GENERAL_MODE_MAX_TOOL_CALLS_CAP so a misconfigured variable can never
     unbound the loop.
     """
@@ -135,6 +136,7 @@ async def run_assistant(
             tools=schemas,
             max_tokens=max_answer_tokens,
             timeout=min(per_call_timeout, remaining),
+            session_id=tool_context.request_id,
         )
 
         if not result.tool_calls:

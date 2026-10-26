@@ -196,7 +196,7 @@ async def test_tool_loop_answers_a_seeded_data_question(
     assert ("lab_result", str(clinical_data.lab_ids[1])) in citation_ids
     assert ("prescription", str(clinical_data.prescription_ids[0])) in citation_ids
 
-    # The model received the four-tool allowlist and retrieved DATA in a marked block.
+    # The model received the six-tool allowlist and retrieved DATA in a marked block.
     first, second = scripted.calls[0], scripted.calls[1]
     tool_names = {t["function"]["name"] for t in first["tools"]}
     assert tool_names == {
@@ -204,6 +204,8 @@ async def test_tool_loop_answers_a_seeded_data_question(
         "get_patient_summary",
         "get_patient_lab_results",
         "get_recent_prescriptions",
+        "find_patients_by_lab",
+        "find_patients_by_medication",
     }
     tool_message = second["messages"][-1]
     assert tool_message["role"] == "tool"
@@ -532,7 +534,7 @@ async def test_general_mode_tool_loop_searches_then_reads(
     assert ("lab_result", str(clinical_data.lab_ids[1])) in citation_ids
     assert ("prescription", str(clinical_data.prescription_ids[0])) in citation_ids
 
-    # The model got the same four-tool allowlist and the general-mode prompt.
+    # The model got the same six-tool allowlist and the general-mode prompt.
     first = scripted.calls[0]
     tool_names = {t["function"]["name"] for t in first["tools"]}
     assert tool_names == {
@@ -540,6 +542,8 @@ async def test_general_mode_tool_loop_searches_then_reads(
         "get_patient_summary",
         "get_patient_lab_results",
         "get_recent_prescriptions",
+        "find_patients_by_lab",
+        "find_patients_by_medication",
     }
     assert "MANY synthetic patients" in first["system"]
     assert "Always list the records consulted" in first["system"]
@@ -783,7 +787,7 @@ async def test_general_mode_max_tool_calls_bound_is_enforced(
 ) -> None:
     patient_id = str(clinical_data.patient_id)
     scripted = ScriptedLLMProvider(
-        *[tool_call_result("get_patient_summary", {"patient_id": patient_id}) for _ in range(7)]
+        *[tool_call_result("get_patient_summary", {"patient_id": patient_id}) for _ in range(11)]
     )
     use_provider(monkeypatch, scripted)
 
@@ -798,5 +802,144 @@ async def test_general_mode_max_tool_calls_bound_is_enforced(
     rows = await audit_rows(
         action="mcp.get_patient_summary", request_id=response.headers["x-request-id"]
     )
-    # General mode allows LLM_MAX_TOOL_CALLS_GENERAL (default 6) tool calls.
-    assert len(rows) <= 6
+    # General mode allows LLM_MAX_TOOL_CALLS_GENERAL (default 10) tool calls.
+    assert len(rows) <= 10
+
+
+@pytest.mark.postgres
+async def test_general_mode_lookup_tool_answers_dataset_wide_question(
+    monkeypatch, db_engine, auth_client, make_user, clinical_data
+) -> None:
+    """One find_patients_by_lab call answers a cross-patient question.
+
+    This is the shape that previously required one get_patient_lab_results
+    call per patient and blew the tool-call budget.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import LabResult
+
+    token = clinical_data.token
+    code = f"AIQ{token}"
+    lab_id = uuid.uuid4()
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        session.add(
+            LabResult(
+                id=lab_id,
+                patient_id=clinical_data.patient_id,
+                test_code=code,
+                test_name=f"Potassium {token}",
+                value_num=Decimal("5.800"),
+                unit="mmol/L",
+                ref_low=Decimal("3.500"),
+                ref_high=Decimal("5.100"),
+                status="final",
+                collected_at=datetime(2026, 9, 24, 8, 0, tzinfo=timezone.utc),
+            )
+        )
+        await session.commit()
+
+    scripted = ScriptedLLMProvider(
+        tool_call_result(
+            "find_patients_by_lab", {"test_code": code, "abnormal_only": True, "limit": 25}
+        ),
+        text_result("One synthetic patient has an abnormal potassium result."),
+    )
+    use_provider(monkeypatch, scripted)
+
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    response = await ask_general(client, "Which synthetic patients have abnormal potassium results?")
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["used_tools"] == ["find_patients_by_lab"]
+    citation_ids = {(c["type"], c["id"]) for c in body["citations"]}
+    assert ("patient", str(clinical_data.patient_id)) in citation_ids
+    assert ("lab_result", str(lab_id)) in citation_ids
+
+    # The tool result arrived as bounded patient references with a matched reason.
+    tool_message = scripted.calls[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert '"matched"' in tool_message["content"]
+    assert "5.8 mmol/L high" in tool_message["content"]
+
+    # The general prompt steers dataset-wide questions to the lookup tools.
+    system = scripted.calls[0]["system"]
+    assert "find_patients_by_lab" in system
+    assert "find_patients_by_medication" in system
+    assert "FIRST" in system
+
+
+@pytest.mark.postgres
+async def test_general_mode_multi_call_lookup_flow_succeeds_in_raised_budget(
+    monkeypatch, db_engine, auth_client, make_user, clinical_data
+) -> None:
+    """Seven tool calls now fit the general-mode budget (default 10).
+
+    Before the raise (default 6) this exact flow aborted with
+    "The question required more tool activity than the allowed limit."
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import LabResult
+
+    token = clinical_data.token
+    code = f"AIB{token}"
+    patient_id = str(clinical_data.patient_id)
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        session.add(
+            LabResult(
+                id=uuid.uuid4(),
+                patient_id=clinical_data.patient_id,
+                test_code=code,
+                test_name=f"Lookup {token}",
+                value_num=Decimal("5.800"),
+                unit="mmol/L",
+                ref_low=Decimal("3.500"),
+                ref_high=Decimal("5.100"),
+                status="final",
+                collected_at=datetime(2026, 9, 24, 8, 0, tzinfo=timezone.utc),
+            )
+        )
+        await session.commit()
+
+    scripted = ScriptedLLMProvider(
+        tool_call_result("find_patients_by_lab", {"test_code": code, "limit": 25}),
+        tool_call_result("find_patients_by_medication", {"medication_name": "Metformin"}),
+        tool_call_result("search_authorized_patients", {"query": token, "limit": 5}),
+        tool_call_result("get_patient_summary", {"patient_id": patient_id}),
+        tool_call_result("get_patient_lab_results", {"patient_id": patient_id, "limit": 5}),
+        tool_call_result("get_recent_prescriptions", {"patient_id": patient_id, "limit": 5}),
+        tool_call_result("find_patients_by_lab", {"test_code": code, "limit": 25}),
+        text_result("Seven tool calls; the answer cites the records consulted."),
+    )
+    use_provider(monkeypatch, scripted)
+
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    response = await ask_general(client, "Summarize labs and medications across patients.")
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["used_tools"] == [
+        "find_patients_by_lab",
+        "find_patients_by_medication",
+        "search_authorized_patients",
+        "get_patient_summary",
+        "get_patient_lab_results",
+        "get_recent_prescriptions",
+    ]
+    assert len(scripted.calls) == 8  # seven tool turns plus the final answer
+    request_id = response.headers["x-request-id"]
+    lookup_rows = await audit_rows(
+        action="mcp.find_patients_by_lab", outcome="success", request_id=request_id
+    )
+    assert len(lookup_rows) == 2

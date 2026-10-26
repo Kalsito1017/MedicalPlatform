@@ -19,7 +19,7 @@ tool argument.
 
 Hard guarantees enforced here (tested in tests/test_mcp.py):
 
-* exactly four registered tools, all read-only; no `execute_sql`, shell,
+* exactly six registered tools, all read-only; no `execute_sql`, shell,
   filesystem, or general-purpose database tool exists or may be added,
 * the LLM-facing schemas expose typed, bounded arguments only - never
   identity, credentials, SQL, or context,
@@ -359,7 +359,7 @@ def _outcome_from_envelope(raw: dict[str, Any]) -> str:
 
 
 def build_tool_manager() -> ToolManager:
-    """Register exactly the four allowlisted tools.
+    """Register exactly the six allowlisted tools.
 
     `context_kwarg` names the server-injected context parameter; the SDK
     excludes it from the generated JSON Schema and forwards the caller-supplied
@@ -384,6 +384,16 @@ def build_tool_manager() -> ToolManager:
         Tool.from_function(
             tools_module.get_recent_prescriptions,
             name="get_recent_prescriptions",
+            context_kwarg="tool_context",
+        ),
+        Tool.from_function(
+            tools_module.find_patients_by_lab,
+            name="find_patients_by_lab",
+            context_kwarg="tool_context",
+        ),
+        Tool.from_function(
+            tools_module.find_patients_by_medication,
+            name="find_patients_by_medication",
             context_kwarg="tool_context",
         ),
     ]

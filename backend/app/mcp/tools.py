@@ -1,6 +1,6 @@
-"""The four read-only MCP tools (docs/API.md "MCP tool contract").
+"""The six read-only MCP tools (docs/API.md "MCP tool contract").
 
-Exactly four tools exist; there is no `execute_sql`, shell, filesystem, or
+Exactly six tools exist; there is no `execute_sql`, shell, filesystem, or
 general-purpose database tool and none may be added. Every tool:
 
   * takes its arguments as typed, bounded values and a server-injected
@@ -9,8 +9,10 @@ general-purpose database tool and none may be added. Every tool:
   * re-executes authorization on every call — the same
     `app.authorization.policy` permission checks and the same
     `app.services.access.check_patient_access` seam as the REST API,
-  * reads data only through `app.services` (parameterized ORM; this module
-    writes no SQL),
+  * reads data only through parameterized ORM queries (per-patient reads via
+    `app.services`; the two cross-patient lookup tools run their own bounded
+    ORM queries on the ToolContext session because the services expose no
+    cross-patient queries — this module still writes no SQL strings),
   * returns the minimum data needed (shared `app.schemas.patient` shapes,
     timestamps excluded), with large text fields truncated and an explicit
     `[truncated]` marker,
@@ -18,17 +20,24 @@ general-purpose database tool and none may be added. Every tool:
     success | denied | error) with a resource reference and request id —
     never a clinical payload, prompt, or search term.
 
+The two lookup tools (`find_patients_by_lab`, `find_patients_by_medication`)
+return ONLY patient references (patient id, display name, MRN) plus a short
+`matched` reason string — never a full clinical payload.
+
 Tool results are envelopes consumed by app/mcp/server.py: `ok`/`data`/`error`
 go back to the model, `citations` feed the API response, and `audit` names the
 resource reference. Concealment semantics match the REST API: a patient the
-caller may not read is indistinguishable from a missing one (`not_found`).
+caller may not read is indistinguishable from a missing one (`not_found`), and
+lookup rows for such patients are silently dropped (never listed).
 """
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 from typing import Annotated, Any
 
 from pydantic import Field
+from sqlalchemy import and_, func, or_, select
 
 from app.audit.logger import record_audit_event
 from app.authorization.policy import has_permission
@@ -37,6 +46,13 @@ from app.mcp.limits import (
     LIST_LIMIT_DEFAULT,
     LIST_LIMIT_MAX,
     LIST_LIMIT_MIN,
+    LOOKUP_CATALOG_MAX_CODES,
+    LOOKUP_LIMIT_DEFAULT,
+    LOOKUP_LIMIT_MAX,
+    LOOKUP_LIMIT_MIN,
+    LOOKUP_MATCHED_MAX_LENGTH,
+    LOOKUP_MAX_SCAN,
+    MEDICATION_NAME_MAX_LENGTH,
     PATIENT_ID_MAX_LENGTH,
     SEARCH_LIMIT_DEFAULT,
     SEARCH_LIMIT_MAX,
@@ -45,9 +61,13 @@ from app.mcp.limits import (
     SUMMARY_LIMIT_DEFAULT,
     SUMMARY_LIMIT_MAX,
     SUMMARY_LIMIT_MIN,
+    TEST_CODE_MAX_LENGTH,
     TEXT_FIELD_MAX_LENGTH,
     TRUNCATION_MARKER,
 )
+from app.models.lab import LabResult
+from app.models.medication import Medication, Prescription
+from app.models.patient import Patient
 from app.schemas.patient import (
     EncounterOut,
     LabResultOut,
@@ -367,4 +387,366 @@ async def get_recent_prescriptions(
             "total": total,
         },
         citations=[_citation("prescription", row.id) for row in rows],
+    )
+
+
+# --- cross-patient lookup tools (general mode) -----------------------------
+#
+# Both tools return ONLY patient references plus a short `matched` reason.
+# Decisions (docs/API.md "MCP tool contract"):
+#   * abnormality is computed from value_num against ref_low/ref_high; the
+#     `status` column is the result's document state (e.g. "final") and is NOT
+#     an abnormality flag, so it is never used for filtering,
+#   * one row per patient: the most recent matching result is shown and rows
+#     are ordered by that result (most recent first),
+#   * medication matching is a case-insensitive substring match on the
+#     prescription's medication name (LIKE wildcards escaped to literal) or on
+#     the linked catalog medication code,
+#   * visibility: `patient:read` (plus `lab:read` / `prescription:read`) is
+#     checked once per call, then the SAME `check_patient_access` seam as the
+#     REST API runs per returned patient; non-visible rows are dropped and
+#     paging continues past them (bounded candidate scan, one cheap indexed
+#     seam check per candidate) so concealed rows never crowd out visible ones,
+#   * `limit` is schema-bounded 1..50 (out-of-range is a controlled
+#     `invalid_arguments` error via the registry) and additionally clamped
+#     1..50 inside the tool as defense in depth for direct invocation,
+#   * an unknown `test_code` is a controlled error that lists the known codes
+#     (catalog data, never an echo of the submitted value) so the model can
+#     correct itself; submitted values never appear in any error.
+
+
+def _fmt_decimal(value: Decimal) -> str:
+    """Compact decimal rendering ("6.100" -> "6.1", no exponent form)."""
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def _lab_matched(lab: LabResult) -> str:
+    """Short reason string for one lab result (bounded, marker on overflow)."""
+    if lab.value_num is not None:
+        value = _fmt_decimal(lab.value_num)
+    else:
+        value = truncate_text(str(lab.value_text or ""), LOOKUP_MATCHED_MAX_LENGTH // 2)
+    unit = f" {lab.unit}" if lab.unit else ""
+    direction = ""
+    if lab.value_num is not None and lab.ref_high is not None and lab.value_num > lab.ref_high:
+        direction = " high"
+    elif lab.value_num is not None and lab.ref_low is not None and lab.value_num < lab.ref_low:
+        direction = " low"
+    when = lab.collected_at.date().isoformat() if lab.collected_at else "unknown date"
+    return truncate_text(f"{lab.test_name} {value}{unit}{direction}, {when}", LOOKUP_MATCHED_MAX_LENGTH)
+
+
+def _rx_matched(rx: Prescription) -> str:
+    """Short reason string for one prescription (bounded, marker on overflow)."""
+    if rx.dose_amount is not None:
+        dose = f"{_fmt_decimal(rx.dose_amount)} {rx.dose_unit}"
+    else:
+        dose = str(rx.dose_unit or "")
+    head = f"{rx.medication_name} {dose}".strip()
+    return truncate_text(f"{head}, {rx.status}", LOOKUP_MATCHED_MAX_LENGTH)
+
+
+async def _visible_pairs(
+    ctx: ToolContext,
+    fetch_page: Any,
+    bound: int,
+) -> list[tuple[Any, Any]]:
+    """Candidate (row, patient) pairs the caller may see, bounded and paged.
+
+    The visibility decision stays entirely with the `check_patient_access`
+    seam (one cheap indexed check per candidate): non-visible rows are dropped
+    and paging continues past them up to `LOOKUP_MAX_SCAN` candidates, so
+    rows for concealed patients can never crowd out visible ones. At most
+    `bound` rows are returned.
+    """
+    visible: list[tuple[Any, Any]] = []
+    scanned = 0
+    offset = 0
+    while len(visible) < bound and scanned < LOOKUP_MAX_SCAN:
+        page = await fetch_page(bound, offset)
+        if not page:
+            break
+        for pair in page:
+            scanned += 1
+            _row, patient = pair
+            if await check_patient_access(ctx.principal, patient.id, db=ctx.db):
+                visible.append(pair)
+                if len(visible) >= bound:
+                    break
+        if len(page) < bound:
+            break
+        offset += len(page)
+    return visible
+
+
+async def _test_code_is_known(db: Any, code: str) -> bool:
+    """Exact-match allowlist check against the seeded lab catalog.
+
+    There is no lab-test catalog table; the distinct codes of the seeded lab
+    results ARE the catalog (scripts/seed_demo_data.py), so "known" means an
+    exact, parameterized match on live results. No free text, no interpolation.
+    """
+    found = await db.scalar(
+        select(LabResult.test_code)
+        .where(LabResult.test_code == code, LabResult.not_deleted())
+        .limit(1)
+    )
+    return found is not None
+
+
+async def _known_test_code_hint(db: Any) -> list[tuple[str, str]]:
+    """Best-effort bounded (code, name) hints for error messages, most used first.
+
+    Only a hint (the catalog can exceed the bound): it helps the model map a
+    name like "potassium" to a code like "K" after an unknown-code error.
+    """
+    rows = (
+        await db.execute(
+            select(LabResult.test_code, LabResult.test_name, func.count().label("uses"))
+            .where(LabResult.not_deleted())
+            .group_by(LabResult.test_code, LabResult.test_name)
+            .order_by(func.count().desc(), LabResult.test_code)
+            .limit(LOOKUP_CATALOG_MAX_CODES)
+        )
+    ).all()
+    seen: dict[str, str] = {}
+    for code, name, _uses in rows:
+        seen.setdefault(str(code), str(name))
+    return list(seen.items())
+
+
+async def _lookup_permission_gate(
+    tool_name: str, ctx: ToolContext, extra_permission: str
+) -> dict[str, Any] | None:
+    """Permission check for lookup tools; None means proceed.
+
+    Requires `patient:read` AND the record-type permission (`lab:read` /
+    `prescription:read`) because the `matched` reason carries record values.
+    Mirrors search_authorized_patients: a caller without the permissions gets
+    an empty result (outcome `denied`, audited) and learns nothing.
+    """
+    if has_permission(ctx.principal.roles, "patient:read") and has_permission(
+        ctx.principal.roles, extra_permission
+    ):
+        return None
+    return await _finish(
+        tool_name,
+        ctx,
+        outcome="denied",
+        resource_type="patient",
+        ok=True,
+        data={
+            "patients": [],
+            "note": "No patients are visible to your account.",
+        },
+    )
+
+
+async def find_patients_by_lab(
+    test_code: Annotated[str, Field(min_length=1, max_length=TEST_CODE_MAX_LENGTH, description="Known lab test code exactly as stored (e.g. K, GLU, HGB, TSH); unknown codes return a controlled error listing the known codes.")],
+    abnormal_only: Annotated[bool, Field(description="Only results outside their reference range (value_num vs ref_low/ref_high). Default true.")] = True,
+    limit: Annotated[int, Field(ge=LOOKUP_LIMIT_MIN, le=LOOKUP_LIMIT_MAX, description="Maximum patient references to return (1-50).")] = LOOKUP_LIMIT_DEFAULT,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Find the SYNTHETIC patients with lab results for one known test code.
+
+    Returns only patient references (patient id, display name, MRN) plus a
+    short `matched` reason (most recent matching result first, one row per
+    patient). With `abnormal_only` true only results outside their reference
+    range match (numeric value against ref_low/ref_high; the `status` field is
+    the result's document state and is never used). Requires `patient:read`
+    and `lab:read`. Patients the caller may not read are never listed.
+    """
+    name = "find_patients_by_lab"
+    if not is_valid_context(tool_context):
+        return await _denied_context(name)
+    ctx = tool_context
+    deny = await _lookup_permission_gate(name, ctx, "lab:read")
+    if deny is not None:
+        return deny
+    bound = max(LOOKUP_LIMIT_MIN, min(limit, LOOKUP_LIMIT_MAX))
+    code = test_code.strip()
+
+    known_hint = await _known_test_code_hint(ctx.db)
+    if not await _test_code_is_known(ctx.db, code):
+        hint = ", ".join(
+            f"{c} ({truncate_text(n, 60)})"
+            for c, n in known_hint[:LOOKUP_CATALOG_MAX_CODES]
+        )
+        message = (
+            f"Unknown test code. Known lab test codes: {hint}."
+            if hint
+            else "Unknown test code; no lab test codes are known."
+        )
+        return await _finish(
+            name,
+            ctx,
+            outcome="error",
+            resource_type="patient",
+            ok=False,
+            error={"code": "unknown_test_code", "message": truncate_text(message)},
+        )
+
+    filters = [LabResult.test_code == code, LabResult.not_deleted()]
+    if abnormal_only:
+        filters.append(
+            or_(
+                and_(
+                    LabResult.ref_high.is_not(None),
+                    LabResult.value_num.is_not(None),
+                    LabResult.value_num > LabResult.ref_high,
+                ),
+                and_(
+                    LabResult.ref_low.is_not(None),
+                    LabResult.value_num.is_not(None),
+                    LabResult.value_num < LabResult.ref_low,
+                ),
+            )
+        )
+    ranked = (
+        select(
+            LabResult.id.label("row_id"),
+            func.row_number()
+            .over(
+                partition_by=LabResult.patient_id,
+                order_by=(LabResult.collected_at.desc(), LabResult.id),
+            )
+            .label("rank"),
+        )
+        .where(*filters)
+        .subquery()
+    )
+    async def fetch_page(page_limit: int, offset: int) -> list[tuple[LabResult, Patient]]:
+        result = await ctx.db.execute(
+            select(LabResult, Patient)
+            .join(ranked, LabResult.id == ranked.c.row_id)
+            .join(Patient, Patient.id == LabResult.patient_id)
+            .where(ranked.c.rank == 1)
+            .order_by(LabResult.collected_at.desc(), LabResult.id)
+            .limit(page_limit)
+            .offset(offset)
+        )
+        return list(result.all())
+
+    patients: list[dict[str, Any]] = []
+    citations: list[dict[str, str]] = []
+    for lab, patient in await _visible_pairs(ctx, fetch_page, bound):
+        patients.append(
+            {
+                "patient_id": str(patient.id),
+                "display_name": truncate_text(patient.display_name),
+                "mrn": truncate_text(patient.mrn),
+                "matched": _lab_matched(lab),
+            }
+        )
+        citations.append(_citation("patient", patient.id))
+        citations.append(_citation("lab_result", lab.id))
+    return await _finish(
+        name,
+        ctx,
+        outcome="success",
+        resource_type="patient",
+        ok=True,
+        data={"patients": patients},
+        citations=citations,
+    )
+
+
+async def find_patients_by_medication(
+    medication_name: Annotated[str, Field(min_length=1, max_length=MEDICATION_NAME_MAX_LENGTH, description="Medication name or catalog code: case-insensitive substring match on the prescription medication name or catalog code (wildcards are literal).")],
+    active_only: Annotated[bool, Field(description="Only active prescriptions. Default true.")] = True,
+    limit: Annotated[int, Field(ge=LOOKUP_LIMIT_MIN, le=LOOKUP_LIMIT_MAX, description="Maximum patient references to return (1-50).")] = LOOKUP_LIMIT_DEFAULT,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """Find the SYNTHETIC patients with prescriptions matching one medication.
+
+    Returns only patient references (patient id, display name, MRN) plus a
+    short `matched` reason (most recent matching prescription first, one row
+    per patient). Matching is a case-insensitive substring match on the
+    prescription's medication name or the linked catalog medication code; LIKE
+    wildcards in the input are treated literally. With `active_only` true only
+    active prescriptions match. Requires `patient:read` and `prescription:read`.
+    Patients the caller may not read are never listed.
+    """
+    name = "find_patients_by_medication"
+    if not is_valid_context(tool_context):
+        return await _denied_context(name)
+    ctx = tool_context
+    deny = await _lookup_permission_gate(name, ctx, "prescription:read")
+    if deny is not None:
+        return deny
+    bound = max(LOOKUP_LIMIT_MIN, min(limit, LOOKUP_LIMIT_MAX))
+    term = medication_name.strip()
+    if not term:
+        return await _finish(
+            name,
+            ctx,
+            outcome="error",
+            resource_type="patient",
+            ok=False,
+            error={
+                "code": "invalid_arguments",
+                "message": "medication_name must contain a non-whitespace character.",
+            },
+        )
+    pattern = patients_service.like_pattern(term)
+    catalog_ids = select(Medication.id).where(Medication.code.ilike(pattern, escape="\\"))
+    filters = [
+        Prescription.not_deleted(),
+        or_(
+            Prescription.medication_name.ilike(pattern, escape="\\"),
+            Prescription.medication_id.in_(catalog_ids),
+        ),
+    ]
+    if active_only:
+        filters.append(Prescription.status == "active")
+    ranked = (
+        select(
+            Prescription.id.label("row_id"),
+            func.row_number()
+            .over(
+                partition_by=Prescription.patient_id,
+                order_by=(Prescription.start_date.desc(), Prescription.id),
+            )
+            .label("rank"),
+        )
+        .where(*filters)
+        .subquery()
+    )
+    async def fetch_page(page_limit: int, offset: int) -> list[tuple[Prescription, Patient]]:
+        result = await ctx.db.execute(
+            select(Prescription, Patient)
+            .join(ranked, Prescription.id == ranked.c.row_id)
+            .join(Patient, Patient.id == Prescription.patient_id)
+            .where(ranked.c.rank == 1)
+            .order_by(Prescription.start_date.desc(), Prescription.id)
+            .limit(page_limit)
+            .offset(offset)
+        )
+        return list(result.all())
+
+    patients: list[dict[str, Any]] = []
+    citations: list[dict[str, str]] = []
+    for rx, patient in await _visible_pairs(ctx, fetch_page, bound):
+        patients.append(
+            {
+                "patient_id": str(patient.id),
+                "display_name": truncate_text(patient.display_name),
+                "mrn": truncate_text(patient.mrn),
+                "matched": _rx_matched(rx),
+            }
+        )
+        citations.append(_citation("patient", patient.id))
+        citations.append(_citation("prescription", rx.id))
+    return await _finish(
+        name,
+        ctx,
+        outcome="success",
+        resource_type="patient",
+        ok=True,
+        data={"patients": patients},
+        citations=citations,
     )

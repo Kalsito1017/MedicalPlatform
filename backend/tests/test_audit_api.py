@@ -40,6 +40,8 @@ KNOWN_ACTIONS = {
     "mcp.get_patient_summary",
     "mcp.get_patient_lab_results",
     "mcp.get_recent_prescriptions",
+    "mcp.find_patients_by_lab",
+    "mcp.find_patients_by_medication",
     "mcp.unknown_tool",
 }
 

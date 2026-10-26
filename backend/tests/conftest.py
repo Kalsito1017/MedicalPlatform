@@ -593,7 +593,7 @@ class ScriptedLLMProvider:
         self.steps = list(steps)
         self.calls: list[dict] = []
 
-    async def complete(self, *, system, messages, tools, max_tokens, timeout):
+    async def complete(self, *, system, messages, tools, max_tokens, timeout, session_id=None):
         from copy import deepcopy
 
         self.calls.append(

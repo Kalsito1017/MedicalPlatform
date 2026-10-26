@@ -153,8 +153,56 @@ Deny by default. Technical administration grants **no** clinical-data access.
 
 ## MCP tool contract (internal, not a public HTTP API)
 
-Tools: `search_authorized_patients(query, limit)`, `get_patient_summary(patient_id)`,
-`get_patient_lab_results(patient_id, limit)`, `get_recent_prescriptions(patient_id, limit)`.
+Tools: `search_authorized_patients(query, limit)`, `get_patient_summary(patient_id, limit)`,
+`get_patient_lab_results(patient_id, limit)`, `get_recent_prescriptions(patient_id, limit)`,
+`find_patients_by_lab(test_code, abnormal_only, limit)`,
+`find_patients_by_medication(medication_name, active_only, limit)`.
+
+Signatures (typed, bounded; `limit` defaults are 10/10/20/20/25/25 and all
+clamp to 1..25 or 1..50 — out-of-range `limit` is a controlled
+`invalid_arguments` error at the registry, and the lookup tools additionally
+clamp 1..50 internally):
+
+- `search_authorized_patients(query: str (≤100), limit: int (1-25))`
+- `get_patient_summary(patient_id: uuid, limit: int (1-25))`
+- `get_patient_lab_results(patient_id: uuid, limit: int (1-50))`
+- `get_recent_prescriptions(patient_id: uuid, limit: int (1-50))`
+- `find_patients_by_lab(test_code: str (≤32, exact known lab test code), abnormal_only: bool = true, limit: int (1-50))`
+- `find_patients_by_medication(medication_name: str (≤100), active_only: bool = true, limit: int (1-50))`
+
+The two lookup tools serve general (cross-patient) questions in 1-2 calls and
+return ONLY patient references — `[{patient_id, display_name, mrn, matched}]`,
+one row per patient, most recent matching record first, strings truncated with
+`[truncated]` — never a full clinical payload. Decisions:
+
+- `find_patients_by_lab`: `test_code` must match a known lab test code exactly
+  (exact match against the seeded lab catalog via a bounded parameterized
+  query — no free text); an unknown code is a controlled `unknown_test_code`
+  error that lists known codes most-used first (catalog data, never an echo of
+  the submitted value).
+  Abnormality is computed from `value_num` against `ref_low`/`ref_high`
+  (strictly outside the range); the result's `status` field is the document
+  state (e.g. `final`) and is **not** an abnormality flag — it is never used.
+  Text-only results without a numeric value can never qualify as abnormal.
+  `matched` is a short reason like `Potassium 5.8 mmol/L high, 2026-09-24`.
+- `find_patients_by_medication`: case-insensitive substring match on the
+  prescription's medication name or the linked catalog medication code, with
+  LIKE wildcards escaped to literal (parameterized ORM only); `active_only`
+  restricts to `status = active` prescriptions. `matched` looks like
+  `Metformin 500 mg, active`.
+- Visibility of every returned patient goes through the same
+  `services.access.check_patient_access` seam as the REST API: the tool checks
+  `patient:read` (plus `lab:read` / `prescription:read`, since `matched` carries
+  record values) once per call, then runs the seam per returned patient (one
+  cheap indexed check per candidate) and silently drops non-visible rows,
+  paging past them within a bounded candidate scan so concealed rows never
+  crowd out visible ones. A caller without the
+  permissions gets an empty result (audited outcome `denied`).
+
+General answers may report only what these tools returned (authorization is
+re-executed per call); every ask is audited with one `mcp.<tool>` event per
+tool call (`mcp.find_patients_by_lab` / `mcp.find_patients_by_medication`
+included) — never a search term or clinical payload.
 
 - Read-only, typed arguments, bounded results, explicit timeouts.
 - Acting identity comes from the verified server-side session context — **never** a tool argument.

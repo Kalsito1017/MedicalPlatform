@@ -23,6 +23,21 @@ LIST_LIMIT_DEFAULT = 20
 
 PATIENT_ID_MAX_LENGTH = 64
 
+# Cross-patient lookup tools (find_patients_by_lab / find_patients_by_medication).
+LOOKUP_LIMIT_MIN = 1
+LOOKUP_LIMIT_MAX = 50
+LOOKUP_LIMIT_DEFAULT = 25
+TEST_CODE_MAX_LENGTH = 32
+MEDICATION_NAME_MAX_LENGTH = 100
+# Short "why it matched" reason string (e.g. "potassium 5.8 mmol/L high, 2026-09-24").
+LOOKUP_MATCHED_MAX_LENGTH = 120
+# The known-test-code allowlist is derived from the seeded catalog with one
+# bounded query; this caps how many codes (and error-message hints) it carries.
+LOOKUP_CATALOG_MAX_CODES = 50
+# Lookup visibility filtering drops rows the access seam denies; paging past
+# those rows is bounded by this candidate-scan cap (returned rows stay <= limit).
+LOOKUP_MAX_SCAN = 200
+
 # Result bounds.
 TEXT_FIELD_MAX_LENGTH = 500
 TOOL_RESULT_MAX_BYTES = 8192

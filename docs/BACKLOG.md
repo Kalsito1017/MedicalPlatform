@@ -36,7 +36,7 @@ Mapped to the phase/controls that implement each item.
 | IDOR protection (changing an ID in the URL) | Per-request authz + `404` concealment + tests | Phase 6, 12 |
 | No self-role escalation; role changes authorized, validated, audited | Self-target → 403; `role:assign` + CSRF + audit events | Phase 5, 10 |
 | Tech admins get no automatic clinical access | Matrix: `tech_admin` has zero clinical permissions | Phase 5 |
-| MCP tools narrow, typed, read-only, allowlisted | Exactly 4 tools — `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`; no execute_sql/shell/filesystem, ever | Phase 7 |
+| MCP tools narrow, typed, read-only, allowlisted | Exactly 6 tools — `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`; no execute_sql/shell/filesystem, ever | Phase 7 |
 | Acting identity from verified auth context, never LLM argument | In-process session context; identity never a tool argument | Phase 7 |
 | Same authorization layer re-executed inside every MCP tool | Policy module re-checked per tool call | Phase 7 |
 | Query/result/time limits and safe errors on tools | Bounded args, capped results, timeouts, no stack traces | Phase 7 |

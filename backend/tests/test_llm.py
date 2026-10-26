@@ -346,6 +346,7 @@ def test_build_provider_configures_open_code_provider() -> None:
 
 
 def test_general_mode_max_tool_calls_defaults_and_reads_env(monkeypatch) -> None:
+    from app.config import load_settings
     from app.llm.loop import (
         DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS,
         GENERAL_MODE_MAX_TOOL_CALLS_ENV,
@@ -353,7 +354,9 @@ def test_general_mode_max_tool_calls_defaults_and_reads_env(monkeypatch) -> None
     )
 
     monkeypatch.delenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, raising=False)
-    assert general_mode_max_tool_calls() == DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS == 6
+    assert general_mode_max_tool_calls() == DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS == 10
+    # Patient-scoped mode keeps its own, unchanged bound.
+    assert load_settings(env_file=None).llm_max_tool_calls == 4
 
     monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "8")
     assert general_mode_max_tool_calls() == 8

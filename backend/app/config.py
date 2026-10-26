@@ -73,7 +73,7 @@ class Settings(BaseSettings):
 
     # --- LLM (optional; the app runs fully without it) ---
     llm_enabled: bool = False
-    llm_api_base_url: str = "https://opencode.ai/inference"
+    llm_api_base_url: str = "https://opencode.ai/inference/go"
     llm_api_key: SecretStr | None = None
     llm_model: str = ""
     llm_max_tool_calls: int = 4

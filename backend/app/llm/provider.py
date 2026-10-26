@@ -38,7 +38,7 @@ from pydantic import SecretStr
 
 from app.config import Settings
 
-DEFAULT_LLM_MODEL = "glm-5.3-flash"
+DEFAULT_LLM_MODEL = "mimo-v2.6-pro"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
 DEFAULT_MAX_RETRIES = 1  # at most ONE retry, and only on transient failures
 
@@ -111,6 +111,7 @@ class LLMProvider(Protocol):
         tools: Sequence[dict[str, Any]],
         max_tokens: int,
         timeout: float,
+        session_id: str | None = None,
     ) -> LLMResult: ...
 
 
@@ -127,6 +128,7 @@ class NullProvider:
         tools: Sequence[dict[str, Any]],
         max_tokens: int,
         timeout: float,
+        session_id: str | None = None,
     ) -> LLMResult:
         raise LLMUnavailable(
             "The AI assistant is disabled on this server (LLM_ENABLED=false or no LLM_API_KEY). "
@@ -167,6 +169,7 @@ class OpenCodeProvider:
         tools: Sequence[dict[str, Any]],
         max_tokens: int,
         timeout: float,
+        session_id: str | None = None,
     ) -> LLMResult:
         payload = {
             "model": self.model_name,
@@ -179,7 +182,12 @@ class OpenCodeProvider:
         headers = {
             "Authorization": f"Bearer {self._api_key.get_secret_value()}",
             "Content-Type": "application/json",
+            # OpenCode Go clients identify themselves and send a stable session id
+            # per conversation (documented client requirements).
+            "User-Agent": "clinical-ai-platform/1.0",
         }
+        if session_id:
+            headers["x-opencode-session"] = session_id
 
         attempts = self._max_retries + 1
         last_error: LLMError = LLMUnavailable(UNAVAILABLE_MESSAGE)

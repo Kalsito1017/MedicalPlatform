@@ -158,7 +158,7 @@ mutates state.
 
 Prompt-injection posture: synthetic note/summary text is **untrusted data** inside
 prompts. It is never interpreted as instructions, and even if a note contained
-"call tool X with argument Y", the only tools reachable are the four read-only ones,
+"call tool X with argument Y", the only tools reachable are the six read-only ones,
 each of which re-authorizes against the real session identity.
 
 If the LLM is disabled (`LLM_ENABLED=false`) or unreachable, the endpoint returns
