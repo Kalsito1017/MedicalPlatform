@@ -222,8 +222,8 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 
 | Phase | Name | Status | Completion date | Notes |
 |---|---|---|---|---|
-| 0 | Repository discovery and baseline | NOT STARTED | — | |
-| 1 | Requirements and architecture | NOT STARTED | — | |
+| 0 | Repository discovery and baseline | DONE | 2026-10-26 | Greenfield repo; own git repo created in MedicalPlatform; see docs/INITIAL_ASSESSMENT.md and docs/API.md (frozen contract) |
+| 1 | Requirements and architecture | DONE | 2026-10-26 | docs/ARCHITECTURE.md, SECURITY.md, BACKLOG.md, DEPLOYMENT.md, TROUBLESHOOTING.md + README; API contract frozen in docs/API.md |
 | 2 | Project structure and local developer setup | NOT STARTED | — | |
 | 3 | PostgreSQL schema and migrations | NOT STARTED | — | |
 | 4 | Backend foundation and API conventions | NOT STARTED | — | |
@@ -801,6 +801,28 @@ Append one dated entry after every completed phase:
 - Blockers:
 - Next phase:
 ```
+
+### 2026-10-26 — Phase 0: Repository discovery and baseline
+- Status: DONE
+- Implemented: Repository bootstrap. Repo was empty (only planning docs); no pre-existing code or user work to preserve. Fresh git repository initialised inside `MedicalPlatform/` (the home-directory repo is untouched). Recorded toolchain (Python 3.14.4/3.11.16 + uv, Node 24, Docker 29 + Compose v5, no psql). Project pinned to Python 3.12. Froze the API contract in `docs/API.md` as the integration backbone so backend and frontend can be built in parallel by separate agents. Wrote `.gitignore` and `.env.example` (placeholder values only).
+- Files changed: PLAN.md (renamed from `PLAN (1).md`), production-requirements.txt (unchanged, kept at root), .gitignore, .env.example, docs/INITIAL_ASSESSMENT.md, docs/API.md
+- Commands run: `git init -b main`; `git add -A && git commit` → commit `b0e3db5`; `uv python list --only-installed`
+- Tests: none existed at baseline (greenfield). Baseline recorded as "no test suite present" in docs/INITIAL_ASSESSMENT.md.
+- Acceptance criteria: PASS — no user changes overwritten; architecture and start procedure documented; baseline recorded; Phase 1 scope derived from the actual (empty) repository.
+- Security notes: no committed secrets, no patient-like data present. `.env` ignored from commit #1. Demo credentials will be generated at seed time via env vars only.
+- Blockers: none.
+- Next phase: Phase 1 (docs in progress) and Phase 2/4 (backend foundation) running as parallel agents.
+
+### 2026-10-26 — Phase 1: Requirements and architecture
+- Status: DONE
+- Implemented: Full documentation layer by the docs agent, independently spot-checked by the lead (permission matrix diff vs docs/API.md → exact match; no invented URLs; no false compliance claims). Covers trust boundaries, data-flow walkthroughs (login/patient flow, AI flow with dual authorization checks, admin role change with guards), decision log, threat-model/controls table, audit inventory, deferred-production backlog mapped from production-requirements.txt, provider-by-provider deployment steps, troubleshooting entries, and README quickstart. Lead decisions on the docs agent's open assumptions: (1) `DEMO_ADMIN_*` seeds the `clinical_admin` role, `DEMO_TECH_ADMIN_*` seeds `tech_admin`; (2) sessions are DB-backed in the `admin` schema so they can expire and be revoked; (3) soft delete = `deleted_at` columns; (4) FastAPI serves the frontend in local dev, Cloudflare Pages in production; (5) Render build/start confirmed at Phase 14.
+- Files changed: README.md, docs/ARCHITECTURE.md, docs/SECURITY.md, docs/BACKLOG.md, docs/DEPLOYMENT.md, docs/TROUBLESHOOTING.md
+- Commands run: matrix `diff` cross-check, URL/claims `grep` audit, `git commit` → `21d7f27`
+- Tests: n/a (documentation phase); consistency checks passed as above.
+- Acceptance criteria: PASS — every protected feature has a documented permission; data flow browser → backend → MCP → LLM → PostgreSQL is documented with trust boundaries; free-tier deployment feasibility documented with honest caveats; unresolved choices listed in docs/ARCHITECTURE.md rather than silently guessed.
+- Security notes: docs state non-claims explicitly (not HIPAA, not clinically validated, not a medical device, not for real patient data). Secrets documented by name/purpose only.
+- Blockers: none.
+- Next phase: Phases 2–4 (backend foundation) and Phase 9 (frontend) running as parallel agents.
 
 ## Final instruction to the coding agent
 

@@ -1,0 +1,32 @@
+# Local development stack.
+# Currently: PostgreSQL only. The lead adds an `app` service later (Phase 13).
+#
+# Usage:
+#   docker compose up -d db
+#   docker compose ps        # wait for the db service to become "healthy"
+#
+# Credentials below are DEV-ONLY defaults so the stack works out of the box.
+# Override them via .env (see .env.example). Never reuse these defaults outside
+# local development.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-app}                  # dev-only default
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}    # dev-only default; override in .env
+      POSTGRES_DB: ${POSTGRES_DB:-clinical_demo}
+    ports:
+      # Exposed for local tooling (psql, alembic, tests). Restrict in shared envs.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  postgres_data:
