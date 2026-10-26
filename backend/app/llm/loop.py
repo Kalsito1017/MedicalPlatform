@@ -9,7 +9,9 @@ The model may only *suggest* tool calls; this loop is the gate:
   (authorization check #2, docs/ARCHITECTURE.md) - prompt text or model output
   can never change who the caller is or what they may read,
 * bounds are enforced per question: at most `LLM_MAX_TOOL_CALLS` tool-call
-  rounds and tool calls, per-tool-result size caps (app/mcp/limits.py),
+  rounds and tool calls (patient-scoped mode) or `LLM_MAX_TOOL_CALLS_GENERAL`
+  (general lookup mode, default 6 - general questions typically need a search
+  plus follow-up reads), per-tool-result size caps (app/mcp/limits.py),
   `LLM_MAX_ANSWER_TOKENS` completion cap, and a total wall-clock budget of
   `LLM_REQUEST_TIMEOUT_SECONDS` plus a small margin (each model call receives
   at most the remaining budget as its timeout),
@@ -21,18 +23,33 @@ all record content as DATA, not instructions.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Callable
 
 from app.config import Settings
-from app.llm.prompt import SYSTEM_PROMPT, assistant_tool_call_message, tool_result_message, user_message
+from app.llm.prompt import (
+    assistant_tool_call_message,
+    system_prompt,
+    tool_result_message,
+    user_message,
+)
 from app.llm.provider import LLMError, LLMProvider, LLMUnavailable
 from app.mcp.context import ToolContext
 from app.mcp.server import MCPServer
 
 TOTAL_BUDGET_MARGIN_SECONDS = 5.0
 MAX_ANSWER_TOKENS = 1024
+
+# General lookup mode (no patient_id) gets a slightly higher tool-call bound:
+# a typical answer needs one search plus several follow-up reads. ONE setting,
+# env-driven with this default (the frozen config module stays untouched):
+# `LLM_MAX_TOOL_CALLS_GENERAL` (integer, clamped to 1..20). Patient-scoped mode
+# keeps the existing `LLM_MAX_TOOL_CALLS` setting (default 4).
+GENERAL_MODE_MAX_TOOL_CALLS_ENV = "LLM_MAX_TOOL_CALLS_GENERAL"
+DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS = 6
+GENERAL_MODE_MAX_TOOL_CALLS_CAP = 20
 
 BUDGET_EXCEEDED_MESSAGE = (
     "The AI request exceeded its processing time budget. Please try a narrower question."
@@ -41,6 +58,22 @@ TOO_COMPLEX_MESSAGE = (
     "The question required more tool activity than the allowed limit. Please try a narrower question."
 )
 EMPTY_ANSWER_MESSAGE = "The AI service returned an empty answer. Please try again."
+
+
+def general_mode_max_tool_calls() -> int:
+    """Tool-call bound for general lookup mode (see GENERAL_MODE_* above).
+
+    Reads `LLM_MAX_TOOL_CALLS_GENERAL` from the environment; blank or invalid
+    values fall back to the default of 6 and the result is always clamped to
+    1..GENERAL_MODE_MAX_TOOL_CALLS_CAP so a misconfigured variable can never
+    unbound the loop.
+    """
+    raw = os.environ.get(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS
+    return max(1, min(value, GENERAL_MODE_MAX_TOOL_CALLS_CAP))
 
 
 class ToolLoopAbort(LLMError):
@@ -62,13 +95,24 @@ async def run_assistant(
     provider: LLMProvider,
     mcp: MCPServer,
     question: str,
-    patient_id: str,
+    patient_id: str | None,
     tool_context: ToolContext,
     settings: Settings,
     clock: Callable[[], float] = monotonic,
 ) -> AssistantOutcome:
-    """Run the bounded model/tool loop for one question. See module docstring."""
-    max_rounds = max(1, int(settings.llm_max_tool_calls))
+    """Run the bounded model/tool loop for one question. See module docstring.
+
+    `patient_id` selects the mode: a str is the verified patient subject
+    (patient-scoped mode, `LLM_MAX_TOOL_CALLS` bound); `None` is general lookup
+    mode (`general_mode_max_tool_calls()` bound). Authorization is enforced per
+    tool call in both modes - the loop never widens it.
+    """
+    patient_scoped = patient_id is not None
+    max_rounds = (
+        max(1, int(settings.llm_max_tool_calls))
+        if patient_scoped
+        else general_mode_max_tool_calls()
+    )
     max_answer_tokens = MAX_ANSWER_TOKENS
     per_call_timeout = float(settings.llm_request_timeout_seconds)
     deadline = clock() + per_call_timeout + TOTAL_BUDGET_MARGIN_SECONDS
@@ -86,7 +130,7 @@ async def run_assistant(
         if remaining <= 0:
             raise ToolLoopAbort(BUDGET_EXCEEDED_MESSAGE)
         result = await provider.complete(
-            system=SYSTEM_PROMPT,
+            system=system_prompt(patient_scoped=patient_scoped),
             messages=messages,
             tools=schemas,
             max_tokens=max_answer_tokens,

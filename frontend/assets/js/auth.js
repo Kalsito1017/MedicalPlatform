@@ -38,6 +38,7 @@ export function navItemsFor(user) {
   const items = [{ key: 'dashboard', label: 'Dashboard', href: 'dashboard.html' }];
   if (hasPermission(user, 'patient:read')) {
     items.push({ key: 'patients', label: 'Patients', href: 'patients.html' });
+    items.push({ key: 'ai', label: 'AI Assistant', href: 'ai.html' });
   }
   if (hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
     items.push({ key: 'admin', label: 'Admin', href: 'admin.html' });

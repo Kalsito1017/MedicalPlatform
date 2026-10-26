@@ -65,7 +65,7 @@ const htmlFiles = (await readdir(frontendRoot)).filter((f) => f.endsWith('.html'
 const jsFiles = (await readdir(jsDir)).filter((f) => f.endsWith('.js')).sort();
 
 await check('all expected pages exist', () => {
-  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'admin.html']) {
+  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html']) {
     assert(htmlFiles.includes(page), `missing ${page}`);
   }
 });
@@ -128,11 +128,30 @@ await check('patient.js: AI output is labelled AI-generated and size bounded', a
   assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
 });
 
+await check('ai.html: AI Assistant page is labelled and bounded', async () => {
+  const source = await readFile(path.join(frontendRoot, 'ai.html'), 'utf8');
+  assert(source.includes('id="ai-question-form"'), 'missing AI question form');
+  assert(source.includes('id="ai-char-count"'), 'missing character counter');
+  assert(source.includes('id="ai-cancel"'), 'missing cancel control');
+  assert(source.includes('INFORMATIONAL ONLY'), 'missing informational-only pill');
+  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing AI non-diagnosis label');
+  assert(source.includes('2000'), 'missing question limit copy');
+});
+
+await check('ai-assistant.js: general lookup sends no patient_id and labels AI output', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'ai-assistant.js'), 'utf8'));
+  assert(source.includes('AI-generated'), 'missing AI-generated label');
+  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing non-diagnosis label');
+  assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
+  assert(!/patient_id\s*:/.test(source), 'general lookup must never send patient_id');
+});
+
 const entryModules = {
   'index.html': 'login.js',
   'dashboard.html': 'dashboard.js',
   'patients.html': 'patients.js',
   'patient.html': 'patient.js',
+  'ai.html': 'ai-assistant.js',
   'admin.html': 'admin.js',
 };
 const DYNAMIC_IDS = new Set(['app-dialog']);
@@ -198,7 +217,7 @@ await check('no inline style attributes anywhere (CSP style-src self)', async ()
   }
 });
 
-const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'admin.html'];
+const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html'];
 for (const file of SHELL_PAGES) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: app shell design structure present`, () => {

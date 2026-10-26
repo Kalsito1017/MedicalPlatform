@@ -1,14 +1,23 @@
 """AI assistant endpoint (docs/API.md "AI assistant", ARCHITECTURE.md data flow (b)).
 
-`POST /api/v1/ai/ask` - permission `patient:read` plus patient access (the
-concealment contract: an inaccessible patient is `404 not_found`, never 403).
+`POST /api/v1/ai/ask` - two modes over one endpoint:
+
+* patient-scoped (`{"patient_id", "question"}`) - permission `patient:read`
+  plus patient access (the concealment contract: an inaccessible patient is
+  `404 not_found`, never 403),
+* general lookup (`{"question"}`, no patient_id) - permission `patient:read`;
+  the model may search and read records across the synthetic patients the
+  caller is authorized for, and every tool call is authorization-checked again
+  inside the tool layer.
+
 Non-GET is CSRF-protected by app.auth.csrf middleware.
 
-Flow: authn (session) -> authz (policy + check_patient_access, re-check #1) ->
-per-user rate limit and request bounds -> bounded LLM tool loop where every MCP
-tool re-authorizes (re-check #2) -> exact frozen response shape. Every call is
-audited (`ai.ask` outcome, plus the `mcp.*` tool events from the tool layer).
-No prompt, question text, or clinical payload is ever audited or logged.
+Flow: authn (session) -> authz (policy + check_patient_access in patient mode,
+re-check #1) -> per-user rate limit and request bounds (shared by both modes)
+-> bounded LLM tool loop where every MCP tool re-authorizes (re-check #2) ->
+exact frozen response shape. Every call is audited (`ai.ask` outcome, plus the
+`mcp.*` tool events from the tool layer). No prompt, question text, or clinical
+payload is ever audited or logged.
 
 When the LLM is disabled or unreachable the endpoint answers 503
 `dependency_unavailable`; the rest of the platform is unaffected.
@@ -39,6 +48,9 @@ from app.services.access import check_patient_access
 
 router = APIRouter(tags=["ai"])
 
+# Audit resource reference for a general-lookup ask (no single patient subject).
+GENERAL_LOOKUP_RESOURCE_TYPE = "ai_lookup"
+
 
 async def _audit_ask(
     db,
@@ -46,15 +58,16 @@ async def _audit_ask(
     request: Request,
     request_id: str,
     principal: Principal,
-    patient_id,
+    resource_type: str | None,
+    resource_id: str | None,
     outcome: str,
 ) -> None:
     await write_audit_event(
         db,
         actor_user_id=principal.user_uuid,
         action="ai.ask",
-        resource_type="patient",
-        resource_id=str(patient_id),
+        resource_type=resource_type,
+        resource_id=resource_id,
         outcome=outcome,
         request_id=request_id,
         ip=client_ip(request),
@@ -70,20 +83,26 @@ async def ask(
     request_id: RequestId,
     principal: Principal = Depends(require_permission("patient:read")),
 ) -> AskResponse:
-    """Answer one bounded question about one synthetic patient (AI-generated)."""
+    """Answer one bounded question (AI-generated): one patient or a general lookup."""
     settings = request.app.state.settings
 
-    allowed = await check_patient_access(principal, body.patient_id, db=db)
-    if not allowed:
-        await _audit_ask(
-            db,
-            request=request,
-            request_id=request_id,
-            principal=principal,
-            patient_id=body.patient_id,
-            outcome="denied",
-        )
-        raise NotFound()
+    patient_id = body.patient_id
+    resource_type = "patient" if patient_id is not None else GENERAL_LOOKUP_RESOURCE_TYPE
+    resource_id = str(patient_id) if patient_id is not None else None
+
+    if patient_id is not None:
+        allowed = await check_patient_access(principal, patient_id, db=db)
+        if not allowed:
+            await _audit_ask(
+                db,
+                request=request,
+                request_id=request_id,
+                principal=principal,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                outcome="denied",
+            )
+            raise NotFound()
 
     rate_key = principal.user_id or client_ip(request) or "unknown"
     retry_after = ai_rate_limiter.retry_after_seconds(rate_key)
@@ -93,7 +112,8 @@ async def ask(
             request=request,
             request_id=request_id,
             principal=principal,
-            patient_id=body.patient_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
             outcome="denied",
         )
         raise RateLimited(retry_after=retry_after)
@@ -111,7 +131,7 @@ async def ask(
             provider=provider,
             mcp=mcp_server,
             question=body.question,
-            patient_id=str(body.patient_id),
+            patient_id=str(patient_id) if patient_id is not None else None,
             tool_context=tool_context,
             settings=settings,
         )
@@ -121,7 +141,8 @@ async def ask(
             request=request,
             request_id=request_id,
             principal=principal,
-            patient_id=body.patient_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
             outcome="error",
         )
         raise RateLimited(exc.message, retry_after=exc.retry_after)
@@ -131,7 +152,8 @@ async def ask(
             request=request,
             request_id=request_id,
             principal=principal,
-            patient_id=body.patient_id,
+            resource_type=resource_type,
+            resource_id=resource_id,
             outcome="error",
         )
         raise DependencyUnavailable(exc.message)
@@ -148,7 +170,8 @@ async def ask(
         request=request,
         request_id=request_id,
         principal=principal,
-        patient_id=body.patient_id,
+        resource_type=resource_type,
+        resource_id=resource_id,
         outcome="success",
     )
     return AskResponse(

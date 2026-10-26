@@ -709,6 +709,7 @@ export function wireFooterDialogs(root) {
 const NAV_ICONS = {
   dashboard: 'home',
   patients: 'users',
+  ai: 'sparkles',
   admin: 'shield',
 };
 

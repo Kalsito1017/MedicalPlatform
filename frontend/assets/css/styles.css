@@ -2075,6 +2075,53 @@ a.patient-card:hover {
   font-weight: 650;
 }
 
+/* ------------------------------------------------- AI assistant page */
+
+.ai-page-card {
+  max-width: 60rem;
+}
+
+.ai-chat--page {
+  min-height: 14rem;
+  max-height: 26rem;
+}
+
+.ai-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ai-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.ai-suggestions:empty {
+  display: none;
+}
+
+.chip--action {
+  font: inherit;
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.chip--action:hover {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.ai-citations a {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
 .password-display {
   margin: var(--space-2) 0 0;
   padding: var(--space-3);

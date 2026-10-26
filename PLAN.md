@@ -882,6 +882,17 @@ Append one dated entry after every completed phase:
 - Blockers: none.
 - Next phase: unchanged — user publishes; Phases 14–15 resume when hosting access is provided.
 
+### 2026-10-26 — Feature: top-level AI Assistant (general lookup mode)
+- Status: DONE
+- Implemented: `POST /api/v1/ai/ask` extended compatibly — `{patient_id?, question}`: with patient_id unchanged patient-scoped mode; without, a general lookup mode where the model may search patients and read records via the SAME four MCP tools under the same authorization (identity still server-injected only, re-authorized per tool call, all calls audited `mcp.*`, ask audited `ai.ask` with resource `patient`/`ai_lookup`). Shared prompt rules block with two scopes (record text = DATA; never fabricate; always list records consulted). New `frontend/ai.html` + `ai-assistant.js` in the MediCore design language (gradient AI card, INFORMATIONAL ONLY pill, chat bubbles, source chips, citation links to patient records, suggested-question chips, all error/503/429 states), sidebar "AI Assistant" nav gated on `patient:read`. Citation links resolve only when attribution is unambiguous (single-patient answers) — never invented links.
+- Files changed: backend/app/{schemas/ai.py,llm/prompt.py,llm/loop.py,api/v1/ai.py}, backend/tests/{test_ai_api.py,test_llm.py}, docs/API.md (ai/ask section), frontend/{ai.html,assets/js/ai-assistant.js,assets/js/auth.js,assets/js/ui.js,assets/css/styles.css,tests/*,DESIGN.md}, .env.example (LLM_MAX_TOOL_CALLS_GENERAL)
+- Commands run: `uv run pytest -q` → **340 passed, 1 skipped** (was 324; +16); `ruff check` clean; frontend **94/94 + 37/37** (was 82 + 30); `scripts/security_check.py` → PASS (CSP hash covers ai.html's verbatim bootstrap); live: general + patient asks degrade to clean 503 while the OpenCode account returns 402; 404 concealment, 400 bounds, CSRF 403, clinical_admin 403, shared 10/min rate limit (11th → 429 + Retry-After) all verified live.
+- Tests: 16 new backend tests incl. `test_general_mode_tool_calls_re_authorize_and_ignore_identity_tampering` (model smuggling user_id/role/patient_ids → denied + audited with the REAL session actor) and unknown-tool rejection (closed audit inventory) and prompt-injection-stays-data; 7 new frontend AI-page scenarios.
+- Acceptance criteria: PASS — general lookup answers must come from authorized tools only; missing data acknowledged; same allowlist/bounds/auditing as patient mode; contract extension recorded in docs/API.md.
+- Security notes: live happy path (real model answer) remains UNVERIFIED pending OpenCode account credits (402 "Insufficient account funds" observed live; graceful 503 confirmed). mcp.* audit rows observable live only once the provider accepts calls — mocked tests cover them.
+- Blockers: none in code. External: OpenCode Console credits required for live AI answers.
+- Next phase: user adds credits → lead runs the documented live click-through (general + patient modes) → then Phases 14-15 resume per user decision.
+
 ## Final instruction to the coding agent
 
 Start with **Phase 0 only**. Inspect the repository, establish the baseline, and update this file with findings. Then proceed phase by phase. Do not attempt the public deployment before the core application, authorization, synthetic data, tests, and Docker workflow are functioning. Never use real patient data for the public demo, and never claim deployment succeeded without checking the actual public URL.

@@ -82,6 +82,24 @@ headings 700 weight, tight leading.
   assistant left/white with badges, sources chips, citations, model + timestamp),
   composer with send button, warning-triangle disclaimer footer. Sticky on wide
   screens, moves below the panels under 1100px.
+- **AI Assistant page** (`ai.html`, nav item "AI Assistant" with the sparkles
+  icon, shown only with `patient:read`) — the general-lookup companion to the
+  patient rail: same `ai-card` vocabulary at page scale (gradient header +
+  "INFORMATIONAL ONLY" pill, subtitle disclaimer, warning-triangle footer) with
+  a chat transcript (`#ai-response-region`) that keeps the conversation of the
+  current page view, suggested-question chips that fill the composer (plain
+  text shortcuts — real queries, no automation), and an "Ask about a patient"
+  link to the real patient list (`patients.html` → `patient.html?id=…`; a
+  detail page needs a concrete record id, so the list is the honest entry).
+  Composer: send + cancel + 2000-char counter. All rail states kept: loading,
+  cancel, 503 unavailable, 429 countdown, `describeApiError` errors incl. the
+  network/offline banner. It posts `{ question }` (general lookup mode — no
+  `patient_id`); the rail keeps posting `{ patient_id, question }` unchanged.
+  Citation links: `patient` citations always link to `patient.html?id=…`;
+  `encounter`/`lab_result`/`prescription` citations link to the patient record
+  only when the same answer cites exactly one patient (unambiguous
+  attribution), otherwise they stay plain record references — never invented.
+  Questions/answers live only in the page DOM, never in web storage or logs.
 - **Dialogs** — head icon + title, optional `confirm-details` definition rows
   (the AdminPanel confirmation modal), Cancel + solid confirm; one-time password
   modal with the "shown once" warning; About dialog. All via the existing
@@ -106,6 +124,7 @@ Real surfaces only (project rule: every control must work, no invented data):
 | Tabs Summary/Labs/Prescriptions/Encounters | real tabbed panels backed by the real sections of the summary/labs/prescriptions data | |
 | Labs table (value, unit, ref range, status, collected) | labs table; reference range from `ref_low`/`ref_high`, status badge from the API `status` field | status text is the raw API value, never invented "Normal/High" labels |
 | AI Assistant rail | right rail over the existing `patient.js` AI flow | all current states kept: loading, cancel, 503 unavailable, 429 rate limit, errors, citations, disclaimer, permission gating |
+| Sidebar "AI Assistant" nav item (`doctorpanel1.png`) | `ai.html` + `assets/js/ai-assistant.js`, nav item derived from `patient:read` | the mockup's "AI Insights" tab and quick-action tile are the same surface; only this one nav item is real |
 | Staff management table + role pills + confirmation modal + pagination | admin staff table (avatar + name/email stack, role pills, Active/Inactive, actions), `ui.confirmDialog` with detail rows, page circles | |
 | TechAdmin audit log | admin "Audit events" table (when/actor/action/resource/outcome/request id) with coloured outcome badges | |
 
@@ -118,7 +137,9 @@ Real surfaces only (project rule: every control must work, no invented data):
   "what this is / is not" rows and the dashboard disclosure card.
 - **Appointments, Messages, Orders, Results, Reports, Settings, Population
   Health, AI Insights, Alerts nav items** — no such features or endpoints exist;
-  every nav item must lead to a working surface.
+  every nav item must lead to a working surface. (The mockups' "AI Assistant"
+  item is real and built; "AI Insights" is that same AI surface under a
+  different mockup label and is not a separate page.)
 - **"New Patient / Order Labs / Schedule Visit" quick actions** — no such
   features exist in the API.
 - **⌘K search chip and dashboard search box** — no keyboard-shortcut search is

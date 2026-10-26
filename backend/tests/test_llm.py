@@ -340,3 +340,30 @@ def test_build_provider_configures_open_code_provider() -> None:
         update={"llm_enabled": True, "llm_api_key": SecretStr(SENTINEL_KEY), "llm_model": ""}
     )
     assert build_provider(defaulted).model_name == DEFAULT_LLM_MODEL
+
+
+# --- general-mode tool-call bound (docs/API.md "AI assistant") ------------
+
+
+def test_general_mode_max_tool_calls_defaults_and_reads_env(monkeypatch) -> None:
+    from app.llm.loop import (
+        DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS,
+        GENERAL_MODE_MAX_TOOL_CALLS_ENV,
+        general_mode_max_tool_calls,
+    )
+
+    monkeypatch.delenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, raising=False)
+    assert general_mode_max_tool_calls() == DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS == 6
+
+    monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "8")
+    assert general_mode_max_tool_calls() == 8
+
+    # Invalid values fall back to the default; valid ones are clamped to 1..20
+    # so a misconfigured variable can never unbound the loop.
+    for bad in ("", "abc", "3.5", " "):
+        monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, bad)
+        assert general_mode_max_tool_calls() == DEFAULT_GENERAL_MODE_MAX_TOOL_CALLS, bad
+    monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "0")
+    assert general_mode_max_tool_calls() == 1
+    monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "9999")
+    assert general_mode_max_tool_calls() == 20

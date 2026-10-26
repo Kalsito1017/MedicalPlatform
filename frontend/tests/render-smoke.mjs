@@ -167,6 +167,30 @@ const AI_ANSWER = {
   disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
+const AI_GENERAL_ANSWER = {
+  answer: 'One synthetic patient is on metformin.\n\nThe record consulted is listed below.',
+  used_tools: ['search_authorized_patients', 'get_recent_prescriptions'],
+  citations: [{ type: 'patient', id: 'p1' }, { type: 'prescription', id: 'rx1' }],
+  model: 'demo-model-1',
+  ai_generated: true,
+  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
+};
+
+const AI_PAGE_IDS = [
+  'page-body',
+  'ai-suggestions',
+  'ai-response-region',
+  'ai-question-form',
+  'ai-question',
+  'ai-char-count',
+  'ai-question-error',
+  'ai-submit',
+  'ai-cancel',
+  'ai-status',
+  'ai-patient-link',
+  'ai-empty-note',
+];
+
 const ADMIN_IDS = [
   'admin-loading',
   'create-staff-section',
@@ -651,6 +675,194 @@ await check('AI panel is not interactive without permission to view patients', a
     textOf(document.getElementById('ai-response-region')),
     'only available to accounts that can view this patient',
     'permission note missing',
+  );
+});
+
+/* ------------------------------------------------- AI Assistant page (general) */
+
+await check('AI page sends a general question and renders bubbles, chips, and linked citations', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ calls, me: DOCTOR, ai: AI_GENERAL_ANSWER });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  assertContains(textOf(document.getElementById('site-nav')), 'AI Assistant', 'nav item missing for patient:read');
+
+  // Suggested questions are plain shortcuts that fill the composer.
+  await clickButton(document.getElementById('ai-suggestions'), 'Which patients are on metformin?');
+  const input = document.getElementById('ai-question');
+  assertEqualLocal(input.value, 'Which patients are on metformin?', 'suggestion did not fill the composer');
+
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const askCall = calls.find((call) => call.url.includes('/ai/ask'));
+  assert(askCall, 'AI endpoint not called');
+  const body = JSON.parse(askCall.init.body);
+  assert(!('patient_id' in body), 'general lookup must not send patient_id');
+  assertEqualLocal(body.question, 'Which patients are on metformin?', 'question missing from the request');
+
+  const region = textOf(document.getElementById('ai-response-region'));
+  assertContains(region, 'Which patients are on metformin?', 'user question bubble missing');
+  assertContains(region, 'One synthetic patient is on metformin.', 'answer text missing');
+  assertContains(region, 'AI-generated', 'AI-generated label missing');
+  assertContains(region, 'not a diagnosis or treatment recommendation', 'diagnosis disclaimer missing');
+  assertContains(region, 'Sources consulted', 'sources label missing');
+  assertContains(region, 'search_authorized_patients', 'tool chip missing');
+  assertContains(region, 'Records consulted', 'citations label missing');
+  assertContains(region, 'Synthetic patient p1', 'patient citation label missing');
+  assertContains(region, 'Synthetic prescription rx1', 'prescription citation label missing');
+  assertContains(region, 'Model: demo-model-1', 'model fine print missing');
+
+  const hrefs = document.getElementById('ai-response-region').querySelectorAll('a').map((a) => a.getAttribute('href'));
+  assert(hrefs.includes('patient.html?id=p1'), 'patient citation link missing');
+});
+
+await check('AI page keeps record citations plain when the patient is ambiguous', async () => {
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    ai: {
+      ...AI_GENERAL_ANSWER,
+      citations: [
+        { type: 'patient', id: 'p1' },
+        { type: 'patient', id: 'p2' },
+        { type: 'lab_result', id: 'DEMO-LAB-0001' },
+      ],
+    },
+  });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Which patients have abnormal potassium results?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const region = document.getElementById('ai-response-region');
+  const hrefs = region.querySelectorAll('a').map((a) => a.getAttribute('href'));
+  assert(hrefs.includes('patient.html?id=p1'), 'patient citations must link');
+  assert(hrefs.includes('patient.html?id=p2'), 'patient citations must link');
+  assert(!hrefs.some((href) => href && href.startsWith('patient.html') && !href.includes('p1') && !href.includes('p2')),
+    'record citations must not invent a patient link');
+  assertContains(textOf(region), 'Synthetic lab result DEMO-LAB-0001', 'record reference must still render');
+});
+
+await check('AI page shows a calm unavailable state on 503, not a crash', async () => {
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    ai: { status: 503, code: 'dependency_unavailable', message: 'The LLM is not configured.' },
+  });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Who is on metformin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const region = document.getElementById('ai-response-region');
+  const text = textOf(region);
+  assertContains(text, 'AI assistant unavailable', 'unavailable title missing');
+  assertContains(text, 'runs without a language model', 'unavailable explanation missing');
+  assertEqualLocal(region.querySelector('.state-panel--error'), null, '503 must not render as an error crash');
+  assertEqualLocal(document.getElementById('ai-submit').disabled, false, 'submit must stay usable after 503');
+});
+
+await check('AI page rate limits with a retry countdown on 429', async () => {
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    ai: { status: 429, code: 'rate_limited', message: '', retryAfter: 45 },
+  });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Who is on metformin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const region = document.getElementById('ai-response-region');
+  const text = textOf(region);
+  assertContains(text, 'Too many questions', 'rate-limit title missing');
+  assertContains(text, '45 seconds', 'retry countdown missing');
+  assertEqualLocal(region.querySelector('.state-panel--error'), null, '429 must not render as a crash');
+});
+
+await check('AI page shows a loading state and supports cancelling the request', async () => {
+  const baseFetch = makeFetch({ me: DOCTOR });
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/ai/ask')) {
+      return new Promise((resolve, reject) => {
+        if (init.signal) {
+          init.signal.addEventListener('abort', () => {
+            const error = new Error('The request was aborted.');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        }
+      });
+    }
+    return baseFetch(url, init);
+  };
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Which synthetic patients have the most recent lab results?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  assertContains(textOf(document.getElementById('ai-response-region')), 'Consulting the assistant', 'loading state missing');
+  assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
+
+  await document.getElementById('ai-cancel').dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('ai-response-region')), 'Request cancelled', 'cancel outcome missing');
+  assertContains(textOf(document.getElementById('ai-status')), 'Request cancelled', 'cancel not announced');
+  assertEqualLocal(document.getElementById('ai-submit').disabled, false, 'submit must re-enable after cancel');
+});
+
+await check('AI page network failure renders the offline banner with retry', async () => {
+  globalThis.fetch = makeFetch({ me: DOCTOR, ai: new TypeError('Failed to fetch') });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Who is on metformin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  assertContains(textOf(document.getElementById('ai-response-region')), 'Backend unreachable', 'error state copy missing');
+  const banner = textOf(document.getElementById('global-status'));
+  assertContains(banner, 'Backend unreachable', 'global banner missing');
+  assertContains(banner, 'Retry', 'retry action missing');
+});
+
+await check('AI page is gated without patient:read: nav hidden and denial shown', async () => {
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const nav = textOf(document.getElementById('site-nav'));
+  assert(!nav.includes('AI Assistant'), 'nav item must not render without patient:read');
+  assertEqualLocal(document.getElementById('ai-question-form').hidden, true, 'composer must hide without patient:read');
+  assertEqualLocal(document.getElementById('ai-suggestions').hidden, true, 'suggestions must hide without patient:read');
+  assertContains(
+    textOf(document.getElementById('ai-response-region')),
+    'only available to accounts that can view patient data',
+    'permission denial note missing',
   );
 });
 

@@ -106,11 +106,36 @@ via per-record provenance badges plus footer and "About this demo" dialog disclo
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| POST | `/api/v1/ai/ask` | `patient:read` + patient access | `{ "patient_id", "question" }` → `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited and bounded. 503 `dependency_unavailable` when LLM is disabled/unreachable. |
+| POST | `/api/v1/ai/ask` | `patient:read` | Body `{ "patient_id", "question" }` (patient-scoped) or `{ "question" }` (general lookup). Response (both modes): `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited (10/min per user, shared across both modes) and bounded (`question` 1–2000 chars, never blank). 401 anonymous; 403 without `patient:read`; 400 on malformed/oversized questions; 429 `rate_limited` with `Retry-After`; 503 `dependency_unavailable` when the LLM is disabled/unreachable. |
 
-Answers must distinguish tool-retrieved facts from general explanation; missing facts are
-acknowledged, never invented. Output is labelled AI-generated and is not a diagnosis or
-treatment recommendation.
+**Two modes, one endpoint** (the response shape is identical in both):
+
+- **Patient-scoped** (`patient_id` present): one bounded question about one
+  synthetic patient. Requires `patient:read` **and** patient access; an
+  inaccessible or unknown patient is `404 not_found`, never 403 (concealment).
+- **General lookup** (`patient_id` absent): a question across the synthetic
+  patients the caller is authorized for (e.g. "who is on metformin?"). The
+  model may search patients and read their records via the same four MCP tools
+  under the same authorization; `citations` may reference multiple patients
+  (`{type, id}` entries as in patient mode). Requires `patient:read` — users
+  without clinical read access get `403`, exactly as for clinical reads.
+
+Bounds differ only in the tool-round cap: patient-scoped questions allow
+`LLM_MAX_TOOL_CALLS` tool calls (default 4), general-lookup questions
+`LLM_MAX_TOOL_CALLS_GENERAL` (default 6, env-driven, clamped to 1–20) because a
+general answer typically needs a search plus follow-up reads. Both modes keep
+the per-tool result caps, per-call timeouts, and the total wall-clock budget.
+
+Answers must distinguish tool-retrieved facts from general explanation; missing
+facts are acknowledged, never invented. Multi-patient answers respect
+authorization: only records the tools returned (i.e. records the caller may
+read) may be reported, and each claim is cited to the synthetic records that
+support it — the answer must list the records consulted. Record text is DATA,
+never instructions. Output is labelled AI-generated and is not a diagnosis or
+treatment recommendation. Every ask is audited (`ai.ask`, resource `patient`
+with the patient id in patient mode, `ai_lookup` in general mode) together with
+one `mcp.<tool>` audit event per tool call; prompts, questions, and clinical
+payloads are never audited or logged.
 
 ## Permission matrix (source of truth: `backend/app/authorization/policy.py`)
 

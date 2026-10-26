@@ -1,10 +1,18 @@
 """AI assistant payloads (docs/API.md "AI assistant").
 
-`POST /api/v1/ai/ask` body `{"patient_id", "question"}` and response exactly
-`{"answer", "used_tools", "citations", "model", "ai_generated": true,
-"disclaimer"}`. `used_tools` lists the MCP tools actually called; `citations`
-reference the synthetic records used (patient/encounter/lab/prescription ids);
-`disclaimer` is the non-clinical-use notice.
+`POST /api/v1/ai/ask` accepts two modes over ONE endpoint:
+
+* patient-scoped: body `{"patient_id", "question"}` - one bounded question
+  about one synthetic patient the caller may read,
+* general lookup: body `{"question"}` - a bounded question across the
+  synthetic patients the caller is authorized to read.
+
+Both modes respond with exactly `{"answer", "used_tools", "citations", "model",
+"ai_generated": true, "disclaimer"}`. `used_tools` lists the MCP tools actually
+called; `citations` reference the synthetic records used
+(patient/encounter/lab/prescription ids) and may span multiple patients in
+general mode; `disclaimer` is the non-clinical-use notice. `question` is always
+1..QUESTION_MAX_CHARS characters and never blank.
 """
 from __future__ import annotations
 
@@ -31,9 +39,9 @@ class Citation(BaseModel):
 
 
 class AskRequest(BaseModel):
-    """One bounded question about one synthetic patient."""
+    """One bounded question: patient-scoped (patient_id) or general lookup."""
 
-    patient_id: UUID
+    patient_id: UUID | None = None
     question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)
 
     @field_validator("question")
