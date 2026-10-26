@@ -90,6 +90,14 @@ MATRIX: tuple[EndpointCase, ...] = (
         role_path="doctor",
     ),
     EndpointCase("GET", "/api/v1/audit", "audit:read", 200),
+    EndpointCase(
+        "POST",
+        "/api/v1/ai/ask",
+        "patient:read",
+        200,
+        body_kind="ai_ask",
+        needs_patient=True,
+    ),
 )
 
 
@@ -115,6 +123,11 @@ async def _build_request(case: EndpointCase, *, clinical_data, make_user):
         body = {"display_name": "Matrix Updated Name"}
     elif case.body_kind == "role_assign":
         body = {"role": "doctor"}
+    elif case.body_kind == "ai_ask":
+        body = {
+            "patient_id": str(clinical_data.patient_id),
+            "question": "What are the latest lab results for this synthetic patient?",
+        }
     return path, body
 
 
@@ -125,18 +138,40 @@ async def _call(client, case: EndpointCase, path: str, body: dict | None):
     return await client.request(case.method, path, **kwargs)
 
 
-def test_every_v1_route_is_declared_in_the_matrix(app) -> None:
-    declared = {(case.method, case.template) for case in MATRIX}
-    registered = set()
-    for route in app.routes:
-        path = getattr(route, "path", "")
-        methods = getattr(route, "methods", set()) or set()
-        if not path.startswith("/api/v1"):
+def _iter_route_paths(routes, prefix: str = ""):
+    """Yield (method, full_path) for every route, following nested inclusions.
+
+    FastAPI >= 0.162 nests included routers inside wrapper objects that carry
+    the mount prefix on `include_context`; older layouts stay flat. The
+    traversal normalises both so the guard below keeps working either way.
+    """
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is not None and getattr(included, "routes", None) is not None:
+            ctx = getattr(route, "include_context", None)
+            sub_prefix = prefix + (getattr(ctx, "prefix", "") or "")
+            yield from _iter_route_paths(included.routes, sub_prefix)
             continue
-        for method in methods:
+        sub = getattr(route, "routes", None)
+        if sub:
+            yield from _iter_route_paths(sub, prefix)
+            continue
+        path = getattr(route, "path", None)
+        if not path:
+            continue
+        for method in getattr(route, "methods", set()) or set():
             if method == "HEAD":
                 continue
-            registered.add((method, path))
+            yield method, prefix + path
+
+
+def test_every_v1_route_is_declared_in_the_matrix(app) -> None:
+    declared = {(case.method, case.template) for case in MATRIX}
+    registered = {
+        (method, path)
+        for method, path in _iter_route_paths(app.routes)
+        if path.startswith("/api/v1")
+    }
     assert registered == declared, (
         "every /api/v1 route must be declared in MATRIX with its permission "
         f"(missing: {sorted(registered - declared)}, stale: {sorted(declared - registered)})"

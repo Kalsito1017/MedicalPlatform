@@ -5,7 +5,7 @@ Sub-routers registered here:
   - Phase 6 (clinical): patients.router (patients, summary, labs,
                         prescriptions, encounters)
   - Phase 5/10 (admin): staff.router, audit.router
-  - Phase 8 (LLM):      api_v1.include_router(ai.router)  <- not landed yet
+  - Phase 8 (LLM):      ai.router (POST /ai/ask)
 
 All routes registered here are under the /api/v1 prefix and must enforce
 authorization with app.authorization.policy.require_permission (deny by
@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import audit, auth, patients, staff
+from app.api.v1 import ai, audit, auth, patients, staff
 
 api_v1 = APIRouter(prefix="/api/v1")
 
@@ -23,3 +23,4 @@ api_v1.include_router(auth.router)
 api_v1.include_router(patients.router)
 api_v1.include_router(staff.router)
 api_v1.include_router(audit.router)
+api_v1.include_router(ai.router)

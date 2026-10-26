@@ -229,12 +229,12 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 4 | Backend foundation and API conventions | DONE | 2026-10-26 | Error envelope, request-id middleware, pagination bounds, CORS allowlist, body limit, log redaction, 88 tests passing |
 | 5 | Authentication and role authorization | DONE | 2026-10-26 | DB-backed sessions (hashed tokens), argon2id, CSRF bootstrap, rate limiting, principal wiring, 401/403 verified at API layer over full role×endpoint matrix |
 | 6 | Synthetic data and clinical-data APIs | DONE | 2026-10-26 | patients/summary/labs/prescriptions/encounters + staff/roles/audit APIs, audit writer, check_patient_access seam, IDOR/concealment tested, 242 tests passing |
-| 7 | MCP server and tool authorization | NOT STARTED | — | |
-| 8 | LLM integration and safe response handling | NOT STARTED | — | |
+| 7 | MCP server and tool authorization | DONE | 2026-10-26 | Official mcp SDK Tool/ToolManager in-process (no transport), 4 read-only tools, identity via server-injected ToolContext, per-call re-authorization, audit `mcp.*`, argument-tampering tests pass |
+| 8 | LLM integration and safe response handling | DONE | 2026-10-26 | OpenCode OpenAI-compatible provider + NullProvider (503 when off), bounded tool loop with server-side allowlist, prompt-injection labeling, rate limit, mocked-provider tests, no key in browser |
 | 9 | Frontend experience | NOT STARTED | — | |
 | 10 | Admin panel and staff management | NOT STARTED | — | |
 | 11 | Audit, privacy, and security hardening | NOT STARTED | — | |
-| 12 | Automated tests and CI | IN PROGRESS | — | CI workflow + secret scanner + dependency audit landed (3 jobs, no secrets to fork PRs); blocked on MCP/LLM tests (Wave 3) and dependency bumps (starlette/mcp HIGH advisories) before green |
+| 12 | Automated tests and CI | DONE | 2026-10-26 | 310 tests (0 failed) + 74/26 frontend checks; 3-job GH Actions w/ no secrets to fork PRs; dependency audit green after security bumps; live CI run on push verified in Phase 14/15 |
 | 13 | Docker and local end-to-end validation | NOT STARTED | — | |
 | 14 | Public demo deployment preparation | NOT STARTED | — | |
 | 15 | Deploy publicly and verify website | NOT STARTED | — | |
@@ -846,6 +846,18 @@ Append one dated entry after every completed phase:
 - Security notes: DB leak yields no usable sessions (hashed tokens); deactivation revokes sessions immediately; audit rows carry no passwords/tokens/clinical payloads (asserted by test); error responses never echo submitted values. Lead verification added a full DB reset + reseed through the documented reset flow after the pre-.env seed left demo accounts with unknown generated passwords — the reset procedure is now proven and documented.
 - Blockers: none.
 - Next phase: Phases 7-8 (MCP + LLM), Phase 10 (admin panel UI + AI panel), Phase 12 (tests/CI) in parallel.
+
+### 2026-10-26 — Phases 7–8 + 12: MCP, LLM, tests/CI, dependency security
+- Status: DONE
+- Implemented: In-process MCP server on the official `mcp` SDK Tool/ToolManager (no transport exposed) with exactly 4 read-only bounded tools; identity only via server-injected ToolContext (structurally absent from tool schemas); per-call re-authorization through the same `check_patient_access` seam as REST; `mcp.*` audit events; LLM provider abstraction (OpenCode OpenAI-compatible Chat Completions, NullProvider → 503 when disabled), bounded tool loop with server-side allowlist, prompt-injection labelling (record text = data, not instructions), per-user AI rate limit, `POST /api/v1/ai/ask` with the exact frozen response shape; admin panel UI (staff table, role grant/revoke with consequence-first confirmations, activation/deactivation, one-time password modal, audit view) and the labelled AI assistant panel; GitHub Actions CI (3 jobs, no secrets to fork PRs) + `scripts/security_check.py` secret scanner + pip-audit/OSV severity gate.
+- Lead integration fixes: dependency security bumps demanded by the CI audit gate — `fastapi 0.115.6 → 0.162.0` (pulls `starlette 0.41.3 → 1.10.0`, clearing 8 starlette advisories incl. 2 HIGH), `mcp 1.12.4 → 1.30.0` (clearing 6 advisories incl. a CVE), `pydantic 2.10.4 → 2.14.1` (required by mcp 1.30). `pip-audit` then reports "No known vulnerabilities found". FastAPI 0.162 nests included routers (`_IncludedRouter`), which silently emptied the MATRIX route-guard's introspection — fixed the guard's traversal (assertion unchanged) so it enforces again across FastAPI layouts.
+- Files changed: backend/pyproject.toml, backend/uv.lock, backend/tests/test_permissions_api.py (guard traversal), PLAN.md; earlier in this wave: backend/app/{mcp,llm}/**, backend/app/api/v1/ai.py, backend/app/schemas/ai.py, backend/tests/{test_mcp,test_llm,test_ai_api}.py, frontend/** (admin + AI panels), .github/workflows/ci.yml, scripts/security_check.py, README.md (Testing section), docs/API.md (POST /staff body pinned)
+- Commands run: `uv run pytest -q` → **310 passed, 1 skipped** (before and after dependency bumps); `uv run ruff check .` clean; `node tests/smoke.mjs` → 74/74; `node tests/render-smoke.mjs` → 26/26; `scripts/security_check.py` → PASS 0 findings; `pip-audit` → no known vulnerabilities.
+- Tests: 310 backend (68 new MCP/LLM/AI: tool schemas + bounds, argument-tampering cannot bypass authorization, unknown-tool rejection + audit, allowlist enforcement, seeded-data question via tools, prompt-injection labelling, provider failure envelopes, rate limit, no key in responses) + 100 frontend checks.
+- Acceptance criteria: PASS — Phase 7 (tools documented+tested, authz not bypassable via arguments, no DB credentials to the LLM, no arbitrary SQL tool, safe errors) and Phase 8 (model answers a seeded-data question with approved tools, server-side allowlist, missing data acknowledged, provider failures controlled, no API key in frontend). Phase 12 PASS locally; the live GitHub Actions run is confirmed during Phases 14–15.
+- Security notes: audit action inventory stays closed (`mcp.unknown_tool` for attempted unknown tools — no attacker-controlled strings in the action column); citations are typed `{type, id}` references; LLM key server-side only with Console budget cap; HIGH/CRITICAL dependency gate now green without any allowlist override.
+- Blockers: none.
+- Next phase: Phase 11 (security headers hardening) + Phase 13 (Docker E2E), then Phases 14–15 (deployment + public verification).
 
 ## Final instruction to the coding agent
 

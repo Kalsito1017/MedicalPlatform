@@ -568,3 +568,92 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
         prescription_ids=prescription_ids,
     )
     yield data
+
+
+# ---------------------------------------------------------------------------
+# Phase 7/8 fixtures: LLM test doubles, AI rate-limiter isolation
+# ---------------------------------------------------------------------------
+
+STUB_MODEL_NAME = "stub-model"
+STUB_ANSWER = "Stub AI answer about synthetic demo data."
+
+
+class ScriptedLLMProvider:
+    """Deterministic `LLMProvider` double: scripted results/exceptions, no network.
+
+    Each `complete()` call consumes the next scripted step (an `LLMResult` to
+    return or an exception to raise) and records the full request (system
+    prompt, messages, tool schemas, max_tokens, timeout) for assertions. With
+    no steps left it returns STUB_ANSWER.
+    """
+
+    model_name = STUB_MODEL_NAME
+
+    def __init__(self, *steps) -> None:
+        self.steps = list(steps)
+        self.calls: list[dict] = []
+
+    async def complete(self, *, system, messages, tools, max_tokens, timeout):
+        from copy import deepcopy
+
+        self.calls.append(
+            {
+                "system": system,
+                "messages": deepcopy(messages),
+                "tools": deepcopy(tools),
+                "max_tokens": max_tokens,
+                "timeout": timeout,
+            }
+        )
+        if not self.steps:
+            from app.llm.provider import LLMResult
+
+            return LLMResult(text=STUB_ANSWER, model=self.model_name)
+        step = self.steps.pop(0)
+        if isinstance(step, Exception):
+            raise step
+        return step
+
+
+def text_result(text: str = STUB_ANSWER):
+    """Scripted plain-text completion."""
+    from app.llm.provider import LLMResult
+
+    return LLMResult(text=text, model=STUB_MODEL_NAME)
+
+
+def tool_call_result(name: str, arguments: dict, *, call_id: str = "call-1", text: str = ""):
+    """Scripted completion requesting one tool call."""
+    from app.llm.provider import LLMResult, ToolCallRequest
+
+    return LLMResult(
+        text=text,
+        tool_calls=(ToolCallRequest(id=call_id, name=name, arguments=arguments),),
+        model=STUB_MODEL_NAME,
+    )
+
+
+@pytest.fixture(autouse=True)
+def reset_ai_rate_limiter() -> AsyncIterator[None]:
+    """Isolate the in-process AI request limiter between tests."""
+    from app.llm.limiter import ai_rate_limiter
+
+    ai_rate_limiter.reset()
+    yield
+    ai_rate_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def stub_ai_provider(monkeypatch) -> ScriptedLLMProvider:
+    """Deterministic AI provider for every test (no network, no real LLM).
+
+    The permission-matrix guard calls POST /api/v1/ai/ask and expects the
+    granted-permission path to reach 200, which requires a provider. Tests with
+    specific needs monkeypatch `app.api.v1.ai.build_provider` again (e.g. to a
+    `ScriptedLLMProvider` with tool-call steps, or `NullProvider`).
+    """
+    from app.api.v1 import ai as ai_api
+
+    provider = ScriptedLLMProvider()
+    monkeypatch.setattr(ai_api, "build_provider", lambda settings: provider)
+    return provider

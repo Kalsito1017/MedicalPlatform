@@ -32,6 +32,15 @@ KNOWN_ACTIONS = {
     "role.grant",
     "role.revoke",
     "session.revoke_all",
+    # Phase 7/8 (MCP + LLM agent): AI endpoint and MCP tool-call events. Tool
+    # names come from the fixed registry; attempts to call non-existent tools
+    # audit under the fixed "mcp.unknown_tool" action (never model input).
+    "ai.ask",
+    "mcp.search_authorized_patients",
+    "mcp.get_patient_summary",
+    "mcp.get_patient_lab_results",
+    "mcp.get_recent_prescriptions",
+    "mcp.unknown_tool",
 }
 
 
