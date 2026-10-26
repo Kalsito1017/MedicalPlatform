@@ -123,6 +123,12 @@ Data persistence: PostgreSQL data lives in the named volume `postgres_data` and 
 explicit volume removal) deletes it. See `docs/DEPLOYMENT.md` §9 for the full reset /
 retention procedure and `docs/TROUBLESHOOTING.md` for failures.
 
+Synthetic demo dataset: the seed loads **45 fictional patients** (obviously demo-labeled
+`DEMO-XXXX` MRNs) with 2–6 encounters, 6–12 lab results, and 0–5 prescriptions each,
+plus a 15-entry fictional medication catalog. Lab values carry deliberate, coherent
+abnormal patterns (high potassium, anemia, diabetes, high LDL, elevated liver enzymes,
+and more) so AI lookups have realistic answers to find.
+
 ---
 
 ## Demo accounts

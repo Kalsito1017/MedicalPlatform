@@ -185,10 +185,13 @@ api_status "$JAR_D" GET "/api/v1/patients?limit=25" "$WORKDIR/patients.json" >/d
 patients_total=$(json_eval 'd.get("total")' < "$WORKDIR/patients.json" 2>/dev/null || echo "")
 patient_id=$(json_eval 'd["items"][0]["id"]' < "$WORKDIR/patients.json" 2>/dev/null || echo "")
 patient_name=$(json_eval 'd["items"][0]["display_name"]' < "$WORKDIR/patients.json" 2>/dev/null || echo "")
-if [ -n "$patient_id" ] && [ -n "$patients_total" ]; then
-  pass "patient list -> 200 (total=$patients_total, ids present)"
+# The synthetic seed loads a 45-patient demo cohort; require the floor so a
+# thin dataset fails loudly.
+PATIENTS_FLOOR=40
+if [ -n "$patient_id" ] && [ -n "$patients_total" ] && [ "$patients_total" -ge "$PATIENTS_FLOOR" ] 2>/dev/null; then
+  pass "patient list -> 200 (total=$patients_total >= $PATIENTS_FLOOR, ids present)"
 else
-  fail "patient list shape unexpected"
+  fail "patient list shape unexpected (total='$patients_total', expected >= $PATIENTS_FLOOR seeded patients)"
 fi
 
 for endpoint in "" "/summary" "/labs" "/prescriptions"; do
@@ -201,8 +204,8 @@ for endpoint in "" "/summary" "/labs" "/prescriptions"; do
   fi
 done
 
-# --- 5. AI endpoint returns the documented 503 (LLM disabled) ---------------
-echo "-- step 5: AI unavailable path (LLM_ENABLED=false)"
+# --- 5. AI endpoint: real answer (LLM enabled) or documented 503 ------------
+echo "-- step 5: AI path (answers 200 when LLM configured, 503 when not)"
 python3 -c 'import json, sys; print(json.dumps({"patient_id": sys.argv[1], "question": "Summarize this synthetic patient."}))' \
   "$patient_id" > "$WORKDIR/ask.json"
 status=$(curl -s -o "$WORKDIR/ask_out.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/ai/ask" \
@@ -211,10 +214,13 @@ status=$(curl -s -o "$WORKDIR/ask_out.json" -w '%{http_code}' -X POST "$BASE_URL
   -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
   --data-binary @"$WORKDIR/ask.json")
 code=$(json_eval 'd["error"]["code"]' < "$WORKDIR/ask_out.json" 2>/dev/null || echo "")
-if [ "$status" = "503" ] && [ "$code" = "dependency_unavailable" ]; then
-  pass "/api/v1/ai/ask -> 503 dependency_unavailable (documented behavior)"
+ai_generated=$(json_eval 'd.get("ai_generated") is True and "answer" in d' < "$WORKDIR/ask_out.json" 2>/dev/null || echo "")
+if [ "$status" = "200" ] && [ "$ai_generated" = "True" ]; then
+  pass "/api/v1/ai/ask -> 200 with answer (LLM configured: $(json_eval 'd.get("model", "?")' < "$WORKDIR/ask_out.json"))"
+elif [ "$status" = "503" ] && [ "$code" = "dependency_unavailable" ]; then
+  pass "/api/v1/ai/ask -> 503 dependency_unavailable (LLM disabled/unavailable - documented behavior)"
 else
-  fail "/api/v1/ai/ask -> $status $code (expected 503 dependency_unavailable)"
+  fail "/api/v1/ai/ask -> $status $code (expected 200 with answer, or 503 dependency_unavailable)"
 fi
 if [ "$(api_status "$JAR_D" GET "/api/v1/patients/$patient_id" /dev/null)" = "200" ] \
    && curl -fsS "$BASE_URL/health/ready" >/dev/null; then

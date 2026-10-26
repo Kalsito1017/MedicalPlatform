@@ -225,7 +225,7 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 0 | Repository discovery and baseline | DONE | 2026-10-26 | Greenfield repo; own git repo created in MedicalPlatform; see docs/INITIAL_ASSESSMENT.md and docs/API.md (frozen contract) |
 | 1 | Requirements and architecture | DONE | 2026-10-26 | docs/ARCHITECTURE.md, SECURITY.md, BACKLOG.md, DEPLOYMENT.md, TROUBLESHOOTING.md + README; API contract frozen in docs/API.md |
 | 2 | Project structure and local developer setup | DONE | 2026-10-26 | uv + Python 3.12.13, ruff, config validation (names-only errors), .env.example, health endpoint, docker-compose db service |
-| 3 | PostgreSQL schema and migrations | DONE | 2026-10-26 | 4 schemas, FKs/indexes/soft-deletes/UTC/Numeric, Alembic up+down+up verified, idempotent synthetic seed (10 patients incl. apostrophe/accents/RTL/emoji) |
+| 3 | PostgreSQL schema and migrations | DONE | 2026-10-26 | 4 schemas, FKs/indexes/soft-deletes/UTC/Numeric, Alembic up+down+up verified, idempotent synthetic seed (expanded to 45 patients / 167 encounters / 415 labs / 104 prescriptions with coherent abnormal patterns) |
 | 4 | Backend foundation and API conventions | DONE | 2026-10-26 | Error envelope, request-id middleware, pagination bounds, CORS allowlist, body limit, log redaction, 88 tests passing |
 | 5 | Authentication and role authorization | DONE | 2026-10-26 | DB-backed sessions (hashed tokens), argon2id, CSRF bootstrap, rate limiting, principal wiring, 401/403 verified at API layer over full role×endpoint matrix |
 | 6 | Synthetic data and clinical-data APIs | DONE | 2026-10-26 | patients/summary/labs/prescriptions/encounters + staff/roles/audit APIs, audit writer, check_patient_access seam, IDOR/concealment tested, 242 tests passing |
@@ -892,6 +892,17 @@ Append one dated entry after every completed phase:
 - Security notes: live happy path (real model answer) remains UNVERIFIED pending OpenCode account credits (402 "Insufficient account funds" observed live; graceful 503 confirmed). mcp.* audit rows observable live only once the provider accepts calls — mocked tests cover them.
 - Blockers: none in code. External: OpenCode Console credits required for live AI answers.
 - Next phase: user adds credits → lead runs the documented live click-through (general + patient modes) → then Phases 14-15 resume per user decision.
+
+### 2026-10-26 — Data expansion: rich synthetic dataset for AI lookups
+- Status: DONE
+- Implemented: Synthetic dataset expanded from 10 to **45 patients** (DEMO-0001…0045, ages 22–87, sex mix incl. other/unknown, global name coverage: apostrophes, accents, RTL, Cyrillic, emoji, long compounds), **167 encounters** (7 encounter types, deterministic fixed-anchor dates over ~18 months, 2 benign prompt-injection trigger summaries for defense testing), **415 lab results** (17-test catalog, per-test decimal precision, time-spanning trend pairs, status mix final/preliminary/pending), **104 prescriptions** (15-medication catalog, all 4 status values), with deliberately coherent abnormal patterns: 9 high-potassium (ACEi/CKD), 5 anemia, 7 diabetes + 3 prediabetes, 8 high-LDL, 4 elevated LFTs, hypothyroid/renal/vitamin-D cohorts — so AI lookups ("high potassium?", "on metformin?", "diabetes labs?") have real answers.
+- Files changed: scripts/seed_demo_data.py (spec-driven, idempotent, deterministic), backend/tests/test_seed.py (count assertions recomputed from spec constants + pattern test), scripts/e2e_smoke.sh (step 4 floor + step 5 made config-aware: accepts a live 200 AI answer OR the documented 503, since the demo now ships LLM-enabled), README.md, docs/DEPLOYMENT.md, PLAN.md
+- Commands run: seed ×2 (run 2: 0 created / all already present — idempotent); `uv run pytest -q` → **350 passed, 1 skipped**; `scripts/security_check.py` → PASS; `bash scripts/e2e_smoke.sh` → ALL STEPS PASSED (patient total 45, persistence 45 unchanged).
+- Tests: 350 backend passing (up from 341 with concurrent MCP lookup tests), counts now derived from the seed's own spec constants so they cannot rot.
+- Acceptance criteria: PASS — idempotent/resettable synthetic seed, no real data (DB constraints enforce DEMO-% MRNs and synthetic provenance), deterministic output, patterns verifiable by tests.
+- Security notes: prompt-injection trigger text lives in encounter summaries by design (benign, fictional) to exercise the AI's data-not-instructions defense live. Pending labs satisfy value-presence constraints via `value_text`.
+- Lead decisions: e2e step 5 is now dual-mode (200-with-answer when LLM configured, 503 otherwise) — the demo ships LLM-enabled; the 503 path stays covered by unit tests and the script.
+- Blockers: none. Next: lookup-tools agent lands → integration; then waves R (roles), S (schema as drawn), T/U/V (MCP catalog, analytics, doctor AI workspace).
 
 ## Final instruction to the coding agent
 
