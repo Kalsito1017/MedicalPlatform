@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in — Clinical AI Platform (synthetic demo)</title>
+  <meta name="description" content="Clinical AI Platform demonstration. Synthetic, fictional patient data only. Not clinically validated and not a medical device.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <script>
+    /* Deployment override — see assets/js/config.js. Example:
+       window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
+    window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
+  </script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <div class="demo-notice" role="note">
+    <div class="container demo-notice__inner">
+      <strong>Synthetic demo data — not for clinical use.</strong>
+      <span>All patient records are fictional. This platform is not clinically validated and is not a medical device.</span>
+    </div>
+  </div>
+
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="index.html">
+        <span class="brand__mark" aria-hidden="true">
+          <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M16 6v20M6 16h20" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand__name">Clinical AI Platform</span>
+        <span class="brand__tag">Demo</span>
+      </a>
+    </div>
+  </header>
+
+  <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
+
+  <main id="main" class="container">
+    <div class="auth-layout">
+      <section class="auth-hero" aria-labelledby="hero-heading">
+        <h1 id="hero-heading">Clinical AI Platform — synthetic data demonstration</h1>
+        <p class="lede">
+          A demonstration of a role-aware clinical AI platform. Sign in to search fictional
+          patients, inspect synthetic lab results and prescriptions, and see how role-based
+          access control shapes the interface.
+        </p>
+        <h2>What this demo is</h2>
+        <ul class="feature-list">
+          <li>Every patient, encounter, lab, and prescription is <strong>fictional synthetic data</strong>.</li>
+          <li>Access is enforced server-side by role: doctor, nurse, clinical administrator, technical administrator.</li>
+          <li>Security-relevant actions are audited on the backend.</li>
+        </ul>
+        <h2>What this demo is not</h2>
+        <ul class="feature-list">
+          <li>Not clinically validated, not a medical device, and not for real patient care.</li>
+          <li>Not a place to enter real personal or health information — demo accounts are shared and public.</li>
+          <li>AI-generated answers (where enabled) are informational only and are labelled as AI-generated.</li>
+        </ul>
+      </section>
+
+      <div>
+        <section class="card auth-card" id="login-card" aria-labelledby="login-heading">
+          <h2 class="card__title" id="login-heading">Sign in</h2>
+          <div id="login-status" class="auth-status"></div>
+          <form id="login-form" novalidate>
+            <div class="field">
+              <label for="email">Email</label>
+              <input id="email" name="email" type="email" autocomplete="username"
+                     inputmode="email" spellcheck="false" required
+                     aria-describedby="email-error">
+              <p class="field-error" id="email-error" hidden></p>
+            </div>
+            <div class="field">
+              <label for="password">Password</label>
+              <input id="password" name="password" type="password"
+                     autocomplete="current-password" required
+                     aria-describedby="password-error">
+              <p class="field-error" id="password-error" hidden></p>
+            </div>
+            <button class="btn btn-primary btn-block" type="submit" id="login-submit">Sign in</button>
+          </form>
+          <p class="card__note">
+            Use the synthetic demo account issued with this deployment. Credentials are never
+            stored in this site and never appear in the browser after sign-in.
+          </p>
+        </section>
+
+        <section class="card auth-card" id="signed-in-card" aria-labelledby="signed-in-heading" hidden>
+          <h2 class="card__title" id="signed-in-heading">You are signed in</h2>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container site-footer__inner">
+      <p class="footer-note">
+        Clinical AI Platform — synthetic-data demonstration. Not clinically validated, not a
+        medical device, and not for clinical use. All records are fictional.
+      </p>
+      <ul class="footer-links">
+        <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
+        <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
+      </ul>
+    </div>
+  </footer>
+
+  <script type="module" src="assets/js/login.js"></script>
+</body>
+</html>
