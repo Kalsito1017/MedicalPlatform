@@ -1,7 +1,8 @@
-"""`admin` schema models: staff users, roles, role grants, audit events.
+"""`admin` schema models: staff users, roles, role grants, sessions, audit events.
 
-Never stores plaintext passwords (argon2 hashes only) and never stores clinical
-payloads or secrets in audit events.
+Never stores plaintext passwords (argon2 hashes only), never stores raw session
+tokens (SHA-256 hashes only), and never stores clinical payloads or secrets in
+audit events.
 """
 from __future__ import annotations
 
@@ -77,6 +78,38 @@ class UserRole(Base):
         ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="RESTRICT"),
         nullable=True,
     )
+
+
+class UserSession(Base):
+    """Server-side session record (docs/SECURITY.md "Sessions").
+
+    The `cap_session` cookie carries a raw random secret token; only its SHA-256
+    hash is stored here, so a database leak yields no usable session tokens.
+    Expiry and revocation are enforced server-side: a session resolves only when
+    `revoked_at IS NULL` and `expires_at` is in the future and its user is an
+    active, non-deleted staff account.
+    """
+
+    __tablename__ = "user_session"
+    __table_args__ = (
+        Index("ix_user_session_user_id", "user_id"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    # Client metadata kept for security auditing only; bounded, never payloads.
+    ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class AuditEvent(Base):

@@ -1,16 +1,25 @@
 """API v1 router.
 
-Sub-routers are registered here as feature agents land their endpoints:
-  - Phase 5 (auth):     api_v1.include_router(auth.router)
-  - Phase 6 (clinical): api_v1.include_router(patients.router)
-  - Phase 10 (admin):   api_v1.include_router(staff.router), audit.router
-  - Phase 8 (LLM):      api_v1.include_router(ai.router)
+Sub-routers registered here:
+  - Phase 5 (auth):     auth.router (login, logout, me)
+  - Phase 6 (clinical): patients.router (patients, summary, labs,
+                        prescriptions, encounters)
+  - Phase 5/10 (admin): staff.router, audit.router
+  - Phase 8 (LLM):      api_v1.include_router(ai.router)  <- not landed yet
 
 All routes registered here are under the /api/v1 prefix and must enforce
-authorization with app.authorization.policy.require_permission.
+authorization with app.authorization.policy.require_permission (deny by
+default). Non-GET routes are CSRF-protected by app.auth.csrf.
 """
 from __future__ import annotations
 
 from fastapi import APIRouter
 
+from app.api.v1 import audit, auth, patients, staff
+
 api_v1 = APIRouter(prefix="/api/v1")
+
+api_v1.include_router(auth.router)
+api_v1.include_router(patients.router)
+api_v1.include_router(staff.router)
+api_v1.include_router(audit.router)

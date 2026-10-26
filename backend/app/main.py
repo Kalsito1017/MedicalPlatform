@@ -23,6 +23,9 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api import health
 from app.api.v1 import api_v1
+from app.auth.csrf import CsrfProtectionMiddleware
+from app.auth.identity import resolve_principal
+from app.authorization import policy
 from app.config import Settings, get_settings, setup_logging
 from app.db.base import dispose_engine
 from app.errors import AppError, RateLimited
@@ -287,9 +290,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     register_exception_handlers(app)
 
+    # The ONLY identity source (docs/ARCHITECTURE.md trust boundary 1): the
+    # verified server-side session lookup. Deny by default when unwired.
+    policy.principal_resolver = resolve_principal
+
     # Order matters: RequestContext must run outermost so every response,
-    # including middleware rejections, carries X-Request-Id.
+    # including middleware rejections, carries X-Request-Id. CSRF runs inside
+    # CORS so preflight requests are answered before it and so browsers can
+    # read the CSRF rejection envelope.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.request_max_body_bytes)
+    app.add_middleware(CsrfProtectionMiddleware, settings=settings)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

@@ -65,6 +65,10 @@ class Settings(BaseSettings):
     # --- Sessions (consumed by the Phase 5 auth agent) ---
     session_cookie_name: str = "cap_session"
     session_ttl_hours: int = 8
+    # Session/CSRF cookie `Secure` attribute: None = automatic (Secure when
+    # APP_ENV=production or the request arrives over HTTPS); True/False force it.
+    session_cookie_secure: bool | None = None
+    csrf_cookie_name: str = "csrf_token"
 
     # --- LLM (optional; the app runs fully without it) ---
     llm_enabled: bool = False

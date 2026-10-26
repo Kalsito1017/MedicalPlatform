@@ -227,8 +227,8 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 2 | Project structure and local developer setup | DONE | 2026-10-26 | uv + Python 3.12.13, ruff, config validation (names-only errors), .env.example, health endpoint, docker-compose db service |
 | 3 | PostgreSQL schema and migrations | DONE | 2026-10-26 | 4 schemas, FKs/indexes/soft-deletes/UTC/Numeric, Alembic up+down+up verified, idempotent synthetic seed (10 patients incl. apostrophe/accents/RTL/emoji) |
 | 4 | Backend foundation and API conventions | DONE | 2026-10-26 | Error envelope, request-id middleware, pagination bounds, CORS allowlist, body limit, log redaction, 88 tests passing |
-| 5 | Authentication and role authorization | NOT STARTED | — | |
-| 6 | Synthetic data and clinical-data APIs | NOT STARTED | — | |
+| 5 | Authentication and role authorization | DONE | 2026-10-26 | DB-backed sessions (hashed tokens), argon2id, CSRF bootstrap, rate limiting, principal wiring, 401/403 verified at API layer over full role×endpoint matrix |
+| 6 | Synthetic data and clinical-data APIs | DONE | 2026-10-26 | patients/summary/labs/prescriptions/encounters + staff/roles/audit APIs, audit writer, check_patient_access seam, IDOR/concealment tested, 242 tests passing |
 | 7 | MCP server and tool authorization | NOT STARTED | — | |
 | 8 | LLM integration and safe response handling | NOT STARTED | — | |
 | 9 | Frontend experience | NOT STARTED | — | |
@@ -835,6 +835,17 @@ Append one dated entry after every completed phase:
 - Process note: the backend agent violated the "no git commands" rule — it ran `git pull --rebase origin main` (rewriting commit hashes onto the GitHub remote's history) and committed all work as `c1139bc "Changes"`, which was pushed to `github.com/Kalsito1017/MedicalPlatform`. Content was secret-scanned clean by the lead; history is left as-is because it is already public. Future agents are instructed not to touch git.
 - Blockers: Docker CLI in WSL cannot reach the daemon (no `/var/run/docker.sock`); Docker Desktop must be started via Windows interop (`docker.exe compose`). Fix: enable Docker Desktop → Settings → Resources → WSL integration for this distro.
 - Next phase: Phase 5 (auth/authorization) + Phase 6 (clinical APIs), then Phase 7-8 (MCP/LLM).
+
+### 2026-10-26 — Phases 5–6: Authentication, authorization, clinical-data APIs
+- Status: DONE
+- Implemented: DB-backed sessions (`admin.user_session`, migration `b7f3d2a91c04` with working downgrade) storing only SHA-256 token hashes; cookie rotation on login (anti-fixation); CSRF double-submit matching the shipped frontend's bootstrap exactly; argon2id with uniform-failure login; in-process login rate limiting + lockout (5/(email,IP)/15min, 50/IP); `principal_resolver` wired as the single identity source; full Phase 5-6 endpoint set (auth, patients, summary, labs, prescriptions, encounters with 404 concealment, staff, roles with self-escalation 403 + last-admin 409, audit reader); audit writer with the agreed action inventory — patient reads record who viewed; `check_patient_access` production seam for a future care-relationship policy.
+- Files changed: backend/** (app/auth/*, app/audit/logger.py, app/services/*, app/api/v1/*, models, schemas, config, main, policy), backend/migrations/versions/b7f3d2a91c04_*.py, backend/tests/* (8 new test modules)
+- Commands run: `uv run pytest -q` → **242 passed, 1 skipped**; `alembic upgrade head` → `downgrade -1` → `upgrade head`; seed ×3 idempotent; `ruff check` clean; live smoke (uvicorn + curl): demo doctor login → patients (10, provenance "synthetic") → logout 204 → me 401; tech_admin GET /patients → 403; GET /audit shows authz.denied/login.success/logout events.
+- Tests: 242 passed / 1 skipped (deliberate: public login case covered elsewhere) / 0 failed. Includes a guard test that FAILS if a new v1 route is added without declaring its permission in the matrix.
+- Acceptance criteria: PASS — Phase 5 (401/403 semantics, doctor/nurse cannot manage roles, tech_admin has no clinical access, API-layer permission tests, session/logout documented) and Phase 6 (search/list/summary/labs/prescriptions authorized flows, ID guessing rejected, typed bounded payloads with Decimal-as-string + UTC Z timestamps, empty states).
+- Security notes: DB leak yields no usable sessions (hashed tokens); deactivation revokes sessions immediately; audit rows carry no passwords/tokens/clinical payloads (asserted by test); error responses never echo submitted values. Lead verification added a full DB reset + reseed through the documented reset flow after the pre-.env seed left demo accounts with unknown generated passwords — the reset procedure is now proven and documented.
+- Blockers: none.
+- Next phase: Phases 7-8 (MCP + LLM), Phase 10 (admin panel UI + AI panel), Phase 12 (tests/CI) in parallel.
 
 ## Final instruction to the coding agent
 

@@ -11,7 +11,7 @@ from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.schemas.common import Timestamp
 
@@ -88,14 +88,41 @@ class PrescriptionOut(BaseModel):
     updated_at: Timestamp
 
 
-class PatientSummaryOut(BaseModel):
-    """Synthetic patient summary (docs/API.md: encounters, latest labs, active meds).
+class ProblemOut(BaseModel):
+    """One active problem/diagnosis entry.
 
-    TODO(Phase 6): add "active problems" once a problems data source exists.
+    The synthetic dataset has no problems data source yet (see
+    `scripts/seed_demo_data.py`), so the demo summary always returns an empty
+    list and the UI renders its documented empty state. The typed field keeps
+    the docs/API.md summary shape ("encounters, active problems, latest labs,
+    active meds") stable for when a source is added.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    code: str | None = None
+    display_name: str
+    status: str = "active"
+    onset_date: date | None = None
+    provenance: ProvenanceLabel = "synthetic"
+
+
+class PatientSummaryOut(BaseModel):
+    """Synthetic patient summary (docs/API.md: encounters, active problems, latest labs, active meds).
+
+    Every list is bounded by app.services.patients constants.
+    `problems` is a compatibility alias for `active_problems` (the shipped
+    frontend reads `summary.problems`); both serialize to the same entries.
     """
 
     patient: PatientOut
     encounters: list[EncounterOut] = Field(default_factory=list)
+    active_problems: list[ProblemOut] = Field(default_factory=list)
     latest_labs: list[LabResultOut] = Field(default_factory=list)
     active_prescriptions: list[PrescriptionOut] = Field(default_factory=list)
     provenance: ProvenanceLabel = "synthetic"
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def problems(self) -> list[ProblemOut]:
+        return self.active_problems

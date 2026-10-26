@@ -13,12 +13,14 @@
 Deny by default: unknown roles have no permissions, unknown permissions are
 never granted, and the absence of an authenticated principal is a denial.
 
-`require_permission(...)` is the shared FastAPI dependency. The Phase 5 auth
-agent wires `principal_resolver` (below) to the verified server-side session
-lookup; until then requests are denied (401) — never allowed by default.
+`require_permission(...)` is the shared FastAPI dependency. `principal_resolver`
+(below) is wired at application startup (app.main) to the verified server-side
+session lookup in app.auth.identity; before wiring — or when no valid session
+cookie is presented — requests are denied (401) — never allowed by default.
 """
 from __future__ import annotations
 
+import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
@@ -104,11 +106,21 @@ class Principal:
     user_id: str | None
     roles: tuple[str, ...] = field(default_factory=tuple)
     is_active: bool = True
+    email: str | None = None
+    permissions: frozenset[str] = field(default_factory=frozenset)
+
+    @property
+    def user_uuid(self) -> uuid.UUID | None:
+        """The user id as UUID (None for non-UUID placeholders used in unit tests)."""
+        try:
+            return uuid.UUID(str(self.user_id)) if self.user_id is not None else None
+        except ValueError:
+            return None
 
 
-# Extension point for the Phase 5 auth agent: set this to a callable that
-# resolves the verified session identity for a request. None => nobody is ever
-# authenticated (deny by default).
+# Extension point for the auth layer: app.main sets this to app.auth.identity's
+# resolver, which reads the session cookie and loads the verified session+user.
+# None => nobody is ever authenticated (deny by default).
 principal_resolver: Callable[[Request], Awaitable[Principal | None]] | None = None
 
 
@@ -137,7 +149,11 @@ def require_permission(permission: PermissionLiteral | Permission) -> Callable[[
 
     Identity resolution order:
       1. request.state.principal, if a middleware/dependency already set it;
-      2. the module-level principal_resolver hook (Phase 5 auth agent wires it).
+      2. the module-level principal_resolver hook (wired by app.main).
+
+    Every 403 denial writes an `authz.denied` audit event on its own committed
+    transaction before raising, so denials are audited even though the request
+    fails (docs/SECURITY.md audit inventory).
     """
 
     async def _dependency(request: Request) -> Principal:
@@ -147,6 +163,17 @@ def require_permission(permission: PermissionLiteral | Permission) -> Callable[[
         if principal is None or not principal.is_active:
             raise Unauthenticated()
         if not has_permission(principal.roles, permission):
+            permission_key = permission.value if isinstance(permission, Permission) else str(permission)
+            from app.audit.logger import record_audit_event
+
+            await record_audit_event(
+                actor_user_id=principal.user_uuid,
+                action="authz.denied",
+                resource_type="permission",
+                resource_id=permission_key,
+                outcome="denied",
+                request_id=getattr(request.state, "request_id", "") or None,
+            )
             raise Forbidden()
         return principal
 
