@@ -112,10 +112,9 @@ real values.**
 | `LLM_MAX_TOOL_CALLS` | tool-call bound per question | Render | `4` |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | LLM request timeout | Render | `45` |
 | `ALLOWED_ORIGINS` | CORS allowlist (single frontend origin) | Render | `https://<frontend-pages-domain>` |
-| `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | seeds the clinical_admin demo account | seed-time env only | `admin@example.com` / `replace-me-at-seed-time` |
+| `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | seeds the Admin demo account (`clinical_admin`, all permissions) | seed-time env only | `admin@example.com` / `replace-me-at-seed-time` |
 | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | seeds the doctor demo account | seed-time env only | `doctor@example.com` / `replace-me-at-seed-time` |
 | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | seeds the nurse demo account | seed-time env only | `nurse@example.com` / `replace-me-at-seed-time` |
-| `DEMO_TECH_ADMIN_EMAIL` / `DEMO_TECH_ADMIN_PASSWORD` | seeds the tech_admin demo account | seed-time env only | `techadmin@example.com` / `replace-me-at-seed-time` |
 
 Rules: never commit populated values; generate strong `APP_SECRET_KEY`, DB passwords,
 and demo passwords per environment; `DEMO_*` values are set only when running the seed.

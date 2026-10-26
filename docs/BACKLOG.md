@@ -29,13 +29,13 @@ Mapped to the phase/controls that implement each item.
 | Secure HttpOnly cookies + SameSite + CSRF | `cap_session` HttpOnly/Secure/SameSite=Lax + double-submit CSRF | Phase 5 |
 | No long-lived sensitive tokens in browser storage | Server-side sessions only; no JWT/localStorage | Phase 5 |
 | Sessions time out | `SESSION_TTL_HOURS` expiry enforced server-side | Phase 5 |
-| Four roles exactly as in the plan | doctor, nurse, clinical_admin, tech_admin | Phase 5 |
+| Three roles exactly as decided (owner, 2026-10-26) | doctor, nurse, clinical_admin (Admin). `tech_admin` was removed from the system entirely | Phase 5 |
 | Explicit permission matrix | `docs/API.md` + `backend/app/authorization/policy.py`, with tests | Phase 5, 12 |
 | Least privilege, deny-by-default on every endpoint and MCP tool | Single policy module consulted by REST + MCP | Phase 5, 7 |
 | Server-side authorization on every protected action | All checks in backend; UI hiding is cosmetic | Phase 5–10 |
 | IDOR protection (changing an ID in the URL) | Per-request authz + `404` concealment + tests | Phase 6, 12 |
 | No self-role escalation; role changes authorized, validated, audited | Self-target → 403; `role:assign` + CSRF + audit events | Phase 5, 10 |
-| Tech admins get no automatic clinical access | Matrix: `tech_admin` has zero clinical permissions | Phase 5 |
+| Nurse is least privilege (no staff/role/audit administration) | Matrix: `nurse` = clinical reads only; `clinical_admin` (Admin) holds every permission; self role assignment refused | Phase 5 |
 | MCP tools narrow, typed, read-only, allowlisted | Exactly 6 tools — `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`; no execute_sql/shell/filesystem, ever | Phase 7 |
 | Acting identity from verified auth context, never LLM argument | In-process session context; identity never a tool argument | Phase 7 |
 | Same authorization layer re-executed inside every MCP tool | Policy module re-checked per tool call | Phase 7 |
@@ -82,7 +82,7 @@ Each item: why it matters, rough effort, prerequisite, what it takes.
 |---|---|---|---|---|---|
 | B1 | **MFA (TOTP) + recovery path** | Password compromise is currently full account compromise | M | Auth stack (Phase 5) | TOTP enrollment/verify endpoints, backup codes with documented recovery, login flow changes, tests |
 | B2 | **Password reset (single-use, expiring links)** | Lost password currently means admin re-creates the account | S | Email delivery channel or admin-issued token flow | Token table with expiry/single-use semantics, email or out-of-band delivery, rate limits, tests |
-| B3 | **SSO / SAML** | Hospital/enterprise IT expects IdP login | L | Real identity provider, org decision | SAML/OIDC integration, just-in-time user provisioning, mapping IdP groups to the four roles |
+| B3 | **SSO / SAML** | Hospital/enterprise IT expects IdP login | L | Real identity provider, org decision | SAML/OIDC integration, just-in-time user provisioning, mapping IdP groups to the three roles |
 | B4 | **SCIM (or equivalent)** | Offboarding must remove access immediately across systems | L | SSO (B3), directory provider | SCIM 2.0 endpoints for user lifecycle, reconciliation jobs, audit of external changes |
 | B5 | **Session revocation UI ("revoke all sessions")** | Admins cannot currently force-logout a compromised account everywhere (server-side revocation exists; UI does not) | S | Admin panel (Phase 10) | Revoke-all-sessions endpoint + admin UI + audit event; already-supported server-side revocation plumbing |
 | B6 | **Impersonation ("log in as user")** with full audit | Support tooling convenience | M | Explicit design review; must NOT exist in the demo (no break-glass) | Explicit opt-in action, prominent UI banner, complete audit trail, time-bounded sessions, policy review |

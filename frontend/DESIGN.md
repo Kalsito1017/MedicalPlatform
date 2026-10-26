@@ -65,8 +65,15 @@ headings 700 weight, tight leading.
   states on all; `:focus-visible` ring is global.
 - **Badges / pills** — rounded-full, tinted background + saturated text:
   `badge--ok/warn/alert/neutral/info/synthetic` (status + provenance) and
-  `badge--role-doctor/nurse/clinical_admin/tech_admin` (the AdminPanel mockup's
+  `badge--role-doctor/nurse/clinical_admin` (the AdminPanel mockup's
   coloured role tags).
+- **Role mapping** — three roles only (owner decision, 2026-10-26; the
+  `tech_admin` role and its `badge--role-tech_admin` styling were removed):
+  `doctor` → "Doctor", `nurse` → "Nurse", `clinical_admin` → "Admin"
+  (`ui.js` `ROLE_LABELS`). The mockup's "TechAdmin" panels are historical
+  reference only; admin functionality lives in `admin.html` and is visible
+  only to holders of `staff:read`/`staff:manage`/`role:assign` (the Admin
+  role) — UI hiding is never the control, the API enforces it.
 - **Patient cards** (dashboard "recent patients" + patient search) — initials
   avatar, bold name, `MRN: …` (mono), `Born <date> • <sex>` meta, "Synthetic
   demo data" provenance badge, chevron. Whole card is the patient link.
@@ -126,7 +133,7 @@ Real surfaces only (project rule: every control must work, no invented data):
 | AI Assistant rail | right rail over the existing `patient.js` AI flow | all current states kept: loading, cancel, 503 unavailable, 429 rate limit, errors, citations, disclaimer, permission gating |
 | Sidebar "AI Assistant" nav item (`doctorpanel1.png`) | `ai.html` + `assets/js/ai-assistant.js`, nav item derived from `patient:read` | the mockup's "AI Insights" tab and quick-action tile are the same surface; only this one nav item is real |
 | Staff management table + role pills + confirmation modal + pagination | admin staff table (avatar + name/email stack, role pills, Active/Inactive, actions), `ui.confirmDialog` with detail rows, page circles | |
-| TechAdmin audit log | admin "Audit events" table (when/actor/action/resource/outcome/request id) with coloured outcome badges | |
+| TechAdmin audit log (mockup label; `tech_admin` was removed as a role) | admin "Audit events" table (when/actor/action/resource/outcome/request id) with coloured outcome badges | |
 
 ### Deliberately NOT built from the mockups (and why)
 

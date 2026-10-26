@@ -1177,12 +1177,6 @@ a.patient-card:hover {
   border-color: #ddd6fe;
 }
 
-.badge--role-tech_admin {
-  background: #ffedd5;
-  color: #c2410c;
-  border-color: #fed7aa;
-}
-
 @media (prefers-color-scheme: dark) {
   .badge--role-doctor {
     background: #172554;
@@ -1200,12 +1194,6 @@ a.patient-card:hover {
     background: #2e1065;
     color: #c4b5fd;
     border-color: #4c1d95;
-  }
-
-  .badge--role-tech_admin {
-    background: #431407;
-    color: #fdba74;
-    border-color: #7c2d12;
   }
 }
 

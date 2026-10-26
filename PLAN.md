@@ -19,7 +19,7 @@ Build a browser-based clinical AI application with:
 - An MCP server exposing narrowly scoped clinical-data tools to an LLM.
 - PostgreSQL as the main relational database.
 - Authentication and role-based authorization.
-- Roles: doctor, nurse, clinical administrator, technical administrator.
+- Roles: doctor, nurse, admin. *(Superseded 2026-10-26 by owner decision: the original four-role model — doctor, nurse, clinical administrator, technical administrator — was simplified. `technical administrator` was removed entirely and `clinical administrator` became **Admin** with full access. See §4 and the progress log.)*
 - A staff/admin interface for managing accounts and assigning roles.
 - Clinician workflows for finding authorized patients and viewing permitted clinical information.
 - Audit events for security-relevant actions and clinical-data access.
@@ -199,9 +199,9 @@ Implement the smallest practical role model. Roles do not automatically imply th
 ### Role intent
 
 - **Doctor:** View patient records and clinical data permitted by the configured demo policy; use clinical summary and query workflows.
-- **Nurse:** View patient information permitted by the configured demo policy; no staff-role administration.
-- **Clinical administrator:** Manage appropriate clinical workflow metadata and permitted staff accounts, subject to explicit policy. Do not automatically grant technical configuration or unrestricted clinical-data access.
-- **Technical administrator:** Manage technical settings and user access where explicitly permitted. Do not automatically grant clinical access merely because the user is a technical administrator.
+- **Nurse:** LEAST PRIVILEGE — clinical read only (`patient:read`, `lab:read`, `prescription:read`). No admin panel, no staff/role/audit access (403 server-side).
+- **Admin:** FULL ACCESS — all permissions: clinical reads plus `staff:read`, `staff:manage`, `role:assign`, `audit:read`, `analytics:read`. Role changes are confirmed, audited, and self-assignment is refused.
+- ~~**Technical administrator**~~ **REMOVED** (owner decision, 2026-10-26): the role was deleted from the system — policy, database (migration `e8c2a91f4d77`), seed, UI, and docs. *(The original intent — technical settings without clinical access — is superseded by the three-role model above.)*
 
 ### Authorization requirements
 
@@ -913,7 +913,17 @@ Append one dated entry after every completed phase:
 - Acceptance criteria: PASS — cross-patient lookups work within budget; tool authorization cannot be bypassed by arguments; allowlist intact (six read-only tools; no SQL/shell/filesystem); live answers cite real synthetic records with timestamps.
 - Security notes: docs previously said "four tools" in three places — corrected to six at integration; `test_hardening`'s documented-audit-action mirror extended to cover the two lookup actions and its flow now exercises all six tools. Provider client-identification headers follow OpenCode Go's documented client requirements (abuse-monitoring friendliness), no secrets involved.
 - Blockers: none.
-- Next phase: Wave R (roles: nurse least, admin all, tech_admin removed), then S (full schema as drawn), then T/U/V (MCP panel catalog, admin analytics, doctor AI workspace).
+- Next phase: Wave S (full schema as drawn: diagnoses, clinical notes, weights, blood types, patient_assignment, encounter practitioners), then T/U/V (MCP panel catalog, admin analytics, doctor AI workspace).
+
+### 2026-10-26 — Wave R: three-role model (nurse least, Admin all, tech_admin deleted)
+- Status: DONE
+- Implemented: Policy rewritten to 3 roles × 8 permissions (nurse = clinical read only; doctor = clinical read; `clinical_admin` = **Admin** = everything incl. new `analytics:read`). `tech_admin` deleted system-wide: migration `e8c2a91f4d77` (soft-deletes + session-revokes tech-admin-only accounts, removes grants and role row, adds DB CHECK `ck_role_key_valid`; downgrade restores the role row only — grants deliberately unrestorable). Seed: 3 roles/3 accounts, idempotent; `.env.example` DEMO_TECH_ADMIN_* removed. Last-ACTIVE-Admin protection (409 on demoting or deactivating the last active Admin); self role assignment now unconditionally 403 (matches the frozen contract). Frontend: role labels ("Admin"), tech_admin styling/labels removed, admin panel gated on staff permissions (nurse sees the denial panel and no nav item). Docs reconciled across API.md/SECURITY.md/README/ARCHITECTURE/BACKLOG/DEPLOYMENT/DESIGN.
+- Files changed: 34 files (backend policy/schemas/services/api/models/config, migration e8c2a91f4d77, seed, e2e, .env.example, frontend ui/admin/index/styles/tests, docs) — see the agent report for the full list.
+- Commands run: `uv run pytest -q` → **335 passed, 1 skipped** (delta vs 350 fully explained by the 4→3 role grid shrinking parametrized cases); `ruff check` clean; `security_check.py` → PASS; frontend 94/94 + 37/37; `e2e_smoke.sh` → ALL STEPS PASSED with new role-boundary steps; migration up/down/up proven; live curls (reproduced by the lead): nurse `/staff` **403** `/patients` 200, nurse permissions = exactly 3 clinical reads; admin clinical reads + staff + audit all 200; `role: tech_admin` → **400**.
+- Tests: matrix, role×endpoint API grid, staff/last-admin/self-escalation, seed counts, hardening inventory, e2e boundaries all updated and green.
+- Acceptance criteria: PASS — nurse cannot see or reach the admin panel (UI + API); Admin sees everything; tech_admin no longer exists anywhere; least-privilege and deny-by-default intact; role changes remain audited and self-escalation-proof.
+- Security notes: behavior change recorded — Admins now hold clinical reads (explicitly tested); nurses lost `staff:read`; self-assignment strictly stronger (always 403). Earlier plan notes referencing `tech_admin` (Phase 5/6 log entries, the earlier lead-decision log) are historical and superseded by this entry. `production-requirements.txt` (the source requirements doc) still describes the original four-role plan — left untouched deliberately.
+- Blockers: none. Next phase: Wave S.
 
 ## Final instruction to the coding agent
 

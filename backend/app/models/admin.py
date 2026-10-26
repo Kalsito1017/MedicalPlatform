@@ -51,7 +51,13 @@ class StaffUser(TimestampMixin, SoftDeleteMixin, Base):
 
 class Role(Base):
     __tablename__ = "role"
-    __table_args__ = ({"schema": SCHEMA},)
+    __table_args__ = (
+        # Deny by default at the database level too: only the three role keys
+        # of the docs/API.md permission matrix may ever exist (owner decision
+        # 2026-10-26: `tech_admin` was removed from the system entirely).
+        CheckConstraint("key IN ('doctor', 'nurse', 'clinical_admin')", name="ck_role_key_valid"),
+        {"schema": SCHEMA},
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
@@ -141,3 +147,21 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Permission(TimestampMixin, Base):
+    """Permission catalog row (reference data — never soft-deleted).
+
+    The authoritative permission set lives in `app.authorization.policy`; this
+    table mirrors its keys (seeded literally, never imported across layers) so
+    the database can join/audit permission keys. Unlike `admin.role.key` there
+    is deliberately NO key enumeration CHECK: permission keys are expected to
+    grow with new features and only need uniqueness.
+    """
+
+    __tablename__ = "permission"
+    __table_args__ = ({"schema": SCHEMA},)
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    key: Mapped[str] = mapped_column(String(50), nullable=False, unique=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")

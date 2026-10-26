@@ -135,7 +135,7 @@ async def test_load_session_rejects_inactive_or_deleted_user(db_engine, make_use
 
 @pytest.mark.postgres
 async def test_session_expiry_and_created_defaults(db_engine, make_user) -> None:
-    account = await make_user(roles=("tech_admin",))
+    account = await make_user(roles=("doctor",))
     async with AsyncSession(db_engine, expire_on_commit=False) as db:
         _raw, row = await sessions_service.create_session(db, user_id=account.id, ip="203.0.113.7")
         await db.commit()

@@ -264,9 +264,12 @@ await check('ui.formatDate renders ISO-8601 UTC dates', () => {
 
 await check('ui.roleLabel maps contract role keys to friendly labels', () => {
   assertEqual(ui.roleLabel('doctor'), 'Doctor', 'doctor label');
-  assertEqual(ui.roleLabel('clinical_admin'), 'Clinical administrator', 'clinical_admin label');
-  assertEqual(ui.roleLabel('tech_admin'), 'Technical administrator', 'tech_admin label');
+  assertEqual(ui.roleLabel('clinical_admin'), 'Admin', 'clinical_admin label');
   assertEqual(ui.roleLabel('nurse'), 'Nurse', 'nurse label');
+  assert(
+    ui.roleLabel('tech_admin') !== 'Technical administrator',
+    'the removed tech_admin label must not exist',
+  );
 });
 
 await check('ui.displayDate never renders undefined', () => {

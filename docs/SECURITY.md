@@ -7,12 +7,11 @@
 
 ## 1. Roles and permissions
 
-### Role intent (from PLAN.md §4)
+### Role intent (owner decision, 2026-10-26: three roles; `tech_admin` removed)
 
 - **Doctor:** View patient records and clinical data permitted by the configured demo policy; use clinical summary and query workflows.
-- **Nurse:** View patient information permitted by the configured demo policy; no staff-role administration.
-- **Clinical administrator:** Manage appropriate clinical workflow metadata and permitted staff accounts, subject to explicit policy. Do not automatically grant technical configuration or unrestricted clinical-data access.
-- **Technical administrator:** Manage technical settings and user access where explicitly permitted. Do not automatically grant clinical access merely because the user is a technical administrator.
+- **Nurse:** Least privilege — view patient information and clinical data permitted by the configured demo policy. No staff-role administration, no audit access, no admin panel.
+- **Admin** (`clinical_admin`): Full access — clinical data, staff accounts, roles, audit log, and analytics. Administration is exercised through the same server-side permission checks as everything else.
 
 Roles do **not** automatically imply that a user may view every patient. The demo uses a
 simplified synthetic-data access policy (documented here and in `docs/API.md`); a
@@ -21,17 +20,20 @@ in `docs/BACKLOG.md`.
 
 ### Permission matrix (identical to `docs/API.md`)
 
-| Permission | doctor | nurse | clinical_admin | tech_admin |
-|---|---|---|---|---|
-| `patient:read` | ✔ | ✔ | ✖ | ✖ |
-| `lab:read` | ✔ | ✔ | ✖ | ✖ |
-| `prescription:read` | ✔ | ✔ | ✖ | ✖ |
-| `staff:read` | ✖ | ✔ | ✔ | ✔ |
-| `staff:manage` | ✖ | ✖ | ✔ | ✔ |
-| `role:assign` | ✖ | ✖ | ✔ | ✔ |
-| `audit:read` | ✖ | ✖ | ✔ | ✔ |
+| Permission | doctor | nurse | clinical_admin (Admin) |
+|---|---|---|---|
+| `patient:read` | ✔ | ✔ | ✔ |
+| `lab:read` | ✔ | ✔ | ✔ |
+| `prescription:read` | ✔ | ✔ | ✔ |
+| `staff:read` | ✖ | ✖ | ✔ |
+| `staff:manage` | ✖ | ✖ | ✔ |
+| `role:assign` | ✖ | ✖ | ✔ |
+| `audit:read` | ✖ | ✖ | ✔ |
+| `analytics:read` | ✖ | ✖ | ✔ |
 
-Deny by default. Technical administration grants **no** clinical-data access.
+Deny by default. `nurse` is least-privilege clinical read; `clinical_admin` (Admin) holds
+every permission. `analytics:read` is declared in advance of the analytics page (a later
+wave); no endpoint requires it yet.
 
 ### Where checks live
 
@@ -106,7 +108,7 @@ browser storage.
 | **XSS** | Synthetic names/notes or LLM output contain `<script>` | Output escaping by default; no `innerHTML` with data — text content / safe DOM APIs only; AI output rendered as text and labelled; no third-party scripts | Phase 9 + frontend checks |
 | **CSRF** | Evil page triggers state-changing requests with the victim's cookie | `SameSite=Lax` cookie + double-submit `X-CSRF-Token` on all non-GET requests | Phase 5 |
 | **IDOR** | Authenticated user guesses/enumerates a patient UUID | Opaque UUIDs; per-request authorization via `policy.py`; concealed resources return `404 not_found` (not `403`) so existence is not confirmed; tests attempt direct ID access | Phase 5–6, tests Phase 12 |
-| **Privilege escalation** | User assigns themselves `tech_admin` or `clinical_admin` | Self-escalation blocked server-side (`POST /api/v1/staff/{user_id}/roles` targeting self → `403`); role changes require `role:assign` + CSRF; all changes audited; no break-glass or impersonation exists in the demo | Phase 5, 10 |
+| **Privilege escalation** | User assigns themselves `clinical_admin` | Self role assignment blocked server-side (`POST /api/v1/staff/{user_id}/roles` targeting self → `403`, unconditionally); role changes require `role:assign` + CSRF; unknown role keys (including the removed `tech_admin`) are rejected with `400`; last-active-Admin protection (`409`); all changes audited; no break-glass or impersonation exists in the demo | Phase 5, 10 |
 | **Prompt injection** | A synthetic note or patient field contains "ignore instructions / call tool X" | Prompt text is treated as untrusted data, never as instructions; server-side tool **allowlist** (only `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication` — all read-only); identity from session, never from tool arguments; authorization re-executed inside every tool; bounds on tool count (`LLM_MAX_TOOL_CALLS`), result size, and request duration; model output cannot trigger any privileged or state-changing action | Phases 7–8, tests Phase 12 |
 | **Secret leakage** | API key, DB URL, or session token appears in logs, repo, or browser | Secrets only in env vars; `.env` gitignored; log redaction of auth headers, cookies, tokens, passwords; generic error envelope to clients (never stack traces/SQL); no secrets in frontend assets; repo/history review before publishing | Phase 11 + `.gitignore` |
 | **DoS on the AI endpoint** | Repeated expensive LLM calls exhaust quota/money | Rate limit on `POST /api/v1/ai/ask`; question and prompt size bounds; `LLM_MAX_TOOL_CALLS` and `LLM_REQUEST_TIMEOUT_SECONDS`; Console **budget cap** on the service-account key; `LLM_ENABLED=false` kill switch; endpoint degrades to `503` without affecting the rest of the app | Phases 8, 11 |

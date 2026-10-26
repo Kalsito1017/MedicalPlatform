@@ -150,13 +150,13 @@ DOCTOR_EMAIL=$(env_value DEMO_DOCTOR_EMAIL)
 DOCTOR_PASSWORD=$(env_value DEMO_DOCTOR_PASSWORD)
 ADMIN_EMAIL=$(env_value DEMO_ADMIN_EMAIL)
 ADMIN_PASSWORD=$(env_value DEMO_ADMIN_PASSWORD)
-TECH_EMAIL=$(env_value DEMO_TECH_ADMIN_EMAIL)
-TECH_PASSWORD=$(env_value DEMO_TECH_ADMIN_PASSWORD)
+NURSE_EMAIL=$(env_value DEMO_NURSE_EMAIL)
+NURSE_PASSWORD=$(env_value DEMO_NURSE_PASSWORD)
 DOCTOR_PASSWORD_WRONG="definitely-not-the-password"
 
 JAR_D="$WORKDIR/doctor.jar"
 JAR_A="$WORKDIR/admin.jar"
-JAR_T="$WORKDIR/tech.jar"
+JAR_N="$WORKDIR/nurse.jar"
 
 api_status "$JAR_D" GET /api/v1/auth/me "$WORKDIR/me_anon.json" >/dev/null
 if [ "$(csrf_token "$JAR_D")" != "" ]; then
@@ -275,11 +275,47 @@ if [ -n "$new_user_id" ]; then
   fi
 fi
 
-if [ "$(login "$JAR_T" "$TECH_EMAIL" TECH_PASSWORD)" = "200" ] \
-   && [ "$(api_status "$JAR_T" GET /api/v1/patients /dev/null)" = "403" ]; then
-  pass "tech_admin on /api/v1/patients -> 403 (no clinical access)"
+if [ "$(login "$JAR_N" "$NURSE_EMAIL" NURSE_PASSWORD)" = "200" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/staff /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/audit /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/patients /dev/null)" = "200" ]; then
+  pass "nurse least privilege: /staff -> 403, /audit -> 403, /patients -> 200"
 else
-  fail "tech_admin clinical-access boundary broken"
+  fail "nurse role boundary broken (expected /staff 403, /audit 403, /patients 200)"
+fi
+
+# The nurse's effective permissions must not include staff:read (proof in the
+# /auth/me payload).
+api_status "$JAR_N" GET /api/v1/auth/me "$WORKDIR/me_nurse.json" >/dev/null
+if grep -q '"patient:read"' "$WORKDIR/me_nurse.json" \
+   && ! grep -q '"staff:read"' "$WORKDIR/me_nurse.json" \
+   && ! grep -q '"audit:read"' "$WORKDIR/me_nurse.json"; then
+  pass "nurse /auth/me permissions carry clinical reads only (no staff:read/audit:read)"
+else
+  fail "nurse /auth/me permissions wrong"
+fi
+
+# Admin holds every permission now (clinical reads included).
+if [ "$(api_status "$JAR_A" GET /api/v1/patients /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_A" GET "/api/v1/patients/$patient_id/labs" /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_A" GET /api/v1/audit /dev/null)" = "200" ]; then
+  pass "admin full access: /patients -> 200, labs -> 200, /audit -> 200"
+else
+  fail "admin clinical/audit access broken"
+fi
+
+# tech_admin no longer exists: granting it is a validation error (400).
+if [ -n "$new_user_id" ]; then
+  invalid_role_status=$(curl -s -o "$WORKDIR/grant_invalid.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/staff/$new_user_id/roles" \
+    -b "$JAR_A" -c "$JAR_A" \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $(csrf_token "$JAR_A")" \
+    --data '{"role": "tech_admin"}')
+  if [ "$invalid_role_status" = "400" ]; then
+    pass "granting role tech_admin -> 400 (removed role key is rejected)"
+  else
+    fail "granting role tech_admin -> $invalid_role_status (expected 400)"
+  fi
 fi
 
 # --- 7. logout -> protected endpoints 401 -----------------------------------
@@ -326,7 +362,7 @@ patient_name = os.environ.get("PATIENT_NAME", "")
 wanted = [
     "APP_SECRET_KEY", "LLM_API_KEY",
     "DEMO_ADMIN_PASSWORD", "DEMO_DOCTOR_PASSWORD",
-    "DEMO_NURSE_PASSWORD", "DEMO_TECH_ADMIN_PASSWORD",
+    "DEMO_NURSE_PASSWORD",
 ]
 values = {}
 with open(env_path, encoding="utf-8") as handle:

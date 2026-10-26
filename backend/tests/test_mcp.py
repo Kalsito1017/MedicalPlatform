@@ -371,7 +371,7 @@ async def test_search_returns_only_authorized_patients(
     assert str(clinical_data.soft_deleted_patient_id) not in found
     assert {c["id"] for c in result.citations} == found
 
-    admin_ctx = await make_tool_context(await make_user(roles=("clinical_admin",)))
+    admin_ctx = await make_tool_context(await make_user(roles=()))
     denied = await mcp_server.call_tool(
         "search_authorized_patients", {"query": clinical_data.token, "limit": 25}, admin_ctx
     )
@@ -446,7 +446,7 @@ async def test_argument_tampering_cannot_bypass_authorization(
     from app.mcp.server import mcp_server
 
     restricted_ctx = await make_tool_context(
-        await make_user(roles=("clinical_admin",)), request_id="test-request-tamper"
+        await make_user(roles=()), request_id="test-request-tamper"
     )
     # A real, existing patient id in the arguments grants nothing.
     for tool_name, arguments in (
@@ -976,7 +976,7 @@ async def test_lookup_tools_permission_denial_and_identity_args(
     }
 
     admin_ctx = await make_tool_context(
-        await make_user(roles=("clinical_admin",)), request_id="test-request-lookup-denied"
+        await make_user(roles=()), request_id="test-request-lookup-denied"
     )
     for tool_name, arguments in (
         ("find_patients_by_lab", {"test_code": code, **smuggled}),

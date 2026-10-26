@@ -33,7 +33,7 @@ async def _staff_item(client, user_id: uuid.UUID) -> dict:
 async def test_staff_list_shape_never_leaks_secrets(
     auth_client, make_user, make_client
 ) -> None:
-    account = await make_user(roles=("clinical_admin", "tech_admin"), display_name="Admin Fixture")
+    account = await make_user(roles=("clinical_admin",), display_name="Admin Fixture")
     client = await auth_client(account)
     response = await client.get("/api/v1/staff")
     assert response.status_code == 200
@@ -51,7 +51,7 @@ async def test_staff_list_shape_never_leaks_secrets(
         "created_at",
         "updated_at",
     }
-    assert sorted(own["roles"]) == ["clinical_admin", "tech_admin"]
+    assert sorted(own["roles"]) == ["clinical_admin"]
     assert own["is_active"] is True
     forbidden = ("password", "password_hash", "token", "session", "secret")
     for item in body["items"]:
@@ -95,7 +95,7 @@ async def test_create_staff_generates_password_once(
 
     from app.models import StaffUser
 
-    account = await make_user(roles=("tech_admin",))
+    account = await make_user(roles=("clinical_admin",))
     client = await auth_client(account)
     email = f"generated-{uuid.uuid4().hex[:10]}@example.com"
     response = await client.post(
@@ -153,7 +153,7 @@ async def test_create_staff_validation_errors(auth_client, make_user) -> None:
 
     extra = await client.post(
         "/api/v1/staff",
-        json={"email": "x@example.com", "display_name": "X", "roles": ["tech_admin"]},
+        json={"email": "x@example.com", "display_name": "X", "roles": ["clinical_admin"]},
         headers=csrf_headers(client),
     )
     assert extra.status_code == 400  # extra="forbid": roles cannot be smuggled in
@@ -189,7 +189,7 @@ async def test_patch_cannot_change_roles(auth_client, make_user) -> None:
     client = await auth_client(account)
     response = await client.patch(
         f"/api/v1/staff/{target.id}",
-        json={"is_active": True, "roles": ["tech_admin"]},
+        json={"is_active": True, "roles": ["clinical_admin"]},
         headers=csrf_headers(client),
     )
     assert response.status_code == 400
@@ -203,7 +203,7 @@ async def test_patch_cannot_change_roles(auth_client, make_user) -> None:
 async def test_deactivation_revokes_all_sessions_immediately(
     db_engine, auth_client, make_user
 ) -> None:
-    account = await make_user(roles=("tech_admin",))
+    account = await make_user(roles=("clinical_admin",))
     target = await make_user(roles=("doctor",))
     admin_client = await auth_client(account)
     target_client = await auth_client(target)
@@ -230,16 +230,48 @@ async def test_deactivation_revokes_all_sessions_immediately(
 
 
 @pytest.mark.postgres
-async def test_self_deactivation_is_allowed(db_engine, auth_client, make_user) -> None:
+async def test_self_deactivation_is_allowed_when_another_admin_remains(
+    db_engine, auth_client, make_user
+) -> None:
     account = await make_user(roles=("clinical_admin",))
-    client = await auth_client(account)
-    response = await client.patch(
-        f"/api/v1/staff/{account.id}",
-        json={"is_active": False},
-        headers=csrf_headers(client),
-    )
-    assert response.status_code == 200
-    assert (await client.get("/api/v1/staff")).status_code == 401
+    other_admin = await make_user(roles=("clinical_admin",))
+    suspended = await _suspend_other_admins(db_engine, account.id, other_admin.id)
+    try:
+        client = await auth_client(account)
+        response = await client.patch(
+            f"/api/v1/staff/{account.id}",
+            json={"is_active": False},
+            headers=csrf_headers(client),
+        )
+        assert response.status_code == 200
+        assert (await client.get("/api/v1/staff")).status_code == 401
+    finally:
+        await _restore_admins(db_engine, [account.id, *suspended])
+
+
+@pytest.mark.postgres
+async def test_deactivating_the_last_active_admin_is_conflict(
+    db_engine, auth_client, make_user
+) -> None:
+    account = await make_user(roles=("clinical_admin",))
+    suspended = await _suspend_other_admins(db_engine, account.id)
+    try:
+        client = await auth_client(account)
+        response = await client.patch(
+            f"/api/v1/staff/{account.id}",
+            json={"is_active": False},
+            headers=csrf_headers(client),
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "conflict"
+        rows = await audit_rows(
+            request_id=response.headers["X-Request-Id"], action="staff.deactivate"
+        )
+        assert len(rows) == 1
+        assert rows[0].outcome == "denied"
+        assert rows[0].resource_id == str(account.id)
+    finally:
+        await _restore_admins(db_engine, suspended)
 
 
 @pytest.mark.postgres
@@ -293,7 +325,7 @@ async def test_role_grant_and_revoke_are_audited(db_engine, auth_client, make_us
 
 @pytest.mark.postgres
 async def test_role_grant_validation_and_unknown_target(auth_client, make_user) -> None:
-    account = await make_user(roles=("tech_admin",))
+    account = await make_user(roles=("clinical_admin",))
     target = await make_user(roles=("nurse",))
     client = await auth_client(account)
 
@@ -304,6 +336,23 @@ async def test_role_grant_validation_and_unknown_target(auth_client, make_user) 
     )
     assert invalid.status_code == 400
     assert invalid.json()["error"]["code"] == "validation_error"
+
+    # tech_admin was removed from the system entirely: it is no longer a valid
+    # role key anywhere (grant body AND revoke path).
+    removed_role = await client.post(
+        f"/api/v1/staff/{target.id}/roles",
+        json={"role": "tech_admin"},
+        headers=csrf_headers(client),
+    )
+    assert removed_role.status_code == 400
+    assert removed_role.json()["error"]["code"] == "validation_error"
+    item = await _staff_item(client, target.id)
+    assert item["roles"] == ["nurse"]
+    revoke_removed = await client.delete(
+        f"/api/v1/staff/{target.id}/roles/tech_admin", headers=csrf_headers(client)
+    )
+    assert revoke_removed.status_code == 400
+    assert revoke_removed.json()["error"]["code"] == "validation_error"
 
     missing_user = await client.post(
         f"/api/v1/staff/{uuid.uuid4()}/roles",
@@ -318,10 +367,12 @@ async def test_self_escalation_is_refused_and_audited(db_engine, auth_client, ma
     account = await make_user(roles=("clinical_admin",))
     client = await auth_client(account)
 
-    # Admin -> self doctor would add clinical permissions: refused.
+    # Role changes never target the acting account: refused with 403 and
+    # audited, including a grant that would add no new permissions at all
+    # (the Admin already holds every permission in the three-role model).
     response = await client.post(
         f"/api/v1/staff/{account.id}/roles",
-        json={"role": "doctor"},
+        json={"role": "nurse"},
         headers=csrf_headers(client),
     )
     assert response.status_code == 403
@@ -331,16 +382,15 @@ async def test_self_escalation_is_refused_and_audited(db_engine, auth_client, ma
     )
     assert len(rows) == 1
     assert rows[0].outcome == "denied"
-    assert rows[0].resource_id == f"{account.id}:doctor"
+    assert rows[0].resource_id == f"{account.id}:nurse"
 
-    # Granting self a role that adds nothing (same permission set) is allowed.
-    same_permissions = await client.post(
+    again = await client.post(
         f"/api/v1/staff/{account.id}/roles",
-        json={"role": "tech_admin"},
+        json={"role": "doctor"},
         headers=csrf_headers(client),
     )
-    assert same_permissions.status_code == 200
-    assert sorted(same_permissions.json()["roles"]) == ["clinical_admin", "tech_admin"]
+    assert again.status_code == 403
+    assert again.json()["error"]["message"] == "Self role assignment is not permitted"
 
 
 @pytest.mark.postgres
@@ -381,7 +431,7 @@ async def _suspend_other_admins(db_engine, *keep: uuid.UUID) -> list[uuid.UUID]:
                 await session.scalars(
                     select(UserRole.user_id)
                     .join(Role, Role.id == UserRole.role_id)
-                    .where(Role.key.in_(("clinical_admin", "tech_admin")))
+                    .where(Role.key.in_(("clinical_admin",)))
                     .distinct()
                 )
             ).all()
@@ -417,7 +467,7 @@ async def test_last_admin_removal_is_conflict(db_engine, auth_client, make_user)
     try:
         client = await auth_client(account)
 
-        # Removing the only administrator of any kind must fail.
+        # Removing the Admin role from the last ACTIVE clinical_admin fails.
         response = await client.delete(
             f"/api/v1/staff/{account.id}/roles/clinical_admin", headers=csrf_headers(client)
         )
@@ -429,8 +479,8 @@ async def test_last_admin_removal_is_conflict(db_engine, auth_client, make_user)
         assert len(rows) == 1
         assert rows[0].outcome == "denied"
 
-        # With a second active admin in place, the removal succeeds.
-        other_admin = await make_user(roles=("tech_admin",))
+        # With a second active Admin in place, the removal succeeds.
+        other_admin = await make_user(roles=("clinical_admin",))
         assert other_admin.id
         ok = await client.delete(
             f"/api/v1/staff/{account.id}/roles/clinical_admin", headers=csrf_headers(client)
@@ -441,13 +491,31 @@ async def test_last_admin_removal_is_conflict(db_engine, auth_client, make_user)
 
 
 @pytest.mark.postgres
-async def test_admin_with_two_admin_roles_can_drop_one(auth_client, make_user) -> None:
-    account = await make_user(roles=("clinical_admin", "tech_admin"))
+async def test_demoting_a_non_last_admin_works(auth_client, make_user) -> None:
+    # Two active Admins: removing the role from one is allowed, the other keeps
+    # the system administrable.
+    account = await make_user(roles=("clinical_admin",))
+    other_admin = await make_user(roles=("clinical_admin",))
     client = await auth_client(account)
     response = await client.delete(
-        f"/api/v1/staff/{account.id}/roles/tech_admin", headers=csrf_headers(client)
+        f"/api/v1/staff/{other_admin.id}/roles/clinical_admin", headers=csrf_headers(client)
     )
-    assert response.status_code == 204  # still an admin via clinical_admin
+    assert response.status_code == 204
+    item = await _staff_item(client, other_admin.id)
+    assert item["roles"] == []
+
+
+@pytest.mark.postgres
+async def test_inactive_admin_holder_can_be_demoted(auth_client, make_user) -> None:
+    # The invariant counts ACTIVE admins only: revoking the Admin role from an
+    # inactive holder is never blocked (and cannot reduce the active count).
+    account = await make_user(roles=("clinical_admin",))
+    inactive_holder = await make_user(roles=("clinical_admin",), is_active=False)
+    client = await auth_client(account)
+    response = await client.delete(
+        f"/api/v1/staff/{inactive_holder.id}/roles/clinical_admin", headers=csrf_headers(client)
+    )
+    assert response.status_code == 204
 
 
 @pytest.mark.postgres

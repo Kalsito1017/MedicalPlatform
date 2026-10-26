@@ -86,8 +86,6 @@ class Settings(BaseSettings):
     demo_doctor_password: SecretStr | None = None
     demo_nurse_email: str | None = None
     demo_nurse_password: SecretStr | None = None
-    demo_tech_admin_email: str | None = None
-    demo_tech_admin_password: SecretStr | None = None
 
     # --- CORS / transport limits ---
     allowed_origins: str = "http://localhost:5173,http://localhost:8000"

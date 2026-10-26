@@ -173,7 +173,8 @@ If the LLM is disabled (`LLM_ENABLED=false`) or unreachable, the endpoint return
    - authz: policy.py requires role:assign
    - guard: if target user == acting user -> 403 (no self-escalation; no
      break-glass / impersonation exists in the demo)
-   - validation: role must be one of doctor | nurse | clinical_admin | tech_admin
+   - validation: role must be one of doctor | nurse | clinical_admin
+     (any other key — including the removed tech_admin — is a 400)
    - service layer persists to admin.user_role
    - audit_event: role change (actor, target user, role added, outcome,
      request id)
@@ -201,7 +202,7 @@ floats**, and every clinical payload labelled `provenance: "synthetic"`.
 | Table | Key columns |
 |---|---|
 | `staff_user` | id, email (unique), display_name, password_hash (argon2id), is_active, created_at, updated_at, deleted_at |
-| `role` | key (`doctor`/`nurse`/`clinical_admin`/`tech_admin`), description |
+| `role` | key (`doctor`/`nurse`/`clinical_admin` — DB CHECK `ck_role_key_valid`; `tech_admin` removed by owner decision 2026-10-26), description |
 | `user_role` | user_id → staff_user, role → role |
 | `audit_event` | actor_id, action, resource_type, resource_id, outcome, request_id, created_at. **No** clinical payloads, **no** secrets. |
 | session storage | session id, user_id, created_at, expires_at, revoked_at (supports server-side expiry and revocation) |

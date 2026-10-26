@@ -46,7 +46,7 @@ UNREACHABLE_REASON = (
 # Test-only password marker. Tests assert this value never appears in audit
 # rows, logs, or API responses. It is not a real credential.
 SENTINEL_PASSWORD = "Sentinel-P@ssw0rd-9f3c2b"
-ALL_ROLE_KEYS = ("doctor", "nurse", "clinical_admin", "tech_admin")
+ALL_ROLE_KEYS = ("doctor", "nurse", "clinical_admin")
 
 
 def run_alembic(*args: str) -> subprocess.CompletedProcess[str]:

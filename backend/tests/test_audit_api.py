@@ -56,7 +56,7 @@ async def test_audit_requires_audit_read(auth_client, make_user, make_client) ->
         response = await client.get(AUDIT_URL)
         assert response.status_code == 403, role
 
-    for role in ("clinical_admin", "tech_admin"):
+    for role in ("clinical_admin",):
         client = await auth_client(await make_user(roles=(role,)))
         response = await client.get(AUDIT_URL)
         assert response.status_code == 200, role
@@ -108,7 +108,7 @@ async def test_audit_list_shape_ordering_and_actor_join(
 
 @pytest.mark.postgres
 async def test_audit_filters_and_bounds(auth_client, make_user, clinical_data) -> None:
-    account = await make_user(roles=("tech_admin",))
+    account = await make_user(roles=("clinical_admin",))
     client = await auth_client(account)
     doctor = await make_user(roles=("doctor",))
     doctor_client = await auth_client(doctor)

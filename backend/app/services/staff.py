@@ -24,9 +24,15 @@ from app.models.admin import Role, StaffUser, UserRole
 from app.schemas.auth import UserPayload
 from app.schemas.staff import StaffUserOut
 
-# Roles that confer administrative authority; at least one active, non-deleted
-# user holding one of these must always remain (last-admin protection).
-ADMIN_ROLE_KEYS: frozenset[str] = frozenset({"clinical_admin", "tech_admin"})
+# Roles that confer administrative authority; at least one ACTIVE, non-deleted
+# user holding `clinical_admin` must always remain (last-admin protection).
+# `tech_admin` was removed from the system entirely (owner decision, 2026-10-26).
+ADMIN_ROLE_KEYS: frozenset[str] = frozenset({"clinical_admin"})
+
+LAST_ADMIN_MESSAGE = (
+    "At least one active account with the Admin role must remain. "
+    "Assign the Admin role to another active account before removing this one."
+)
 
 
 async def get_user_roles(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
@@ -136,6 +142,47 @@ async def _role_by_key(db: AsyncSession, role_key: str, *, loc: str = "body.role
     return role
 
 
+async def count_other_active_admins(db: AsyncSession, *, exclude_user_id: uuid.UUID) -> int:
+    """Active, non-deleted users holding an admin role, excluding one user id."""
+    return int(
+        (
+            await db.scalar(
+                select(func.count(func.distinct(UserRole.user_id)))
+                .join(StaffUser, StaffUser.id == UserRole.user_id)
+                .join(Role, Role.id == UserRole.role_id)
+                .where(
+                    Role.key.in_(sorted(ADMIN_ROLE_KEYS)),
+                    StaffUser.is_active.is_(True),
+                    StaffUser.not_deleted(),
+                    UserRole.user_id != exclude_user_id,
+                )
+            )
+        )
+        or 0
+    )
+
+
+async def ensure_not_last_active_admin(db: AsyncSession, user: StaffUser) -> None:
+    """Refuse (409) when the action would remove the last active `clinical_admin`.
+
+    An action on an account that is not an active admin holder can never violate
+    the invariant. Otherwise at least one OTHER active, non-deleted
+    `clinical_admin` must exist. Raises Conflict with LAST_ADMIN_MESSAGE.
+    """
+    holds_admin = await db.scalar(
+        select(func.count())
+        .select_from(UserRole)
+        .join(Role, Role.id == UserRole.role_id)
+        .where(UserRole.user_id == user.id, Role.key.in_(sorted(ADMIN_ROLE_KEYS)))
+    )
+    if not holds_admin:
+        return
+    if not user.is_active:
+        return  # already inactive: cannot reduce the active-admin count
+    if await count_other_active_admins(db, exclude_user_id=user.id) == 0:
+        raise Conflict(LAST_ADMIN_MESSAGE)
+
+
 async def grant_role(
     db: AsyncSession, user: StaffUser, role_key: str, *, granted_by: uuid.UUID | None
 ) -> bool:
@@ -156,25 +203,15 @@ async def revoke_role(db: AsyncSession, user: StaffUser, role_key: str, *, loc: 
     """Revoke a role, enforcing last-admin protection.
 
     Returns True when a grant was removed, False when the user did not hold it.
-    Raises Conflict when the removal would leave no active administrator
-    (any active, non-deleted user holding clinical_admin or tech_admin).
+    Raises Conflict when the removal would leave no ACTIVE staff user holding
+    `clinical_admin` (the only administrative role since `tech_admin` was
+    removed from the system).
     """
     role = await _role_by_key(db, role_key, loc=loc)
     grant = await db.get(UserRole, {"user_id": user.id, "role_id": role.id})
     if grant is None:
         return False
     if role.key in ADMIN_ROLE_KEYS:
-        remaining_holders = await db.scalar(
-            select(func.count(func.distinct(UserRole.user_id)))
-            .join(StaffUser, StaffUser.id == UserRole.user_id)
-            .join(Role, Role.id == UserRole.role_id)
-            .where(
-                Role.key.in_(sorted(ADMIN_ROLE_KEYS)),
-                StaffUser.is_active.is_(True),
-                StaffUser.not_deleted(),
-                UserRole.user_id != user.id,
-            )
-        )
         target_keeps_admin = await db.scalar(
             select(func.count())
             .select_from(UserRole)
@@ -185,11 +222,9 @@ async def revoke_role(db: AsyncSession, user: StaffUser, role_key: str, *, loc: 
                 Role.key != role.key,
             )
         )
-        if not remaining_holders and not target_keeps_admin:
-            raise Conflict(
-                "At least one active administrator must remain. "
-                "Grant another administrator before removing this role."
-            )
+        if not target_keeps_admin and await count_other_active_admins(db, exclude_user_id=user.id) == 0:
+            if user.is_active:  # an inactive holder cannot be the "last active admin"
+                raise Conflict(LAST_ADMIN_MESSAGE)
     await db.delete(grant)
     await db.flush()
     return True

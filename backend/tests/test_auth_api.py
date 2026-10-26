@@ -101,11 +101,11 @@ async def test_login_validation_error_never_echoes_values(make_client, make_user
 
     forbidden_field = await client.post(
         LOGIN_URL,
-        json={"email": account.email, "password": SENTINEL_PASSWORD, "role": "tech_admin"},
+        json={"email": account.email, "password": SENTINEL_PASSWORD, "role": "not-a-role"},
         headers=csrf_headers(client),
     )
     assert forbidden_field.status_code == 400
-    assert "tech_admin" not in forbidden_field.text
+    assert "not-a-role" not in forbidden_field.text
 
 
 @pytest.mark.postgres
@@ -203,11 +203,12 @@ async def test_me_401_anonymous_and_200_authenticated(make_client, api_login, ma
     payload = response.json()
     assert payload["id"] == str(account.id)
     assert payload["roles"] == ["nurse"]
+    # Nurse is least privilege (owner decision, 2026-10-26): clinical reads
+    # only — no staff:read, no audit:read, no admin-panel permissions.
     assert set(payload["permissions"]) == {
         "patient:read",
         "lab:read",
         "prescription:read",
-        "staff:read",
     }
 
 

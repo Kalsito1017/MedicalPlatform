@@ -5,10 +5,12 @@ Authorization: `staff:read` / `staff:manage` / `role:assign` via
 CSRF-protected (see app.auth.csrf).
 
 Guards (audited):
-- Self role escalation is refused with 403 "Self role assignment is not
-  permitted" whenever the grant would add permissions the actor does not hold.
-- Removing the last active administrator is refused with 409 (at least one
-  active clinical_admin/tech_admin must remain).
+- Self role assignment is refused with 403 "Self role assignment is not
+  permitted" — role changes never target the acting account, so no grant can
+  extend the actor's own access (docs/SECURITY.md threat model).
+- Removing the `clinical_admin` role from — or deactivating — the last ACTIVE
+  staff user holding `clinical_admin` is refused with 409 `conflict` (at least
+  one active Admin must remain; `tech_admin` no longer exists).
 - Deactivating an account revokes all of that account's sessions immediately.
 - PATCH cannot change roles (the schema rejects unknown fields).
 
@@ -35,7 +37,6 @@ from app.auth.identity import client_ip
 from app.auth.passwords import hash_password
 from app.authorization.policy import (
     Principal,
-    permissions_for_roles,
     require_permission,
 )
 from app.errors import Conflict, Forbidden, NotFound
@@ -154,6 +155,25 @@ async def update_staff(
 ) -> StaffUserOut:
     user = await _load_user_or_404(db, user_id)
     was_active = user.is_active
+
+    if payload.is_active is False and was_active:
+        # Last-admin protection runs BEFORE the update, while the account is
+        # still active: deactivating the last active clinical_admin is refused.
+        try:
+            await staff_service.ensure_not_last_active_admin(db, user)
+        except Conflict:
+            await _audit(
+                db,
+                request=request,
+                request_id=request_id,
+                principal=principal,
+                action="staff.deactivate",
+                resource_type="staff_user",
+                resource_id=str(user.id),
+                outcome="denied",
+            )
+            raise
+
     await staff_service.update_staff_user(
         db, user, display_name=payload.display_name, is_active=payload.is_active
     )
@@ -208,24 +228,22 @@ async def assign_role(
     principal: Principal = Depends(require_permission("role:assign")),
 ) -> StaffUserOut:
     user = await _load_user_or_404(db, user_id)
-    current_roles = await staff_service.get_user_roles(db, user.id)
 
     if user.id == principal.user_uuid:
-        # Self-escalation guard: refuse when the grant adds permissions the
-        # actor does not already hold (docs/SECURITY.md threat model).
-        would_add = permissions_for_roles([payload.role]) - permissions_for_roles(current_roles)
-        if would_add:
-            await _audit(
-                db,
-                request=request,
-                request_id=request_id,
-                principal=principal,
-                action="authz.denied",
-                resource_type="user_role",
-                resource_id=f"{user.id}:{payload.role}",
-                outcome="denied",
-            )
-            raise Forbidden(SELF_ASSIGNMENT_MESSAGE)
+        # Self-escalation guard: role changes never target the acting account.
+        # Refused unconditionally (docs/SECURITY.md threat model: "targeting
+        # self -> 403"), so no grant can ever extend the actor's own access.
+        await _audit(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="authz.denied",
+            resource_type="user_role",
+            resource_id=f"{user.id}:{payload.role}",
+            outcome="denied",
+        )
+        raise Forbidden(SELF_ASSIGNMENT_MESSAGE)
 
     created = await staff_service.grant_role(
         db, user, payload.role, granted_by=principal.user_uuid

@@ -17,14 +17,17 @@ from app.authorization.policy import (
 from app.errors import Forbidden, Unauthenticated
 
 # Transcribed from docs/API.md "Permission matrix" (frozen contract).
+# Three roles only (owner decision, 2026-10-26: tech_admin removed entirely);
+# `analytics:read` is declared now for the upcoming analytics page.
 EXPECTED_MATRIX: dict[str, dict[str, bool]] = {
-    "patient:read": {"doctor": True, "nurse": True, "clinical_admin": False, "tech_admin": False},
-    "lab:read": {"doctor": True, "nurse": True, "clinical_admin": False, "tech_admin": False},
-    "prescription:read": {"doctor": True, "nurse": True, "clinical_admin": False, "tech_admin": False},
-    "staff:read": {"doctor": False, "nurse": True, "clinical_admin": True, "tech_admin": True},
-    "staff:manage": {"doctor": False, "nurse": False, "clinical_admin": True, "tech_admin": True},
-    "role:assign": {"doctor": False, "nurse": False, "clinical_admin": True, "tech_admin": True},
-    "audit:read": {"doctor": False, "nurse": False, "clinical_admin": True, "tech_admin": True},
+    "patient:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "lab:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "prescription:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "staff:read": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "staff:manage": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "role:assign": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "audit:read": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "analytics:read": {"doctor": False, "nurse": False, "clinical_admin": True},
 }
 
 
@@ -48,7 +51,7 @@ def _reset_principal_resolver():
 
 
 def test_roles_and_permissions_match_contract() -> None:
-    assert set(ALL_ROLES) == {"doctor", "nurse", "clinical_admin", "tech_admin"}
+    assert set(ALL_ROLES) == {"doctor", "nurse", "clinical_admin"}
     assert set(ALL_PERMISSIONS) == set(EXPECTED_MATRIX)
 
 
@@ -63,18 +66,26 @@ def test_role_permission_matrix(role: str, permission: str) -> None:
 def test_matrix_exactly_matches_expected_sets() -> None:
     expected_sets = {
         "doctor": {"patient:read", "lab:read", "prescription:read"},
-        "nurse": {"patient:read", "lab:read", "prescription:read", "staff:read"},
-        "clinical_admin": {"staff:read", "staff:manage", "role:assign", "audit:read"},
-        "tech_admin": {"staff:read", "staff:manage", "role:assign", "audit:read"},
+        "nurse": {"patient:read", "lab:read", "prescription:read"},
+        "clinical_admin": set(EXPECTED_MATRIX),
     }
     assert {role: set(perms) for role, perms in ROLE_PERMISSIONS.items()} == expected_sets
 
 
-def test_tech_admin_has_no_clinical_access() -> None:
-    for permission in ("patient:read", "lab:read", "prescription:read"):
+def test_tech_admin_role_is_gone() -> None:
+    # tech_admin was deleted from the system entirely (owner decision, 2026-10-26).
+    assert "tech_admin" not in ALL_ROLES
+    assert "tech_admin" not in ROLE_PERMISSIONS
+    assert "tech_admin" not in policy.RoleLiteral.__args__
+    for permission in sorted(EXPECTED_MATRIX):
         assert has_permission(["tech_admin"], permission) is False
-    for permission in ("staff:read", "staff:manage", "role:assign", "audit:read"):
+    assert permissions_for_roles(["tech_admin"]) == frozenset()
+
+
+def test_admin_role_has_every_permission() -> None:
+    for permission in sorted(EXPECTED_MATRIX):
         assert has_permission(["clinical_admin"], permission) is True
+    assert permissions_for_roles(["clinical_admin"]) == frozenset(ALL_PERMISSIONS)
 
 
 def test_deny_by_default() -> None:
@@ -128,7 +139,7 @@ async def test_require_permission_reads_request_state_first() -> None:
     request = _request()
     principal = Principal(user_id="u2", roles=("nurse",))
     request.state.principal = principal
-    dependency = require_permission("staff:read")
+    dependency = require_permission("patient:read")
     assert await dependency(request) is principal
 
 

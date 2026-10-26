@@ -246,8 +246,12 @@ async def test_doctor_cannot_access_staff_endpoints(auth_client, make_user) -> N
 
 
 @pytest.mark.postgres
-async def test_tech_admin_has_no_clinical_access(auth_client, make_user, clinical_data) -> None:
-    account = await make_user(roles=("tech_admin",))
+async def test_admin_has_full_access_including_clinical_reads(
+    auth_client, make_user, clinical_data
+) -> None:
+    """Behavior change (owner decision, 2026-10-26): the Admin role gained
+    clinical reads (and analytics:read) — it now holds every permission."""
+    account = await make_user(roles=("clinical_admin",))
     client = await auth_client(account)
     for path in (
         "/api/v1/patients",
@@ -256,23 +260,29 @@ async def test_tech_admin_has_no_clinical_access(auth_client, make_user, clinica
         f"/api/v1/patients/{clinical_data.patient_id}/labs",
         f"/api/v1/patients/{clinical_data.patient_id}/prescriptions",
         f"/api/v1/encounters/{clinical_data.encounter_id}",
+        "/api/v1/staff",
+        "/api/v1/audit",
     ):
         response = await client.get(path)
-        assert response.status_code == 403, path
-        assert response.json()["error"]["code"] == "forbidden"
-    # ... while staff administration stays available to the technical admin.
-    assert (await client.get("/api/v1/staff")).status_code == 200
+        assert response.status_code == 200, path
+    me = await client.get("/api/v1/auth/me")
+    assert me.status_code == 200
+    assert "analytics:read" in me.json()["permissions"]
 
 
 @pytest.mark.postgres
-async def test_nurse_reads_clinical_data_but_cannot_manage_staff(
+async def test_nurse_reads_clinical_data_but_has_no_admin_panel_access(
     auth_client, make_user, clinical_data
 ) -> None:
+    """Behavior change (owner decision, 2026-10-26): nurse is least privilege —
+    clinical reads yes, staff/audit administration no (403)."""
     account = await make_user(roles=("nurse",))
     client = await auth_client(account)
     assert (await client.get("/api/v1/patients")).status_code == 200
     assert (await client.get(f"/api/v1/patients/{clinical_data.patient_id}/labs")).status_code == 200
-    assert (await client.get("/api/v1/staff")).status_code == 200  # nurse: staff:read
+
+    assert (await client.get("/api/v1/staff")).status_code == 403  # no staff:read
+    assert (await client.get("/api/v1/audit")).status_code == 403  # no audit:read
 
     assert (
         await client.post(
@@ -289,3 +299,20 @@ async def test_nurse_reads_clinical_data_but_cannot_manage_staff(
             headers=csrf_headers(client),
         )
     ).status_code == 403
+
+
+@pytest.mark.postgres
+async def test_self_role_assignment_is_refused_even_when_it_adds_nothing(
+    auth_client, make_user
+) -> None:
+    # Self role assignment is refused unconditionally (targeting self -> 403),
+    # including a grant that would add no new permissions at all.
+    account = await make_user(roles=("clinical_admin",))
+    client = await auth_client(account)
+    response = await client.post(
+        f"/api/v1/staff/{account.id}/roles",
+        json={"role": "nurse"},
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Self role assignment is not permitted"

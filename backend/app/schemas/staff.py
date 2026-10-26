@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.common import Timestamp
 
-RoleKey = Literal["doctor", "nurse", "clinical_admin", "tech_admin"]
+RoleKey = Literal["doctor", "nurse", "clinical_admin"]
 
 
 class StaffUserOut(BaseModel):

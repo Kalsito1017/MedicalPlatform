@@ -331,7 +331,10 @@ async def test_any_holder_of_patient_read_can_read_any_synthetic_patient(
 async def test_user_without_patient_read_cannot_guess_ids(
     auth_client, make_user, clinical_data
 ) -> None:
-    account = await make_user(roles=("tech_admin",))
+    # Every real role holds patient:read in the three-role model, so the
+    # permission-level denial (403, not concealment) is exercised with an
+    # authenticated account holding no roles at all.
+    account = await make_user(roles=())
     client = await auth_client(account)
     guessed = await client.get(f"/api/v1/patients/{clinical_data.patient_id}")
     assert guessed.status_code == 403  # permission-level denial, not concealment

@@ -95,8 +95,7 @@ export function displayDate(iso) {
 const ROLE_LABELS = {
   doctor: 'Doctor',
   nurse: 'Nurse',
-  clinical_admin: 'Clinical administrator',
-  tech_admin: 'Technical administrator',
+  clinical_admin: 'Admin',
 };
 
 export function roleLabel(role) {

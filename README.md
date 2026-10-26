@@ -141,13 +141,14 @@ remember a shared public account gives no real accountability.
 | Account | Env variables | Role | Permissions (see `docs/SECURITY.md` for the full matrix) |
 |---|---|---|---|
 | Doctor | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | `doctor` | `patient:read`, `lab:read`, `prescription:read` |
-| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `lab:read`, `prescription:read`, `staff:read` |
-| Clinical admin | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | `clinical_admin` | `staff:read`, `staff:manage`, `role:assign`, `audit:read` |
-| Tech admin | `DEMO_TECH_ADMIN_EMAIL` / `DEMO_TECH_ADMIN_PASSWORD` | `tech_admin` | `staff:read`, `staff:manage`, `role:assign`, `audit:read` |
+| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `lab:read`, `prescription:read` (least privilege) |
+| Admin | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | `clinical_admin` | **all**: `patient:read`, `lab:read`, `prescription:read`, `staff:read`, `staff:manage`, `role:assign`, `audit:read`, `analytics:read` |
 
-Note the deliberate asymmetries: clinical roles have **no** staff/role/audit
-administration; admin roles have **no** clinical-data access; technical administration
-grants **no** clinical access; nobody can assign roles to themselves.
+Note the deliberate asymmetries: the nurse role is **least privilege** — clinical
+reads only, with **no** admin panel (no staff/role/audit administration); the Admin
+role holds every permission (clinical reads included); nobody can assign roles to
+themselves. Three roles exactly — `tech_admin` was removed from the system entirely
+(owner decision, 2026-10-26).
 
 ---
 

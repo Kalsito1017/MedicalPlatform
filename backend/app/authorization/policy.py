@@ -1,14 +1,19 @@
 """Role/permission policy — source of truth for the docs/API.md permission matrix.
 
-| Permission        | doctor | nurse | clinical_admin | tech_admin |
-|-------------------|--------|-------|----------------|------------|
-| patient:read      | yes    | yes   | no             | no         |
-| lab:read          | yes    | yes   | no             | no         |
-| prescription:read | yes    | yes   | no             | no         |
-| staff:read        | no     | yes   | yes            | yes        |
-| staff:manage      | no     | no    | yes            | yes        |
-| role:assign       | no     | no    | yes            | yes        |
-| audit:read        | no     | no    | yes            | yes        |
+Three roles only (owner decision, 2026-10-26: `tech_admin` was removed from the
+system entirely). `analytics:read` is declared now for the analytics page that a
+later wave builds.
+
+| Permission        | doctor | nurse | clinical_admin (Admin) |
+|-------------------|--------|-------|------------------------|
+| patient:read      | yes    | yes   | yes                    |
+| lab:read          | yes    | yes   | yes                    |
+| prescription:read | yes    | yes   | yes                    |
+| staff:read        | no     | no    | yes                    |
+| staff:manage      | no     | no    | yes                    |
+| role:assign       | no     | no    | yes                    |
+| audit:read        | no     | no    | yes                    |
+| analytics:read    | no     | no    | yes                    |
 
 Deny by default: unknown roles have no permissions, unknown permissions are
 never granted, and the absence of an authenticated principal is a denial.
@@ -38,9 +43,10 @@ PermissionLiteral = Literal[
     "staff:manage",
     "role:assign",
     "audit:read",
+    "analytics:read",
 ]
 
-RoleLiteral = Literal["doctor", "nurse", "clinical_admin", "tech_admin"]
+RoleLiteral = Literal["doctor", "nurse", "clinical_admin"]
 
 
 class Permission(str, Enum):
@@ -51,13 +57,13 @@ class Permission(str, Enum):
     STAFF_MANAGE = "staff:manage"
     ROLE_ASSIGN = "role:assign"
     AUDIT_READ = "audit:read"
+    ANALYTICS_READ = "analytics:read"
 
 
 class Role(str, Enum):
     DOCTOR = "doctor"
     NURSE = "nurse"
     CLINICAL_ADMIN = "clinical_admin"
-    TECH_ADMIN = "tech_admin"
 
 
 ALL_PERMISSIONS: tuple[str, ...] = tuple(permission.value for permission in Permission)
@@ -77,25 +83,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             Permission.PATIENT_READ.value,
             Permission.LAB_READ.value,
             Permission.PRESCRIPTION_READ.value,
-            Permission.STAFF_READ.value,
         }
     ),
-    Role.CLINICAL_ADMIN.value: frozenset(
-        {
-            Permission.STAFF_READ.value,
-            Permission.STAFF_MANAGE.value,
-            Permission.ROLE_ASSIGN.value,
-            Permission.AUDIT_READ.value,
-        }
-    ),
-    Role.TECH_ADMIN.value: frozenset(
-        {
-            Permission.STAFF_READ.value,
-            Permission.STAFF_MANAGE.value,
-            Permission.ROLE_ASSIGN.value,
-            Permission.AUDIT_READ.value,
-        }
-    ),
+    Role.CLINICAL_ADMIN.value: frozenset(ALL_PERMISSIONS),
 }
 
 

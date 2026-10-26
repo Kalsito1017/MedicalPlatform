@@ -92,9 +92,9 @@ via per-record provenance badges plus footer and "About this demo" dialog disclo
 |---|---|---|---|
 | GET | `/api/v1/staff` | `staff:read` | Paginated; never returns password hashes or tokens. |
 | POST | `/api/v1/staff` | `staff:manage` | Create account. Body: `{email, display_name, password?}` (extra fields rejected). If `password` is omitted, a strong password is generated and returned **once** in `generated_password`. Duplicate email → 409. Roles are granted separately via the role endpoints below. |
-| PATCH | `/api/v1/staff/{user_id}` | `staff:manage` | Display name, activate/deactivate. |
-| POST | `/api/v1/staff/{user_id}/roles` | `role:assign` | `{ "role": "nurse" }`. Self-escalation → 403. |
-| DELETE | `/api/v1/staff/{user_id}/roles/{role}` | `role:assign` | Last-admin protection → 409. |
+| PATCH | `/api/v1/staff/{user_id}` | `staff:manage` | Display name, activate/deactivate. Deactivating the last **active** `clinical_admin` → 409 `conflict`. Deactivation revokes all of that account's sessions immediately. |
+| POST | `/api/v1/staff/{user_id}/roles` | `role:assign` | `{ "role": "nurse" }`. Role keys: `doctor` \| `nurse` \| `clinical_admin`; any other key (including the removed `tech_admin`) → 400 `validation_error`. Self role assignment → 403. |
+| DELETE | `/api/v1/staff/{user_id}/roles/{role}` | `role:assign` | Role keys as above (unknown key → 400). Removing `clinical_admin` from the last **active** holder → 409 `conflict` (at least one active Admin must remain). |
 
 ### Audit
 
@@ -139,17 +139,24 @@ payloads are never audited or logged.
 
 ## Permission matrix (source of truth: `backend/app/authorization/policy.py`)
 
-| Permission | doctor | nurse | clinical_admin | tech_admin |
-|---|---|---|---|---|
-| `patient:read` | ✔ | ✔ | ✖ | ✖ |
-| `lab:read` | ✔ | ✔ | ✖ | ✖ |
-| `prescription:read` | ✔ | ✔ | ✖ | ✖ |
-| `staff:read` | ✖ | ✔ | ✔ | ✔ |
-| `staff:manage` | ✖ | ✖ | ✔ | ✔ |
-| `role:assign` | ✖ | ✖ | ✔ | ✔ |
-| `audit:read` | ✖ | ✖ | ✔ | ✔ |
+Three roles only (`tech_admin` was removed from the system entirely — owner
+decision, 2026-10-26). `analytics:read` is declared now for the analytics page
+a later wave builds; no endpoint requires it yet.
 
-Deny by default. Technical administration grants **no** clinical-data access.
+| Permission | doctor | nurse | clinical_admin (display label: **Admin**) |
+|---|---|---|---|
+| `patient:read` | ✔ | ✔ | ✔ |
+| `lab:read` | ✔ | ✔ | ✔ |
+| `prescription:read` | ✔ | ✔ | ✔ |
+| `staff:read` | ✖ | ✖ | ✔ |
+| `staff:manage` | ✖ | ✖ | ✔ |
+| `role:assign` | ✖ | ✖ | ✔ |
+| `audit:read` | ✖ | ✖ | ✔ |
+| `analytics:read` | ✖ | ✖ | ✔ |
+
+Deny by default. `nurse` is least-privilege clinical read (no staff/audit
+administration and therefore no admin panel); `clinical_admin` (Admin) holds
+**every** permission including clinical reads.
 
 ## MCP tool contract (internal, not a public HTTP API)
 

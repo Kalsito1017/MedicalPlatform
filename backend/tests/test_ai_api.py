@@ -73,7 +73,7 @@ async def test_anonymous_is_unauthenticated(make_client, clinical_data) -> None:
 async def test_permission_is_enforced_and_denials_are_audited(
     auth_client, make_user, clinical_data
 ) -> None:
-    account = await make_user(roles=("clinical_admin",))  # no patient:read
+    account = await make_user(roles=())  # no roles: deny-by-default, no patient:read
     client = await auth_client(account)
     response = await ask(client, clinical_data.patient_id)
     assert response.status_code == 403
@@ -558,7 +558,7 @@ async def test_general_mode_tool_loop_searches_then_reads(
 
 @pytest.mark.postgres
 async def test_general_mode_requires_patient_read(auth_client, make_user, clinical_data) -> None:
-    account = await make_user(roles=("clinical_admin",))  # no patient:read
+    account = await make_user(roles=())  # no roles: deny-by-default, no patient:read
     client = await auth_client(account)
     response = await ask_general(client)
     assert response.status_code == 403

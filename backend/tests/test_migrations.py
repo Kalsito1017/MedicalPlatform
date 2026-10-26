@@ -32,6 +32,35 @@ async def _table_exists(url: str, table: str) -> bool:
         await connection.close()
 
 
+async def _column_exists(url: str, table: str, column: str) -> bool:
+    """Parameterized information_schema lookup of one qualified column."""
+    import asyncpg
+    from sqlalchemy.engine import make_url
+
+    parsed = make_url(url)
+    connect_kwargs: dict[str, object] = {
+        "host": parsed.host or "localhost",
+        "port": parsed.port or 5432,
+        "user": parsed.username or "postgres",
+        "database": parsed.database or "postgres",
+        "timeout": 5,
+    }
+    if parsed.password:
+        connect_kwargs["password"] = parsed.password
+    schema, name = table.split(".", 1)
+    connection = await asyncpg.connect(**connect_kwargs)  # type: ignore[arg-type]
+    try:
+        return await connection.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)",
+            schema,
+            name,
+            column,
+        )
+    finally:
+        await connection.close()
+
+
 def test_migration_up_down_up(migrated_test_db: str, test_db_url: str) -> None:
     # Start from a clean slate regardless of earlier test order.
     result = run_alembic("downgrade", "base")
@@ -94,3 +123,56 @@ def test_alembic_cli_reads_env_file_when_no_env_vars(migrated_test_db: str, test
         )
     assert result.returncode == 0, result.stderr
     assert "(head)" in result.stdout
+
+
+# Tables and columns introduced by revision c7f2b4d9e013 (clinical data layer).
+CLINICAL_LAYER_TABLES = (
+    "patients.diagnosis",
+    "patients.clinical_note",
+    "patients.patient_assignment",
+    "laboratory.test_catalog",
+    "laboratory.reference_range",
+    "laboratory.lab_order",
+    "laboratory.specimen",
+    "medications.prescription_item",
+    "medications.prescription_history",
+    "medications.prescription_change",
+    "admin.permission",
+)
+
+CLINICAL_LAYER_COLUMNS = (
+    ("patients.patient", "blood_type"),
+    ("patients.encounter", "practitioner_id"),
+    ("patients.encounter", "weight_kg"),
+    ("patients.encounter", "height_cm"),
+)
+
+
+def test_clinical_data_layer_migration_up_down_up(migrated_test_db: str, test_db_url: str) -> None:
+    """Revision c7f2b4d9e013 upgrades, downgrades, and re-upgrades cleanly.
+
+    The downgrade must drop every new table and remove the added columns; the
+    pre-existing schema must survive untouched.
+    """
+    result = run_alembic("upgrade", "head")
+    assert result.returncode == 0, result.stderr
+    for table in CLINICAL_LAYER_TABLES:
+        assert asyncio.run(_table_exists(test_db_url, table)) is True, table
+    for table, column in CLINICAL_LAYER_COLUMNS:
+        assert asyncio.run(_column_exists(test_db_url, table, column)) is True, f"{table}.{column}"
+
+    result = run_alembic("downgrade", "e8c2a91f4d77")
+    assert result.returncode == 0, result.stderr
+    for table in CLINICAL_LAYER_TABLES:
+        assert asyncio.run(_table_exists(test_db_url, table)) is False, table
+    for table, column in CLINICAL_LAYER_COLUMNS:
+        assert asyncio.run(_column_exists(test_db_url, table, column)) is False, f"{table}.{column}"
+    assert asyncio.run(_table_exists(test_db_url, "patients.patient")) is True
+    assert asyncio.run(_table_exists(test_db_url, "medications.prescription")) is True
+
+    result = run_alembic("upgrade", "head")
+    assert result.returncode == 0, result.stderr
+    for table in CLINICAL_LAYER_TABLES:
+        assert asyncio.run(_table_exists(test_db_url, table)) is True, table
+    for table, column in CLINICAL_LAYER_COLUMNS:
+        assert asyncio.run(_column_exists(test_db_url, table, column)) is True, f"{table}.{column}"

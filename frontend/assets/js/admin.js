@@ -25,14 +25,13 @@ const PAGE_SIZE = 20;
 const AUDIT_PAGE_SIZE = 10;
 const PASSWORD_MIN = 8;
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const ROLE_KEYS = ['doctor', 'nurse', 'clinical_admin', 'tech_admin'];
+const ROLE_KEYS = ['doctor', 'nurse', 'clinical_admin'];
 
 // Role consequences, stated in the confirmation dialog before every grant.
 const ROLE_ABILITY = {
   doctor: 'view patient records and clinical data permitted by the demo policy (labs and prescriptions)',
-  nurse: 'view permitted patient information and read the staff list, without staff-role administration',
-  clinical_admin: 'manage permitted staff accounts and roles and read the audit log (this does not grant clinical-data access)',
-  tech_admin: 'manage user access and staff accounts (this does not grant clinical-data access)',
+  nurse: 'view permitted patient information and clinical data (least privilege, with no staff or audit administration)',
+  clinical_admin: 'do everything in the demo: view clinical data, manage staff accounts and roles, read the audit log, and view analytics',
 };
 
 const state = {

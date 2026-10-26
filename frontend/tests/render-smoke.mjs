@@ -63,7 +63,16 @@ const CLIN_ADMIN = {
   email: 'admin@example.com',
   display_name: 'Cal Admin',
   roles: ['clinical_admin'],
-  permissions: ['staff:read', 'staff:manage', 'role:assign', 'audit:read'],
+  permissions: [
+    'patient:read',
+    'lab:read',
+    'prescription:read',
+    'staff:read',
+    'staff:manage',
+    'role:assign',
+    'audit:read',
+    'analytics:read',
+  ],
   is_active: true,
 };
 const PATIENT = {
@@ -128,7 +137,19 @@ const NURSE = {
   email: 'nurse@example.com',
   display_name: 'Nan Nurse',
   roles: ['nurse'],
-  permissions: ['patient:read', 'lab:read', 'prescription:read', 'staff:read'],
+  permissions: ['patient:read', 'lab:read', 'prescription:read'],
+  is_active: true,
+};
+
+// Permission-driven UI gate fixture: no real role lacks patient:read in the
+// three-role model (admin gained clinical reads), so the "no patient access"
+// gates are exercised with an explicit permission set, not a role.
+const NO_PATIENT_READ = {
+  id: 'u8',
+  email: 'ops@example.com',
+  display_name: 'Oli Ops',
+  roles: [],
+  permissions: ['staff:read', 'staff:manage', 'role:assign', 'audit:read'],
   is_active: true,
 };
 
@@ -659,7 +680,7 @@ await check('AI panel shows a loading state and supports cancelling the request'
 
 await check('AI panel is not interactive without permission to view patients', async () => {
   globalThis.fetch = makeFetch({
-    me: CLIN_ADMIN,
+    me: NO_PATIENT_READ,
     patient: PATIENT,
     summary: SUMMARY,
     labs: LABS,
@@ -850,7 +871,7 @@ await check('AI page network failure renders the offline banner with retry', asy
 });
 
 await check('AI page is gated without patient:read: nav hidden and denial shown', async () => {
-  globalThis.fetch = makeFetch({ me: CLIN_ADMIN });
+  globalThis.fetch = makeFetch({ me: NO_PATIENT_READ });
   const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
   await freshPage('ai-assistant.js');
   await settle();
@@ -889,7 +910,7 @@ await check('admin staff table renders the Page shape with roles, status, and pa
           id: 'u-2b',
           display_name: 'Tom Tech',
           email: 'tom@example.com',
-          roles: ['clinical_admin', 'tech_admin'],
+          roles: ['clinical_admin'],
           is_active: false,
           created_at: '2026-10-20T09:00:00Z',
         }),
@@ -907,7 +928,7 @@ await check('admin staff table renders the Page shape with roles, status, and pa
   const region = textOf(document.getElementById('staff-region'));
   assertContains(region, 'Ann Doctor', 'display name missing');
   assertContains(region, 'ann@example.com', 'email missing');
-  assertContains(region, 'Technical administrator', 'role label missing');
+  assertContains(region, 'Admin', 'role label missing');
   assertContains(region, ui.displayDate('2026-10-20T09:00:00Z'), 'created date missing');
   assertContains(region, 'Showing 1\u20132 of 25 staff accounts', 'pagination summary wrong');
   const badges = badgeTexts(firstRow(document.getElementById('staff-region')));
@@ -985,7 +1006,7 @@ await check('admin role revoke renders the 409 last-admin conflict cleanly', asy
     routes: [{
       method: 'DELETE',
       match: /\/staff\/u-9\/roles\/[^/]+$/,
-      response: { status: 409, code: 'conflict', message: 'At least one active administrator must remain.' },
+      response: { status: 409, code: 'conflict', message: 'At least one active account with the Admin role must remain. Assign the Admin role to another active account before removing this one.' },
     }],
   });
   const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
@@ -993,7 +1014,7 @@ await check('admin role revoke renders the 409 last-admin conflict cleanly', asy
   await settle();
 
   const row = firstRow(document.getElementById('staff-region'));
-  await clickButton(row, 'Revoke Clinical administrator');
+  await clickButton(row, 'Revoke Admin');
   await settle();
   const dialog = textOf(document.getElementById('app-dialog-body'));
   assertContains(dialog, 'This removes their ability to', 'revoke consequence missing');
@@ -1002,8 +1023,8 @@ await check('admin role revoke renders the 409 last-admin conflict cleanly', asy
 
   const status = textOf(document.getElementById('staff-status'));
   assertContains(status, 'Action not allowed right now', '409 title missing');
-  assertContains(status, 'At least one active administrator must remain.', '409 server message missing');
-  assert(badgeTexts(row).includes('Clinical administrator'), 'role badge must remain after a refused revoke');
+  assertContains(status, 'At least one active account with the Admin role must remain.', '409 server message missing');
+  assert(badgeTexts(row).includes('Admin'), 'role badge must remain after a refused revoke');
 });
 
 await check('admin self-escalation 403 from the backend is rendered cleanly', async () => {
@@ -1023,7 +1044,7 @@ await check('admin self-escalation 403 from the backend is rendered cleanly', as
 
   const row = firstRow(document.getElementById('staff-region'));
   const select = row.querySelector('select');
-  select.value = 'tech_admin';
+  select.value = 'doctor';
   await select.dispatch('change');
   await buttonByText(row, 'Grant role').dispatch('click');
   await settle();
@@ -1195,26 +1216,23 @@ await check('admin create staff with a role confirms the grant and assigns it af
   assert(!textOf(document.getElementById('app-dialog-body')).includes('Generated password'), 'no one-time dialog expected for a supplied password');
 });
 
-await check('admin renders a read-only staff table for a nurse without unmaintainable controls', async () => {
-  globalThis.fetch = makeFetch({
-    me: NURSE,
-    staff: {
-      items: [staffUser({ id: 'u-1', display_name: 'Ann Doctor', roles: ['doctor'] })],
-      total: 1,
-      limit: 20,
-      offset: 0,
-    },
-  });
-  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+await check('admin page denies a nurse honestly and shows no fake controls', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ calls, me: NURSE });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS, 'page-body']);
   await freshPage('admin.js');
   await settle();
 
-  assertContains(textOf(document.getElementById('staff-region')), 'Ann Doctor', 'staff row missing');
-  assertEqualLocal(document.getElementById('create-staff-section').hidden, true, 'create form must hide without staff:manage');
-  assertEqualLocal(document.getElementById('audit-section').hidden, true, 'audit section must hide without audit:read');
-  const region = textOf(document.getElementById('staff-region'));
-  assert(!region.includes('Grant role'), 'grant control must not render without role:assign');
-  assert(!region.includes('Deactivate'), 'deactivate control must not render without staff:manage');
+  const body = textOf(document.getElementById('page-body'));
+  assertContains(body, 'You do not have permission', 'denial copy missing');
+  assertContains(textOf(document.getElementById('site-nav')), 'Dashboard', 'nav must still render');
+  assert(!textOf(document.getElementById('site-nav')).includes('Admin'), 'admin nav item must not render for a nurse');
+  assert(!textOf(document.body).includes('Grant role'), 'no staff controls may render for a nurse');
+  assertEqualLocal(
+    calls.filter((call) => call.url.startsWith('/api/v1/staff') || call.url.startsWith('/api/v1/audit')).length,
+    0,
+    'no staff/audit fetch may happen without the permissions',
+  );
 });
 
 /* ------------------------------------------- dashboard + patient detail UI */
@@ -1259,7 +1277,7 @@ await check('dashboard hides patient content without patient:read and keeps admi
   const calls = [];
   globalThis.fetch = makeFetch({
     calls,
-    me: CLIN_ADMIN,
+    me: NO_PATIENT_READ,
     patients: { items: [PATIENT], total: 1, limit: 8, offset: 0 },
   });
   const document = bootDom([...CHROME_IDS, 'page-body', 'welcome-heading']);
