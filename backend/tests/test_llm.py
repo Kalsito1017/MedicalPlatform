@@ -27,7 +27,7 @@ from app.llm.provider import (
 )
 from app.config import load_settings
 
-SENTINEL_KEY = "oc_sk_SENTINEL-9f3c2b-must-never-leak"
+SENTINEL_KEY = "test-only-sentinel-9f3c2b-must-never-leak"
 BASE_URL = "https://llm.example.test/inference"
 ENDPOINT = f"{BASE_URL}/openai/v1/chat/completions"
 

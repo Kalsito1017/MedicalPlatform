@@ -19,9 +19,8 @@ posted here only after deployment succeeds (Phase 15). No URL is claimed until t
 
 **Status:** in active development. The Phase 1 deliverables (architecture, security, and
 API-contract documentation) are written; implementation phases are landing per
-`PLAN.md` (the lead maintains the phase tracker there). Commands marked below are
-*(unverified until Phase 13)* — this README is written ahead of the code and will be
-corrected against reality as phases land.
+`PLAN.md` (the lead maintains the phase tracker there). Local/Docker commands below are
+verified as of Phase 13; hosted-deployment commands stay marked until Phase 14/15.
 
 ---
 
@@ -58,8 +57,7 @@ Target: a new engineer running locally in under an hour. Prerequisites:
 | Python | 3.12 (via `uv`) | pinned for binary-wheel coverage; Docker image `python:3.12-slim` |
 | Node | 24.x | only for frontend tooling/tests — the frontend itself is buildless |
 
-Steps *(commands follow the planned layout: `backend/`, `scripts/seed_demo_data.py`,
-`docker-compose.yml` with a `db` service; marked unverified until Phase 13)*:
+Steps *(local commands verified in Phase 13 against the Docker stack)*:
 
 ```bash
 # 1. Clone
@@ -72,32 +70,58 @@ cp .env.example .env
 # DEMO_* accounts, and leave LLM_ENABLED=false for now
 
 # 3. Start the local database (named volume, persists across restarts)
-docker compose up -d db          # (unverified until Phase 13)
+docker compose up -d db
 
 # 4. Install backend dependencies
 cd backend
-uv sync                          # (unverified until Phase 13)
+uv sync
 
 # 5. Create the schema
-uv run alembic upgrade head      # (unverified until Phase 3/13)
+uv run alembic upgrade head
 
-# 6. Load synthetic demo data (idempotent/resettable)
-uv run python ../scripts/seed_demo_data.py   # (unverified until Phase 3/13)
+# 6. Load synthetic demo data (idempotent)
+uv run python ../scripts/seed_demo_data.py
 
 # 7. Run the API server (default http://localhost:8000)
-uv run uvicorn app.main:app --reload         # (unverified until Phase 4/13)
+uv run uvicorn app.main:app --reload
 
 # 8. Open the frontend
-# See docs/ARCHITECTURE.md §8: the local frontend is served at http://localhost:8000
-# (backend-served in dev) or http://localhost:5173 (static). Exact mechanism lands in
-# Phase 9/13 and will be confirmed here. Both origins are pre-allowed in .env.example.
+# The backend serves the static frontend at http://localhost:8000 (single origin:
+# API at /api/v1, health at /health/*). http://localhost:5173 remains pre-allowed
+# in .env.example for anyone serving frontend/ with a separate static server.
 ```
 
 Health check: `curl http://localhost:8000/health/ready` should return 200 once the
 database is reachable (`/health/live` is process liveness only).
 
-Docker alternative: `docker compose up --build` runs the full local stack once
-Phase 13 lands — exact services and commands will be confirmed here then.
+### Docker (full stack, single origin)
+
+`docker compose up --build` runs the whole demo in containers: FastAPI serves the API
+(`/api/v1`), health (`/health/*`), and the static frontend at `http://localhost:8000`
+from one origin — no CORS setup needed. The image is built from `backend/Dockerfile`
+(python:3.12-slim, `uv sync --frozen --no-dev`, non-root user, no baked `.env`/secrets);
+configuration comes from `.env` / `backend/.env` via compose `env_file`.
+
+```bash
+docker compose up --build -d            # build + start db and app (app on :8000)
+# migrations run automatically on app start (entrypoint: alembic upgrade head)
+docker compose run --rm app python /app/scripts/seed_demo_data.py   # synthetic seed
+docker compose logs -f app              # structured app logs (db: docker compose logs -f db)
+docker compose ps                       # app becomes "healthy" via /health/ready
+bash scripts/e2e_smoke.sh               # end-to-end smoke of the full workflow
+
+# Reset (all data is synthetic): delete the volume, re-migrate, re-seed
+docker compose down -v
+docker compose up -d --build            # fresh database; migrations run on start
+docker compose run --rm app python /app/scripts/seed_demo_data.py
+
+docker compose down                     # stop; data persists in the postgres_data volume
+```
+
+Data persistence: PostgreSQL data lives in the named volume `postgres_data` and survives
+`docker compose down`, restarts, and image rebuilds; only `docker compose down -v` (or an
+explicit volume removal) deletes it. See `docs/DEPLOYMENT.md` §9 for the full reset /
+retention procedure and `docs/TROUBLESHOOTING.md` for failures.
 
 ---
 
@@ -148,6 +172,16 @@ Repository security scan (stdlib-only Python, safe to run anywhere):
 python3 scripts/security_check.py
 ```
 
+End-to-end smoke against the running stack (Docker or `uv run`), covering health,
+the frontend + security headers/CSP, login/CSRF, clinical reads, the documented
+AI-503 path, role boundaries, logout, audit rows, a container-log secret scan,
+and persistence across `docker compose restart app`:
+
+```bash
+bash scripts/e2e_smoke.sh                # docker steps included
+bash scripts/e2e_smoke.sh --no-docker    # against a locally running uvicorn
+```
+
 The backend suite covers permission mapping, API auth/roles/validation/pagination,
 migrations and seed behavior, MCP authorization and bounds, mocked LLM behavior,
 escalation attempts, and audit events. The frontend checks cover static hygiene, module
@@ -178,13 +212,15 @@ MedicalPlatform/
 ├── PLAN.md                  execution plan (phases 0–15) and progress log
 ├── README.md                this file
 ├── .env.example             environment template (placeholders only)
-├── docker-compose.yml       local dev stack (Postgres)
+├── docker-compose.yml       local stack (Postgres + app container)
 ├── frontend/                static HTML/CSS/JS (Cloudflare Pages)
 ├── backend/                 FastAPI app (auth, authorization, services, MCP, LLM)
 │   ├── app/                 application code
 │   ├── migrations/          Alembic
+│   ├── Dockerfile           single-origin container image (API + static frontend)
 │   └── tests/               pytest suite
-├── scripts/                 seed_demo_data.py, healthcheck.py
+├── scripts/                 seed_demo_data.py, healthcheck.py, e2e_smoke.sh,
+│                            docker-entrypoint.sh, security_check.py
 ├── docs/
 │   ├── API.md               frozen API contract (source of truth for endpoints)
 │   ├── ARCHITECTURE.md      system design and decision log

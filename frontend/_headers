@@ -1,0 +1,20 @@
+# Cloudflare Pages response headers — kept byte-identical in effect to the
+# backend's SecurityHeadersMiddleware (backend/app/main.py) so pages served at
+# the edge get the same protection as pages served by FastAPI.
+#
+# ASSUMPTION: the site uses the same-origin /api/* proxy (see docs/DEPLOYMENT.md
+# section 4). connect-src 'self' only works because of that proxy.
+#
+# CSP: script-src uses the SHA-256 hash of the inline window.__APP_CONFIG__
+# bootstrap block shared by all pages. If that block changes, this hash MUST be
+# regenerated (scripts/security_check.py fails when they drift apart).
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: no-referrer
+  Permissions-Policy: accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), usb=(), xr-spatial-tracking=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  X-Permitted-Cross-Domain-Policies: none
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'sha256-FCyl4aml0FXN3LiS6Gywzo8SYVs85ZhLR8JLqUxTX78='; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'

@@ -285,6 +285,66 @@ def check_frontend_hygiene() -> tuple[list[str], int]:
     return findings, checked
 
 
+INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def check_edge_headers() -> tuple[list[str], int]:
+    """Keep frontend/_headers (Cloudflare Pages) in sync with the backend CSP.
+
+    The edge must serve the same protection as SecurityHeadersMiddleware: no
+    'unsafe-inline'/'unsafe-eval', and `script-src` hashes must match the actual
+    inline bootstrap blocks in the served HTML, or the site breaks under CSP
+    (or silently loses its script protection).
+    """
+    import base64
+    import hashlib
+
+    findings: list[str] = []
+    checked = 0
+    headers_file = REPO_ROOT / "frontend" / "_headers"
+    frontend = REPO_ROOT / "frontend"
+    if not headers_file.is_file():
+        findings.append(
+            "frontend/_headers:1 [edge-headers-missing] "
+            "edge responses need the security headers; see docs/DEPLOYMENT.md section 4"
+        )
+        return findings, checked
+
+    text = headers_file.read_text(encoding="utf-8", errors="replace")
+    rel = "frontend/_headers"
+    checked += 1
+
+    csp_match = re.search(r"^\s*Content-Security-Policy:\s*(.+)$", text, re.MULTILINE)
+    if not csp_match:
+        findings.append(f"{rel}:1 [edge-csp-missing] add a Content-Security-Policy header")
+    else:
+        csp = csp_match.group(1)
+        for banned in ("unsafe-inline", "unsafe-eval"):
+            if banned in csp:
+                findings.append(
+                    f"{rel}:{line_no(text, csp_match.start())} [edge-csp-{banned}] "
+                    f"remove '{banned}'; use hashes for the inline bootstrap"
+                )
+        for required in ("X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy"):
+            if not re.search(rf"^\s*{required}:\s*\S", text, re.MULTILINE):
+                findings.append(f"{rel}:1 [edge-header-missing] add the {required} header")
+
+    # The script-src hashes must equal the hashes of the real inline scripts.
+    expected: set[str] = set()
+    for html in sorted(frontend.rglob("*.html")):
+        checked += 1
+        for match in INLINE_SCRIPT_RE.finditer(html.read_text(encoding="utf-8", errors="replace")):
+            digest = hashlib.sha256(match.group(1).encode("utf-8")).digest()
+            expected.add(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
+    declared = set(re.findall(r"'sha256-[^']+'", csp_match.group(1) if csp_match else ""))
+    if declared != expected:
+        findings.append(
+            f"{rel}:1 [edge-csp-hash-drift] script-src hashes do not match the inline "
+            f"bootstrap blocks (declared {sorted(declared)}, actual {sorted(expected)})"
+        )
+    return findings, checked
+
+
 def check_db_credentials(files: list[str]) -> tuple[list[str], int]:
     findings: list[str] = []
     checked = 0
@@ -436,15 +496,17 @@ def main() -> int:
 
     sections = []
     findings, scanned = check_secret_scan(files)
-    sections.append(("1/5 secret-scan", f"files scanned: {scanned}", findings, []))
+    sections.append(("1/6 secret-scan", f"files scanned: {scanned}", findings, []))
     findings, counted = check_forbidden_files(files)
-    sections.append(("2/5 forbidden-files", f"paths checked: {counted}", findings, []))
+    sections.append(("2/6 forbidden-files", f"paths checked: {counted}", findings, []))
     findings, warnings, counted = check_gitignore(files)
-    sections.append(("3/5 gitignore", f"files parsed: {counted}", findings, warnings))
+    sections.append(("3/6 gitignore", f"files parsed: {counted}", findings, warnings))
     findings, counted = check_frontend_hygiene()
-    sections.append(("4/5 frontend-hygiene", f"files checked: {counted}", findings, []))
+    sections.append(("4/6 frontend-hygiene", f"files checked: {counted}", findings, []))
     findings, counted = check_db_credentials(files)
-    sections.append(("5/5 db-credentials", f"files scanned: {counted}", findings, []))
+    sections.append(("5/6 db-credentials", f"files scanned: {counted}", findings, []))
+    findings, counted = check_edge_headers()
+    sections.append(("6/6 edge-headers", f"files checked: {counted}", findings, []))
 
     total_findings = 0
     total_warnings = 0
@@ -460,7 +522,7 @@ def main() -> int:
         total_findings += len(section_findings)
         total_warnings += len(section_warnings)
 
-    print(f"summary: 5 sections, {total_findings} findings, {total_warnings} warnings")
+    print(f"summary: 6 sections, {total_findings} findings, {total_warnings} warnings")
     print(f"RESULT: {'FAIL' if total_findings else 'PASS'}")
     return 1 if total_findings else 0
 

@@ -68,8 +68,8 @@ Mapped to the phase/controls that implement each item.
 | Staff list/create/activate/roles; audited; CSRF-protected; last-admin protection; backend enforces all | Admin panel | Phase 10 |
 | Explicit statement: not clinically validated, not a medical device | README + `docs/SECURITY.md` non-claims + in-app notice | Done (docs), Phase 9 (UI) |
 | Architecture decision records | Decision log in `docs/ARCHITECTURE.md` | Done |
-| README that gets a new engineer running in under an hour | `README.md` | Done (commands marked unverified until Phase 13) |
-| Documented data-retention and reset procedures | Demo-data reset in `docs/DEPLOYMENT.md`; retention deferred (see B) | Phase 13–14 |
+| README that gets a new engineer running in under an hour | `README.md` | Done (commands verified in Phase 13: Docker build + E2E smoke) |
+| Documented data-retention and reset procedures | Demo-data reset in `docs/DEPLOYMENT.md` §9; retention deferred (see B) | Done (reset, Phase 13) |
 | Explicit non-goals | `docs/SECURITY.md` §6, `PLAN.md` | Done |
 
 ---

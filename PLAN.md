@@ -233,11 +233,11 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 8 | LLM integration and safe response handling | DONE | 2026-10-26 | OpenCode OpenAI-compatible provider + NullProvider (503 when off), bounded tool loop with server-side allowlist, prompt-injection labeling, rate limit, mocked-provider tests, no key in browser |
 | 9 | Frontend experience | NOT STARTED | — | |
 | 10 | Admin panel and staff management | NOT STARTED | — | |
-| 11 | Audit, privacy, and security hardening | NOT STARTED | — | |
+| 11 | Audit, privacy, and security hardening | DONE | 2026-10-26 | Security headers + hash-based strict CSP (no unsafe-inline), HSTS-on-HTTPS, audit inventory proven complete (18/18 events), log redaction integration-tested, dependency audit green |
 | 12 | Automated tests and CI | DONE | 2026-10-26 | 310 tests (0 failed) + 74/26 frontend checks; 3-job GH Actions w/ no secrets to fork PRs; dependency audit green after security bumps; live CI run on push verified in Phase 14/15 |
-| 13 | Docker and local end-to-end validation | NOT STARTED | — | |
-| 14 | Public demo deployment preparation | NOT STARTED | — | |
-| 15 | Deploy publicly and verify website | NOT STARTED | — | |
+| 13 | Docker and local end-to-end validation | DONE | 2026-10-26 | Non-root image (292MB, no secrets baked), compose app+db with healthchecks, migrations-on-start, scripts/e2e_smoke.sh 10-step acceptance ALL PASSED incl. log secret scan + restart persistence |
+| 14 | Public demo deployment preparation | BLOCKED | — | Deferred by user decision 2026-10-26: hosting later. Runbook + config prep lands in docs/DEPLOYMENT.md; AI will be enabled at deploy via server-side LLM key + Console budget cap |
+| 15 | Deploy publicly and verify website | BLOCKED | — | Deferred by user decision 2026-10-26 (same as Phase 14). Execution resumes when hosting access is provided; no URL will be claimed before live verification |
 
 ---
 
@@ -858,6 +858,18 @@ Append one dated entry after every completed phase:
 - Security notes: audit action inventory stays closed (`mcp.unknown_tool` for attempted unknown tools — no attacker-controlled strings in the action column); citations are typed `{type, id}` references; LLM key server-side only with Console budget cap; HIGH/CRITICAL dependency gate now green without any allowlist override.
 - Blockers: none.
 - Next phase: Phase 11 (security headers hardening) + Phase 13 (Docker E2E), then Phases 14–15 (deployment + public verification).
+
+### 2026-10-26 — Phases 11 + 13: Security hardening, Docker, local E2E
+- Status: DONE
+- Implemented: SecurityHeadersMiddleware on every response (nosniff, DENY framing, no-referrer, Permissions-Policy, COOP/CORP, no cross-domain policies, HSTS on HTTPS only) with a strict CSP whose `script-src` allows 'self' + the SHA-256 hash of the inline config bootstrap (computed at startup — no unsafe-inline/unsafe-eval anywhere); static frontend served from FastAPI at one origin via the 404 handler (no route shadowing, frozen 404-envelope contract preserved); audit inventory proven complete — all 18 documented event classes emitted, asserted by an integration test; log-redaction integration test (real requests → real logs → no passwords/tokens/clinical payloads; negative control proves the detector works); Docker: python:3.12-slim + pinned uv, non-root uid 10001, `uv sync --frozen` from the committed lockfile, no .env/dev tooling in the image, migrations-on-start entrypoint with RUN_MIGRATIONS_ON_START escape hatch, compose `app`+`db` with real healthcheck gating and named volume; `scripts/e2e_smoke.sh` scripts the full 10-step acceptance workflow.
+- Lead gap fixes: (1) `frontend/_headers` created so Cloudflare Pages serves identical headers/CSP at the edge, with the verified bootstrap hash; (2) `scripts/security_check.py` extended with section 6/6 edge-headers gate (fails on missing headers, unsafe-inline/unsafe-eval, or CSP-hash drift between `_headers` and the served HTML); (3) `backend/tests/test_llm.py` fixture sentinel no longer shaped like a live `oc_sk_` key (test semantics unchanged) — closes the scanner finding that would have kept the CI security job red; (4) `.env.example` gained the compose-consumed vars (POSTGRES_*, APP_PORT, RUN_MIGRATIONS_ON_START, FRONTEND_DIR) and its CORS section preserved; (5) docs/DEPLOYMENT.md section 4 placeholder replaced with the concrete same-origin `/api/*` proxy step (`_redirects`) + edge-headers step + verification item; docs/BACKLOG.md stale "unverified until Phase 13" markers cleared.
+- Files changed: backend/Dockerfile, .dockerignore, docker-compose.yml, scripts/{docker-entrypoint.sh,e2e_smoke.sh,security_check.py}, backend/app/{main.py,config.py}, backend/tests/{test_security_headers.py,test_hardening.py,test_llm.py}, frontend/_headers, .env.example, docs/{SECURITY.md,DEPLOYMENT.md,TROUBLESHOOTING.md,BACKLOG.md}, README.md, PLAN.md
+- Commands run: `docker compose up --build` (clean state, WSL docker socket now reachable) → migrations auto-applied → seed → `bash scripts/e2e_smoke.sh` → **ALL STEPS PASSED** (10 steps: health, CSP/headers + same-origin config, login incl. uniform-failure 401, clinical reads, AI 503-with-app-usable, admin 403/201/200 matrix, logout→401, audit coverage, container-log secret scan with negative control, restart persistence); `uv run pytest -q` → **324 passed, 1 skipped**; `ruff check` clean; frontend 74/74 + 26/26; `scripts/security_check.py` → **PASS, 6 sections, 0 findings**; `pip-audit` → no known vulnerabilities.
+- Tests: 324 backend (14 new: 12 security-header + 2 hardening incl. audit-inventory + log-redaction integration) + 100 frontend checks. All reproduced independently by the lead, including the E2E smoke.
+- Acceptance criteria: PASS — Phase 11 (no secrets committed/exposed, logs clean of credentials and clinical payloads, authZ/admin actions audited, injection + unauthorized-access tests pass, limitations documented honestly) and Phase 13 (`docker compose up --build` starts the demo, migrations + seed reproducible from a clean state, main workflow succeeds end-to-end, container logs leak nothing, persistence + reset documented).
+- Security notes: CSP hash ties header strength to actual markup (drift = CI failure); Referrer-Policy `no-referrer` chosen because patient ids live in page URLs; image contains no secrets and no dev tooling; edge-header gap for Pages documented and closed via `frontend/_headers` + scanner gate.
+- Blockers: none. Phases 14–15 remain deferred by user decision (hosting later; AI enabled at deploy).
+- Next phase: user publishes the commit range to GitHub and confirms the CI run goes green; then Phase 14/15 resumes when hosting access is provided.
 
 ## Final instruction to the coding agent
 

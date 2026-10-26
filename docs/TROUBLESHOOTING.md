@@ -1,7 +1,7 @@
 # Troubleshooting
 
 **Scope:** common failures in local development and in the deployed demo, with symptoms, likely causes, and fixes — plus how to gather diagnostics without leaking secrets.
-**Status:** living document, updated as phases land. Written at Phase 1; entries are based on the designed behavior in `docs/API.md` and `.env.example`. Fix commands are marked *(unverified until Phase 13)* where the code that runs them does not exist yet.
+**Status:** living document, updated as phases land. Written at Phase 1; entries are based on the behavior defined in `docs/API.md` and `.env.example`. Commands previously marked *(unverified until Phase 13)* are verified against the local Docker stack as of Phase 13.
 
 ---
 
@@ -34,7 +34,7 @@ name, never by value); readiness never becomes healthy.
 1. Compare your `.env` (local) or Render dashboard env (deployed) against `.env.example`.
 2. Set every required variable. Placeholder values like `change-me-…` are detected and rejected.
 3. Restart the service. Locally: `cd backend && uv run uvicorn app.main:app --reload`
-   *(unverified until Phase 4)*.
+   (or `docker compose restart app`, which re-runs the entrypoint first).
 4. Check `/health/ready` — it must return 200 once config and DB are OK.
 
 Never paste real values into an issue or chat. Report the **variable name** only.
@@ -48,8 +48,11 @@ exists", or connection/authentication failure.
 1. Connection problem? Verify `DATABASE_URL` / `MIGRATION_DATABASE_URL` (TLS required for
    Neon; the URL must be the `postgresql+asyncpg://` form). Confirm the Neon project is
    not suspended (first connection after idle can be slow — retry once).
+   In Docker the entrypoint runs `alembic upgrade head` on every container start; the
+   one-shot equivalent is `docker compose run --rm app python -m alembic -c alembic.ini
+   upgrade head`.
 2. "Already exists": the database was partially migrated. Inspect
-   `alembic current` vs `alembic heads` *(unverified until Phase 3)*. For synthetic demo
+   `alembic current` vs `alembic heads`. For synthetic demo
    data the simplest fix is a **database reset** (drop schemas → `alembic upgrade head` →
    reseed; see `docs/DEPLOYMENT.md` §9).
 3. Permission denied: migrations may need the `migrator` role
@@ -170,9 +173,12 @@ default `5432`, or the app port `8000`/`5173`).
 **Fix:**
 1. Find the occupant: `ss -ltnp | grep 5432` (or the conflicting port).
 2. Stop the conflicting local Postgres/service, or change the published port mapping in
-   `docker-compose.yml` locally (e.g. `5433:5432`) and update `DATABASE_URL` to match.
-3. Compose service name/db credentials must match `DATABASE_URL`; the canonical values
-   live in `docker-compose.yml` + `.env.example` *(verify when Phase 2/13 lands)*.
+   `docker-compose.yml` locally (e.g. `5433:5432`) and update `DATABASE_URL` to match
+   (`POSTGRES_PORT` and `APP_PORT` control the published ports).
+3. Compose service names are `db` and `app`; the app connects to the database as the
+   `POSTGRES_*` role on host `db` (see `docker-compose.yml`). Keep the host-side
+   `DATABASE_URL` in `backend/.env` (used by `uv run`, host `localhost`) in step with
+   those credentials.
 
 ## 12. uv/Python version mismatch
 
@@ -192,8 +198,8 @@ default `5432`, or the app port `8000`/`5173`).
 ## Getting diagnostics safely
 
 - **Log locations:**
-  - Local backend: terminal running `uv run uvicorn …` *(unverified until Phase 4)*.
-  - Local containers: `docker compose logs -f backend db`.
+  - Local backend: terminal running `uv run uvicorn …`, or `docker compose logs -f app`.
+  - Local containers: `docker compose logs -f app db`.
   - Render: dashboard → service → Logs.
   - Frontend (Cloudflare Pages): dashboard → Pages → deployment logs (static hosting;
   the interesting logs are browser console + backend).

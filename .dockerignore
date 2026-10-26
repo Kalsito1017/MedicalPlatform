@@ -1,0 +1,39 @@
+# Build context hygiene for backend/Dockerfile (context = repository root).
+# Keep what the image needs: backend/ (app, migrations, lockfile), frontend/,
+# and the operational scripts. Everything else stays out.
+
+# VCS and CI
+.git
+.github
+
+# Secrets: never bake any env file into an image.
+.env
+.env.*
+**/.env
+!**/.env.example
+
+# Python caches and local environments
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+backend/.venv
+.venv
+venv
+
+# Node (the frontend is buildless; no node_modules exist, but keep them out)
+node_modules
+
+# Tests and documentation are not part of the runtime image
+backend/tests
+frontend/tests
+docs
+PLAN.md
+README.md
+production-requirements.txt
+*.md
+
+# Docker metadata
+docker-compose*.yml
+Dockerfile

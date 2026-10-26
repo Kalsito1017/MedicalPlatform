@@ -38,11 +38,13 @@ spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 4. [ ] Copy the connection string; it must use TLS (`sslmode=require` — Neon enforces TLS
    by default). It becomes `DATABASE_URL` in Render (SQLAlchemy async form:
    `postgresql+asyncpg://…`).
-5. [ ] Run migrations: `cd backend && uv run alembic upgrade head` *(unverified until
-   Phase 3/13)* pointed at the hosted database.
+5. [ ] Run migrations: `cd backend && uv run alembic upgrade head` *(verified locally
+   against Docker Postgres (Phase 13); unverified against Neon until Phase 14)*
+   pointed at the hosted database.
 6. [ ] Load the synthetic seed: `cd backend && uv run python ../scripts/seed_demo_data.py`
-   *(unverified until Phase 3/13)* with the `DEMO_*` env vars set (see §5). Seed data is
-   fictional and labelled `provenance: "synthetic"`.
+   *(verified locally (Phase 13); unverified against Neon until Phase 14)* with the
+   `DEMO_*` env vars set (see §5). Seed data is fictional and labelled
+   `provenance: "synthetic"`.
 7. [ ] Verify: seeded demo accounts can log in and synthetic patients are listed.
 
 ## 3. Backend — Render (free web service)
@@ -63,14 +65,28 @@ spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 ## 4. Frontend — Cloudflare Pages
 
 1. [ ] Create a Pages project connected to the repository. Output directory: `frontend/`
-   (buildless — no build step; if a build command is required by the UI, use `echo ok`
-   or the frontend agent's documented equivalent).
-2. [ ] Configure the frontend's **API base URL** to the deployed backend origin. The
-   canonical variable is `API_BASE_URL` (see `.env.example`); the exact injection
-   mechanism (Pages build env vs. generated `config.js`) is finalized by the frontend
-   agent in Phase 9/14 — **fill in the concrete step here at that time**.
-3. [ ] Deploy and confirm the site loads over HTTPS with no mixed-content requests.
-4. [ ] Custom domain: only if one is already owned and its cost is accepted; otherwise
+   (buildless — no build step; if a build command is required by the UI, use `echo ok`).
+2. [ ] **Same-origin API proxy (required for first-party session cookies).** Create
+   `frontend/_redirects` at deploy time with the real backend domain:
+
+   ```text
+   /api/*  https://<backend-onrender-domain>/api/:splat  200
+   ```
+
+   The browser then talks to one origin, so `cap_session` (`SameSite=Lax`) flows
+   first-party, CSRF double-submit works as designed, and `connect-src 'self'`
+   in the CSP stays valid. The frontend needs **no code change**: its default
+   `API_BASE_URL` is the same-origin `/api/v1`. (Fallback if proxying is
+   unavailable: cross-origin API + `SameSite=None; Secure` cookies + the backend
+   origin added to `connect-src` and `ALLOWED_ORIGINS` — weaker, use only if the
+   proxy is impossible.)
+3. [ ] **Edge security headers.** `frontend/_headers` (already in the repo) mirrors
+   the backend's security headers and CSP for pages served by Pages. If the inline
+   `window.__APP_CONFIG__` bootstrap block ever changes, regenerate the
+   `script-src` hash (the backend computes it at startup; keep them identical).
+   `scripts/security_check.py` section 6/6 fails the build if they drift.
+4. [ ] Deploy and confirm the site loads over HTTPS with no mixed-content requests.
+5. [ ] Custom domain: only if one is already owned and its cost is accepted; otherwise
    use the free `*.pages.dev` subdomain. Record the final URL here at deployment time:
    **Public URL: `<to be filled in Phase 15 — do not invent>`**.
 
@@ -111,6 +127,10 @@ and demo passwords per environment; `DEMO_*` values are set only when running th
 - [ ] HTTPS everywhere: Cloudflare Pages and Render both terminate TLS; all requests are
   HTTPS so the `Secure` cookie attribute is satisfied and there are no mixed-content
   warnings.
+- [ ] Edge headers live: `curl -I https://<frontend>` shows the same
+  `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy`, `Permissions-Policy` and HSTS as the backend serves
+  (compare with `curl -I https://<backend>/`).
 - [ ] Cookies: `cap_session` is `HttpOnly; Secure; SameSite=Lax; Path=/`; CSRF
   double-submit applies to all non-GET requests (`X-CSRF-Token` header).
 - [ ] **MCP is internal-only.** There is no public MCP route or transport. It runs inside
@@ -166,16 +186,30 @@ acceptable recovery path**: reset and reseed.
 
 ## 9. Database reset / demo-data refresh
 
-Because every record is synthetic, a full reset is always safe:
+**Retention:** the demo database (schema + synthetic seed + audit history) lives
+for the lifetime of the database instance; there is no automated retention or
+deletion job (backlog — `docs/BACKLOG.md`). Audit events are cleared along with
+the data on every reset — expected for a demo. Because every record is synthetic,
+a full reset is always safe and is also the recovery path.
+
+**Local Docker stack (verified):**
+
+```bash
+docker compose down -v                      # stop stack AND delete the postgres_data volume
+docker compose up -d --build                # fresh database; migrations run on app start
+docker compose run --rm app python /app/scripts/seed_demo_data.py   # synthetic seed
+# verify: login with a DEMO_* account and list patients
+```
+
+**Hosted database (Neon) / local `uv` workflow:**
 
 1. [ ] Drop and recreate the app schemas (or recreate the Neon database/branch).
 2. [ ] `cd backend && uv run alembic upgrade head`
 3. [ ] `cd backend && uv run python ../scripts/seed_demo_data.py` with `DEMO_*` set.
 4. [ ] Verify login + patient list.
 
-The seed is idempotent or resettable by design (Phase 3 acceptance criterion); the exact
-flags are documented by `scripts/seed_demo_data.py` when it lands. Resetting clears
-audit history along with the data — expected for a demo.
+The seed is idempotent (keyed by natural keys; running it twice creates no
+duplicates). Resetting clears audit history along with the data — expected for a demo.
 
 ## 10. Known free-tier risks and cost
 

@@ -6,16 +6,20 @@ structured logging. Feature routers are registered as later phases land.
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import logging
+import mimetypes
 import re
 import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path, PurePosixPath
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
 from starlette.datastructures import Headers, MutableHeaders
@@ -171,12 +175,253 @@ class BodySizeLimitMiddleware:
 
 
 # ---------------------------------------------------------------------------
+# Security headers (Phase 11)
+# ---------------------------------------------------------------------------
+
+# Deny-by-default feature policy: the demo uses no camera, microphone,
+# geolocation, payment, or sensor APIs.
+PERMISSIONS_POLICY = (
+    "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), "
+    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), "
+    "payment=(), picture-in-picture=(), usb=(), xr-spatial-tracking=()"
+)
+
+# Paths whose CSP may reference the Swagger/ReDoc CDN. Only reachable when the
+# docs UI is enabled (never in production): see build_csp().
+_DOCS_PATH_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+
+# The buildless frontend uses one small inline bootstrap script per page
+# (window.__APP_CONFIG__). Its exact content is hashed at startup, so
+# `script-src` stays 'self' + hashes: no 'unsafe-inline', no 'unsafe-eval'.
+_INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
+
+
+def inline_script_hashes(frontend_dir: Path | None) -> tuple[str, ...]:
+    """CSP source expressions for every inline <script> in the frontend pages.
+
+    Computed from the served files on each start, so edits to the bootstrap
+    (e.g. a deployment override) are picked up automatically. Empty when the
+    frontend is not served.
+    """
+    if frontend_dir is None:
+        return ()
+    hashes: list[str] = []
+    for html in sorted(frontend_dir.rglob("*.html")):
+        text = html.read_text(encoding="utf-8")
+        for match in _INLINE_SCRIPT_RE.finditer(text):
+            digest = hashlib.sha256(match.group(1).encode("utf-8")).digest()
+            hashes.append(f"'sha256-{base64.b64encode(digest).decode('ascii')}'")
+    return tuple(dict.fromkeys(hashes))
+
+
+def build_csp(*, hashes: tuple[str, ...], docs: bool) -> str:
+    """Content-Security-Policy for this frontend (see docs/SECURITY.md).
+
+    Strict for every application response: same-origin only, no inline or
+    evaluated scripts beyond the hashed page bootstrap, data: URIs only for the
+    inline favicon. The docs variant is development-only relaxation for the
+    Swagger/ReDoc CDN; production never enables the docs UI.
+    """
+    if docs:
+        return (
+            "default-src 'self' https://cdn.jsdelivr.net; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https://cdn.jsdelivr.net; "
+            "font-src 'self' data: https://cdn.jsdelivr.net; "
+            "connect-src 'self'"
+        )
+    script_src = " ".join(("'self'", *hashes))
+    return (
+        "default-src 'self'; "
+        "base-uri 'self'; "
+        "object-src 'none'; "
+        "frame-ancestors 'none'; "
+        "form-action 'self'; "
+        f"script-src {script_src}; "
+        "style-src 'self'; "
+        "img-src 'self' data:; "
+        "font-src 'self'; "
+        "connect-src 'self'"
+    )
+
+
+def request_is_https(scope: Scope) -> bool:
+    """True when the client request arrived over HTTPS (directly or via proxy).
+
+    HSTS is emitted only in that case: never on plain-HTTP localhost, where the
+    header would be ignored by browsers anyway and only adds confusion.
+    """
+    if scope.get("scheme") == "https":
+        return True
+    forwarded = Headers(scope=scope).get("x-forwarded-proto", "")
+    return forwarded.split(",")[0].strip().lower() == "https"
+
+
+def security_headers_for(
+    settings: Settings,
+    *,
+    path: str,
+    https: bool,
+    hashes: tuple[str, ...],
+) -> dict[str, str]:
+    """The full Phase 11 header set for one response."""
+    docs = settings.docs_enabled and path.startswith(_DOCS_PATH_PREFIXES)
+    headers = {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": PERMISSIONS_POLICY,
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Resource-Policy": "same-origin",
+        "X-Permitted-Cross-Domain-Policies": "none",
+        "Content-Security-Policy": build_csp(hashes=hashes, docs=docs),
+    }
+    if https:
+        headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return headers
+
+
+class SecurityHeadersMiddleware:
+    """Attaches the Phase 11 security headers to every response.
+
+    Runs just inside RequestContextMiddleware so the headers cover API
+    responses, static pages, CORS preflights, and every middleware rejection.
+    (Uncaught 500s are emitted outside any middleware; the exception handler in
+    this module attaches the same headers explicitly.)
+    """
+
+    def __init__(self, app: ASGIApp, settings: Settings, hashes: tuple[str, ...]) -> None:
+        self.app = app
+        self.settings = settings
+        self.hashes = hashes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = security_headers_for(
+            self.settings,
+            path=scope.get("path", ""),
+            https=request_is_https(scope),
+            hashes=self.hashes,
+        )
+
+        async def send_with_security_headers(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                response_headers = MutableHeaders(scope=message)
+                for name, value in headers.items():
+                    response_headers[name] = value
+            await send(message)
+
+        await self.app(scope, receive, send_with_security_headers)
+
+
+# ---------------------------------------------------------------------------
+# Static frontend (single-origin local dev and the Docker image)
+# ---------------------------------------------------------------------------
+
+# Top-level path segments that never resolve to frontend files; unknown paths
+# below them keep the frozen JSON error envelope (docs/API.md).
+_NON_STATIC_PREFIXES = ("api", "health", "docs", "redoc", "openapi.json")
+
+_MEDIA_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8",
+    ".mjs": "text/javascript; charset=utf-8",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".ico": "image/vnd.microsoft.icon",
+    ".webmanifest": "application/manifest+json",
+    ".txt": "text/plain; charset=utf-8",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+def _wants_html_navigation(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "")
+
+
+def frontend_response(request: Request) -> Response | None:
+    """Resolve a GET/HEAD request against the static frontend, or return None.
+
+    Single-origin serving (local dev and Docker); production hosts the frontend
+    on Cloudflare Pages and leaves this unused. Rules:
+
+    - Existing files are served with explicit media types (extension-less paths
+      map to ``<name>.html``, so ``/dashboard`` == ``/dashboard.html``).
+    - Unknown extension-less paths fall back to ``index.html`` for browser
+      navigations (``Accept: text/html``) only — the SPA-safe fallback. API and
+      JSON clients keep the frozen ``404 not_found`` envelope.
+    - Unknown paths with a file extension (assets) are never shadowed: 404.
+    - Traversal outside the frontend directory and API/health/docs paths never
+      resolve to files.
+    """
+    if request.method not in ("GET", "HEAD"):
+        return None
+    root = getattr(request.app.state, "frontend_dir", None)
+    if root is None:
+        return None
+
+    raw = request.scope.get("path", "").lstrip("/")
+    parts = [part for part in PurePosixPath(raw).parts if part not in ("", ".")]
+    if not parts:
+        return _file_response(root / "index.html")
+    if parts[0] in _NON_STATIC_PREFIXES or ".." in parts:
+        return None
+
+    target = root.joinpath(*parts).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None  # traversal attempt: fall through to the 404 envelope
+
+    if target.is_file():
+        return _file_response(target)
+    if not target.suffix:
+        html_alias = target.with_suffix(".html")
+        if html_alias.is_file():
+            return _file_response(html_alias)
+        if _wants_html_navigation(request):
+            return _file_response(root / "index.html")
+    return None
+
+
+def _file_response(path: Path) -> FileResponse:
+    media_type = _MEDIA_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
+    cache_control = "no-cache" if path.suffix.lower() == ".html" else "public, max-age=3600"
+    return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache_control})
+
+
+# ---------------------------------------------------------------------------
 # Error envelope
 # ---------------------------------------------------------------------------
 
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", None) or str(uuid.uuid4())
+
+
+def _security_headers(request: Request) -> dict[str, str]:
+    """Phase 11 headers for responses emitted outside the middleware stack."""
+    app = request.app
+    settings = getattr(app.state, "settings", None)
+    if settings is None:  # pragma: no cover - create_app always sets it
+        return {}
+    return security_headers_for(
+        settings,
+        path=request.scope.get("path", ""),
+        https=request_is_https(request.scope),
+        hashes=getattr(app.state, "security_hashes", ()),
+    )
 
 
 def _envelope(code: str, message: str, request_id: str, details: dict | None = None) -> dict:
@@ -230,8 +475,14 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
         status = exc.status_code
+        if status == 404:
+            # Single-origin static serving: only unmatched GET/HEAD paths reach
+            # here, so later-registered routes are never shadowed.
+            static = frontend_response(request)
+            if static is not None:
+                return static
         code = _CODE_BY_STATUS.get(status, "validation_error" if status < 500 else "internal_error")
         default_message = _DEFAULT_MESSAGE_BY_CODE[code]
         # Stock framework details ("Not Found", ...) are replaced by the contract
@@ -250,13 +501,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         # Generic to the client; the diagnostic detail stays in server logs.
         # (This response is sent by ServerErrorMiddleware, outside the request-id
-        # middleware, so the header is attached here explicitly.)
+        # and security-headers middleware, so those headers are attached here
+        # explicitly.)
         request_id = _request_id(request)
         logger.exception("unhandled exception", extra={"request_id": request_id})
         return JSONResponse(
             status_code=500,
             content=_envelope("internal_error", "An unexpected error occurred.", request_id),
-            headers={"X-Request-Id": request_id},
+            headers={**_security_headers(request), "X-Request-Id": request_id},
         )
 
 
@@ -287,6 +539,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    frontend_dir = settings.resolved_frontend_dir
+    app.state.frontend_dir = frontend_dir
+    hashes = inline_script_hashes(frontend_dir)
+    app.state.security_hashes = hashes
 
     register_exception_handlers(app)
 
@@ -295,9 +551,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     policy.principal_resolver = resolve_principal
 
     # Order matters: RequestContext must run outermost so every response,
-    # including middleware rejections, carries X-Request-Id. CSRF runs inside
-    # CORS so preflight requests are answered before it and so browsers can
-    # read the CSRF rejection envelope.
+    # including middleware rejections, carries X-Request-Id. SecurityHeaders
+    # runs just inside it so the Phase 11 headers cover every response below.
+    # CSRF runs inside CORS so preflight requests are answered before it and so
+    # browsers can read the CSRF rejection envelope.
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.request_max_body_bytes)
     app.add_middleware(CsrfProtectionMiddleware, settings=settings)
     app.add_middleware(
@@ -309,6 +566,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         expose_headers=["X-Request-Id"],
         max_age=600,
     )
+    app.add_middleware(SecurityHeadersMiddleware, settings=settings, hashes=hashes)
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health.router)

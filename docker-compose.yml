@@ -1,13 +1,21 @@
-# Local development stack.
-# Currently: PostgreSQL only. The lead adds an `app` service later (Phase 13).
+# Local development stack: PostgreSQL + the single-origin application.
 #
 # Usage:
-#   docker compose up -d db
-#   docker compose ps        # wait for the db service to become "healthy"
+#   docker compose up -d db                 # database only (local uv workflow)
+#   docker compose up --build               # full stack: app on http://localhost:8000
+#   docker compose run --rm app python /app/scripts/seed_demo_data.py   # demo seed
+#   docker compose down                    # stop (data persists in postgres_data)
+#   docker compose down -v                 # reset: delete the database volume
+#
+# Secrets are NOT baked into images: the app reads the environment. Populate
+# .env (or backend/.env) per .env.example; both are loaded with env_file below
+# when present. Never commit a populated env file.
 #
 # Credentials below are DEV-ONLY defaults so the stack works out of the box.
 # Override them via .env (see .env.example). Never reuse these defaults outside
-# local development.
+# local development. The app connects as the same POSTGRES_* role the database
+# is initialized with, on the `db` host; keep backend/.env's DATABASE_URL (used
+# by the local `uv run` workflow on localhost) in step with these values.
 services:
   db:
     image: postgres:16-alpine
@@ -27,6 +35,49 @@ services:
       timeout: 5s
       retries: 12
       start_period: 10s
+
+  app:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    # env_file semantics: configuration and secrets come from the local env
+    # files at run time, never from the image layer. Missing files are fine.
+    env_file:
+      - path: .env
+        required: false
+      - path: backend/.env
+        required: false
+    environment:
+      # Inside the compose network the database host is the `db` service; these
+      # override any localhost URLs from the env files above. Credentials are
+      # env substitutions with the same DEV-ONLY defaults as the db service — no
+      # literal secret is committed (the trailing marker documents the reviewed
+      # false positive for scripts/security_check.py).
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-clinical_demo} # security-check-allow: env-substituted dev-only defaults, no literal secret
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-clinical_demo} # security-check-allow: env-substituted dev-only defaults, no literal secret
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    # Real readiness gating (not just start order): the app container only
+    # starts after the db healthcheck passes, and has its own healthcheck.
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "/app/scripts/healthcheck.py",
+          "--url",
+          "http://localhost:8000",
+          "--endpoint",
+          "/health/ready",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
 volumes:
   postgres_data:

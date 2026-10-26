@@ -113,6 +113,46 @@ browser storage.
 | **Credential stuffing / brute force** | Automated password guessing | Login rate limiting + progressive lockout; uniform errors; argon2id cost slows offline cracking if hashes ever leak | Phase 5 |
 | **Session theft (XSS → session)** | Script steals the session cookie | `HttpOnly` cookies; XSS controls above; server-side revocation on logout | Phase 5, 9 |
 
+### HTTP security headers
+
+Set on **every** response — API, static pages, and error envelopes — by
+`SecurityHeadersMiddleware` (`backend/app/main.py`). Verified by
+`backend/tests/test_security_headers.py` and `scripts/e2e_smoke.sh`.
+
+| Header | Value | Why |
+|---|---|---|
+| `X-Content-Type-Options` | `nosniff` | no MIME sniffing of API or asset responses |
+| `X-Frame-Options` | `DENY` | the UI is never framed (mirrors CSP `frame-ancestors 'none'`) |
+| `Referrer-Policy` | `no-referrer` | the strictest option; the app needs no referrer and patient identifiers live in page URLs, so nothing about navigation may leak cross-origin |
+| `Permissions-Policy` | camera, microphone, geolocation, payment, sensors, USB, screen capture, … denied (`()`) | the demo uses none of these browser features |
+| `Cross-Origin-Opener-Policy` | `same-origin` | isolates the browsing context from cross-origin openers |
+| `Cross-Origin-Resource-Policy` | `same-origin` | responses are for this origin only |
+| `X-Permitted-Cross-Domain-Policies` | `none` | no Flash/PDF cross-domain policies |
+| `Content-Security-Policy` | see below | XSS containment |
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` | **only** when the request arrived over HTTPS (directly or via `X-Forwarded-Proto: https`); never sent on plain-HTTP localhost |
+
+**CSP (application responses):** `default-src 'self'; base-uri 'self';
+object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'
+'sha256-…'; style-src 'self'; img-src 'self' data:; font-src 'self';
+connect-src 'self'`. The buildless frontend needs exactly one inline script per
+page (the `window.__APP_CONFIG__` deployment bootstrap). Its content is hashed
+at backend startup, so `script-src` is `'self'` + hashes — **no
+`'unsafe-inline'`, no `'unsafe-eval'`**. Editing the bootstrap or page markup
+requires a backend restart to recompute the hashes (no code change). Pages
+therefore cannot add inline scripts, inline styles, or inline event handlers
+without breaking under CSP — by design.
+
+**Development-only relaxation:** the Swagger/ReDoc UI (disabled in production)
+receives a relaxed CSP (jsdelivr CDN + inline) on `/docs` and `/redoc` only;
+production mode relaxes nothing and the docs UI is off.
+
+**Production caveat:** when Cloudflare Pages serves the frontend and proxies
+`/api/*` to the backend (Phase 14/15), page responses are served by Pages and do
+**not** pass through this middleware. The equivalent headers must then be set at
+the edge (Cloudflare `_headers` file / Transform Rules) or by proxying the whole
+site to the backend; API responses already carry the headers above. This must be
+verified before the public launch checklist is signed off.
+
 ---
 
 ## 4. Audit design
@@ -189,8 +229,19 @@ Public availability is not the same as being compliant or safe for clinical use.
 - No MFA; password compromise is full account compromise.
 - No automated audit retention/erasure.
 - Free-tier hosting sleeps/autosuspends; availability is best-effort.
-- Rate limits are application-level; there is no edge WAF/DDoS protection beyond what
-  the hosting providers provide.
+- Rate limits (login, `/ai/ask`) are application-level **in-process** state: per
+  instance, reset on restart, not coordinated across instances. A shared store
+  (Redis or a database table) is required before scaling out. There is no edge
+  WAF/DDoS protection beyond what the hosting providers provide.
+- Sessions expire after `SESSION_TTL_HOURS` (default 8 hours) and are then
+  rejected with `401`; there is no refresh-token or "log out everywhere" UI
+  (deactivating a user revokes all their sessions server-side).
+- CSP is strict but hash-based for the single inline page bootstrap: pages may
+  not add inline scripts/styles/handlers without breaking, and page edits
+  require a backend restart to recompute the hashes. The dev docs UI uses a
+  relaxed CSP (never in production). The headers cover the backend-served
+  frontend (local/Docker); the production Pages-hosted frontend needs the same
+  headers configured at the edge (see §3 "HTTP security headers").
 - Audit is read-only via API; it is not tamper-evident (no append-only store or hashing).
 
 ## 8. Vulnerability disclosure

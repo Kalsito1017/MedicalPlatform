@@ -11,6 +11,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -91,6 +92,26 @@ class Settings(BaseSettings):
     # --- CORS / transport limits ---
     allowed_origins: str = "http://localhost:5173,http://localhost:8000"
     request_max_body_bytes: int = 1_048_576
+
+    # --- Static frontend (single-origin local dev and the Docker image) ---
+    # None = auto-detect <repo>/frontend next to backend/. In production the
+    # frontend is served by Cloudflare Pages and this stays unused.
+    frontend_dir: str | None = None
+
+    @property
+    def resolved_frontend_dir(self) -> Path | None:
+        """Absolute frontend directory to serve, or None when unavailable.
+
+        An explicit FRONTEND_DIR must exist (a wrong value disables static
+        serving rather than guessing). The default is the repository layout:
+        <repo>/frontend beside <repo>/backend. API-only deployments simply have
+        no frontend directory and keep serving /api/v1 and /health/* normally.
+        """
+        if self.frontend_dir:
+            candidate = Path(self.frontend_dir).expanduser()
+            return candidate.resolve() if candidate.is_dir() else None
+        default = Path(__file__).resolve().parents[2] / "frontend"
+        return default.resolve() if default.is_dir() else None
 
     @property
     def cors_origins(self) -> list[str]:
