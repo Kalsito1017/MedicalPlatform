@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>Sign in — Clinical AI Platform (synthetic demo)</title>
-  <meta name="description" content="Clinical AI Platform demonstration. Synthetic, fictional patient data only. Not clinically validated and not a medical device.">
+  <title>Sign in — MediCore Clinical Platform (synthetic demo)</title>
+  <meta name="description" content="MediCore Clinical Platform demonstration. Synthetic, fictional patient data only. Not clinically validated and not a medical device.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="assets/css/styles.css">
   <script>
@@ -17,41 +17,60 @@
 <body>
   <a class="skip-link" href="#main">Skip to main content</a>
 
-  <header class="site-header">
-    <div class="container site-header__inner">
-      <a class="brand" href="index.html">
-        <span class="brand__mark" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M16 6v20M6 16h20" stroke="currentColor" stroke-width="4" stroke-linecap="round"/></svg>
-        </span>
-        <span class="brand__name">Clinical AI Platform</span>
-        <span class="brand__tag">Demo</span>
-      </a>
-    </div>
-  </header>
-
   <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
 
   <main id="main" class="container">
     <div class="auth-layout">
       <section class="auth-hero" aria-labelledby="hero-heading">
-        <h1 id="hero-heading">Clinical AI Platform — synthetic data demonstration</h1>
+        <span class="brand brand--lg" aria-hidden="true">
+          <span class="brand__mark">
+            <svg width="22" height="22" viewBox="0 0 32 32" focusable="false"><path d="M16 7v18M7 16h18" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+          </span>
+          <span class="brand__text">
+            <span class="brand__name">MediCore</span>
+            <span class="brand__tag">Clinical Platform</span>
+          </span>
+        </span>
+        <h1 id="hero-heading">MediCore — Clinical Platform</h1>
         <p class="lede">
           A demonstration of a role-aware clinical AI platform. Sign in to search fictional
           patients, inspect synthetic lab results and prescriptions, and see how role-based
           access control shapes the interface.
         </p>
-        <h2>What this demo is</h2>
-        <ul class="feature-list">
-          <li>Every patient, encounter, lab, and prescription is <strong>fictional synthetic data</strong>.</li>
-          <li>Access is enforced server-side by role: doctor, nurse, clinical administrator, technical administrator.</li>
-          <li>Security-relevant actions are audited on the backend.</li>
-        </ul>
-        <h2>What this demo is not</h2>
-        <ul class="feature-list">
-          <li>Not clinically validated, not a medical device, and not for real patient care.</li>
-          <li>Not a place to enter real personal or health information — demo accounts are shared and public.</li>
-          <li>AI-generated answers (where enabled) are informational only and are labelled as AI-generated.</li>
-        </ul>
+        <div>
+          <h2>What this demo is</h2>
+          <ul class="info-rows">
+            <li class="info-row">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+              <span>Every patient, encounter, lab, and prescription is <strong>fictional synthetic data</strong>.</span>
+            </li>
+            <li class="info-row">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+              <span>Access is enforced server-side by role: doctor, nurse, clinical administrator, technical administrator.</span>
+            </li>
+            <li class="info-row">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
+              <span>Security-relevant actions are audited on the backend.</span>
+            </li>
+          </ul>
+        </div>
+        <div>
+          <h2>What this demo is not</h2>
+          <ul class="info-rows">
+            <li class="info-row info-row--stop">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
+              <span>Not clinically validated, not a medical device, and not for real patient care.</span>
+            </li>
+            <li class="info-row info-row--stop">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
+              <span>Not a place to enter real personal or health information — demo accounts are shared and public.</span>
+            </li>
+            <li class="info-row info-row--stop">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
+              <span>AI-generated answers (where enabled) are informational only and are labelled as AI-generated.</span>
+            </li>
+          </ul>
+        </div>
       </section>
 
       <div>
@@ -91,7 +110,7 @@
   <footer class="site-footer">
     <div class="container site-footer__inner">
       <p class="footer-note">
-        Clinical AI Platform — synthetic-data demonstration. Not clinically validated, not a
+        MediCore — synthetic-data demonstration. Not clinically validated, not a
         medical device, and not for clinical use. All records are fictional.
       </p>
       <ul class="footer-links">

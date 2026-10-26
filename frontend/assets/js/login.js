@@ -72,7 +72,7 @@ function renderSignedIn(user) {
       ui.el('dt', { text: 'Role' }),
       ui.el('dd', { text: roles.length > 0 ? roles.map(ui.roleLabel).join(', ') : 'No role assigned' }),
     ),
-    ui.el('div', { class: 'state-panel__actions', style: 'justify-content:flex-start; margin-top: var(--space-4)' },
+    ui.el('div', { class: 'form-actions form-actions--start' },
       ui.el('a', { class: 'btn btn-primary', href: 'dashboard.html' }, 'Go to dashboard'),
       ui.el('button', {
         class: 'btn btn-secondary',

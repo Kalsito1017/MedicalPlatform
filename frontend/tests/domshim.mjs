@@ -223,13 +223,22 @@ export function installDom() {
   return document;
 }
 
-/** Register a page fixture: elements by id (+ optional attribute buttons). */
+/** Register a page fixture: elements by id (+ optional attribute buttons).
+ * Entries are id strings or specs: { id, tag, class, text, attrs, children }. */
 export function fixture(document, ids, { aboutButtons = 1 } = {}) {
-  for (const id of ids) {
-    const node = new ShimNode('div');
-    node.setAttribute('id', id);
-    document.body.append(node);
-  }
+  const build = (entry) => {
+    const spec = typeof entry === 'string' ? { id: entry } : entry || {};
+    const node = new ShimNode(spec.tag || 'div');
+    if (spec.id) node.setAttribute('id', spec.id);
+    if (spec.class) node.setAttribute('class', spec.class);
+    for (const [key, value] of Object.entries(spec.attrs || {})) {
+      node.setAttribute(key, value);
+    }
+    if (spec.text != null) node.textContent = spec.text;
+    for (const child of spec.children || []) node.append(build(child));
+    return node;
+  };
+  for (const entry of ids) document.body.append(build(entry));
   for (let i = 0; i < aboutButtons; i += 1) {
     const button = new ShimNode('button');
     button.setAttribute('data-open-about', '');

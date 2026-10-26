@@ -104,6 +104,163 @@ export function roleLabel(role) {
   return ROLE_LABELS[role] || role.replace(/[_-]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
 }
 
+/** Colored role pill, matching the staff table's per-role hue tags. */
+export function roleBadge(role) {
+  return el('span', {
+    class: `badge badge--role badge--role-${role}`,
+    text: roleLabel(role),
+  });
+}
+
+/* ------------------------------------------------------- icons + avatars */
+// Inline SVG line icons (24x24, stroke = currentColor). App-authored markup
+// only: no icon fonts, no external sprite sheets, no CDN requests.
+
+const SVG_OPEN =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">';
+
+export const ICONS = {
+  home: `${SVG_OPEN}<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5"/></svg>`,
+  users: `${SVG_OPEN}<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19.5c.6-3 2.8-4.7 5.5-4.7s4.9 1.7 5.5 4.7"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.6c2.3.2 4 1.8 4.5 4.4"/></svg>`,
+  shield: `${SVG_OPEN}<path d="M12 3 5 5.8v5.3c0 4.6 2.9 8 7 9.2 4.1-1.2 7-4.6 7-9.2V5.8z"/><path d="m9.2 11.8 2 2 3.6-3.8"/></svg>`,
+  search: `${SVG_OPEN}<circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/></svg>`,
+  sparkles: `${SVG_OPEN}<path d="M11 3.5 12.6 7.9 17 9.5l-4.4 1.6L11 15.5 9.4 11.1 5 9.5l4.4-1.6z"/><path d="m18.4 15 .7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/></svg>`,
+  flask: `${SVG_OPEN}<path d="M9.5 3h5"/><path d="M10.5 3v5.2L5.8 17a2 2 0 0 0 1.7 3h9a2 2 0 0 0 1.7-3l-4.7-8.8V3"/><path d="M8 14h8"/></svg>`,
+  copy: `${SVG_OPEN}<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/></svg>`,
+  check: `${SVG_OPEN}<circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>`,
+  alert: `${SVG_OPEN}<path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>`,
+  chevronRight: `${SVG_OPEN}<path d="m9 6 6 6-6 6"/></svg>`,
+  chevronLeft: `${SVG_OPEN}<path d="m15 6-6 6 6 6"/></svg>`,
+  chevronDown: `${SVG_OPEN}<path d="m6 9 6 6 6-6"/></svg>`,
+  arrowLeft: `${SVG_OPEN}<path d="M19 12H5"/><path d="m11 6-6 6 6 6"/></svg>`,
+  x: `${SVG_OPEN}<path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg>`,
+  plus: `${SVG_OPEN}<path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
+  send: `${SVG_OPEN}<path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>`,
+  info: `${SVG_OPEN}<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 8.2v.2"/></svg>`,
+  help: `${SVG_OPEN}<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>`,
+  logout: `${SVG_OPEN}<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="m10 8-4 4 4 4"/><path d="M6 12h9"/></svg>`,
+  clipboard: `${SVG_OPEN}<rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6"/><path d="M9 14h6"/></svg>`,
+  capsule: `${SVG_OPEN}<path d="M10.5 4.5 4.5 10.5a4.2 4.2 0 0 0 6 6l6-6a4.2 4.2 0 0 0-6-6z"/><path d="m7.5 7.5 6 6"/></svg>`,
+  calendar: `${SVG_OPEN}<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/></svg>`,
+  mail: `${SVG_OPEN}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>`,
+};
+
+/** Inline SVG icon element. Decorative: names are always adjacent text. */
+export function icon(name, className = '') {
+  return el('span', {
+    class: className ? `icon ${className}` : 'icon',
+    'aria-hidden': 'true',
+    html: ICONS[name] || ICONS.info,
+  });
+}
+
+/** Initials for an avatar circle (first letters of first and last words). */
+export function initials(name) {
+  const words = String(name || '')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return '?';
+  const first = words[0][0] || '';
+  const last = words.length > 1 ? words[words.length - 1][0] || '' : '';
+  return (first + last).toUpperCase() || '?';
+}
+
+/** Deterministic avatar hue class (stable per name). */
+export function avatarTone(name) {
+  const text = String(name || '');
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash * 31 + text.charCodeAt(i)) % 997;
+  }
+  return `avatar--${(hash % 6) + 1}`;
+}
+
+/** Colored initials circle (decorative; the display name is always nearby). */
+export function avatar(name, { size = '', label = '' } = {}) {
+  return el('span', {
+    class: `avatar ${avatarTone(name)}${size ? ` avatar--${size}` : ''}`.trim(),
+    'aria-hidden': label ? null : 'true',
+    'aria-label': label || null,
+    text: initials(name),
+  });
+}
+
+/* ---------------------------------------------------------- patient cards */
+
+function firstValueOf(source, keys) {
+  for (const key of keys) {
+    const value = source ? source[key] : null;
+    if (value !== undefined && value !== null && value !== '') return value;
+  }
+  return null;
+}
+
+export function patientName(patient) {
+  return (
+    firstValueOf(patient, ['display_name', 'name', 'full_name']) ||
+    [patient.first_name, patient.last_name].filter(Boolean).join(' ') ||
+    'Synthetic patient'
+  );
+}
+
+export function patientMrn(patient) {
+  return (
+    firstValueOf(patient, ['mrn', 'medical_record_number', 'record_number']) ||
+    null
+  );
+}
+
+export function patientBirthDate(patient) {
+  return firstValueOf(patient, ['birth_date', 'date_of_birth', 'dob']);
+}
+
+export function patientSex(patient) {
+  return firstValueOf(patient, ['sex', 'gender']);
+}
+
+export function patientId(patient) {
+  return patient ? patient.id || patient.patient_id : null;
+}
+
+/**
+ * Dashboard/search patient card: initials avatar, bold name, MRN, date of
+ * birth + sex, provenance badge, chevron. Real fields only — no invented
+ * vitals, insurers, or visit dates. The whole card is the patient link.
+ */
+export function renderPatientCard(patient) {
+  const id = patientId(patient);
+  const name = patientName(patient);
+  const birth = formatDate(patientBirthDate(patient));
+  const sex = patientSex(patient);
+  const meta = [birth ? `Born ${birth}` : null, sex || null]
+    .filter(Boolean)
+    .join(' \u2022 ');
+
+  const body = [
+    el('p', { class: 'patient-card__name', text: name }),
+    el('p', { class: 'patient-card__mrn mono', text: `MRN: ${patientMrn(patient) || 'Not recorded'}` }),
+    meta ? el('p', { class: 'patient-card__meta', text: meta }) : null,
+    el('div', { class: 'badge-list' },
+      el('span', { class: 'badge badge--synthetic', text: 'Synthetic demo data' }),
+    ),
+  ];
+
+  const inner = [
+    avatar(name, { size: 'lg' }),
+    el('div', { class: 'patient-card__body' }, body),
+    el('span', { class: 'patient-card__chevron', 'aria-hidden': 'true', html: ICONS.chevronRight }),
+  ];
+
+  if (!id) {
+    return el('div', { class: 'patient-card card' }, inner);
+  }
+  return el('a', {
+    class: 'patient-card card',
+    href: `patient.html?id=${encodeURIComponent(id)}`,
+  }, inner);
+}
+
 /* --------------------------------------------------------------- loading */
 
 export function renderLoading(container, { label = 'Loading', rows = 5 } = {}) {
@@ -231,12 +388,12 @@ export function renderPagination(container, { total, limit, offset, onChange, it
 
   const prev = el('li', {},
     el('button', {
-      class: 'btn btn-secondary btn-sm',
+      class: 'btn btn-secondary btn-sm btn-icon',
       type: 'button',
       disabled: currentPage <= 1 ? true : null,
       'aria-label': 'Previous page',
       onClick: () => goTo(currentPage - 1),
-    }, 'Previous'),
+    }, icon('chevronLeft', 'icon--sm'), el('span', { class: 'visually-hidden', text: 'Previous' })),
   );
   list.append(prev);
 
@@ -262,12 +419,12 @@ export function renderPagination(container, { total, limit, offset, onChange, it
 
   list.append(el('li', {},
     el('button', {
-      class: 'btn btn-secondary btn-sm',
+      class: 'btn btn-secondary btn-sm btn-icon',
       type: 'button',
       disabled: currentPage >= pageCount ? true : null,
       'aria-label': 'Next page',
       onClick: () => goTo(currentPage + 1),
-    }, 'Next'),
+    }, icon('chevronRight', 'icon--sm'), el('span', { class: 'visually-hidden', text: 'Next' })),
   ));
 
   container.append(
@@ -336,13 +493,29 @@ function ensureDialogHost() {
   if (dialog) return dialog;
   dialog = el('dialog', { id: 'app-dialog', class: 'dialog' },
     el('form', { class: 'dialog__inner', method: 'dialog' },
-      el('h2', { class: 'dialog__title', id: 'app-dialog-title' }),
+      el('div', { class: 'dialog__head' },
+        el('span', {
+          class: 'dialog__icon',
+          id: 'app-dialog-icon',
+          'aria-hidden': 'true',
+          html: ICONS.shield,
+        }),
+        el('h2', { class: 'dialog__title', id: 'app-dialog-title' }),
+      ),
       el('div', { class: 'dialog__body', id: 'app-dialog-body' }),
       el('div', { class: 'dialog__actions', id: 'app-dialog-actions' }),
     ),
   );
   document.body.append(dialog);
   return dialog;
+}
+
+/** Sets the dialog head icon tone (default informational shield). */
+function setDialogIcon(dialog, { danger = false, glyph = 'shield' } = {}) {
+  const iconNode = dialog.querySelector('#app-dialog-icon');
+  if (!iconNode) return;
+  iconNode.innerHTML = ICONS[glyph] || ICONS.shield;
+  iconNode.classList.toggle('dialog__icon--danger', Boolean(danger));
 }
 
 function closeDialog(dialog, value) {
@@ -352,7 +525,9 @@ function closeDialog(dialog, value) {
 
 /**
  * Confirmation dialog for high-impact actions (logout now, admin role changes
- * and deactivation later). Resolves true when confirmed, false otherwise.
+ * and deactivation later). `details` optionally renders [{ label, value }]
+ * definition rows in the confirmation modal's summary style. Resolves true
+ * when confirmed, false otherwise.
  */
 export function confirmDialog({
   title = 'Are you sure?',
@@ -360,6 +535,7 @@ export function confirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   danger = false,
+  details = [],
 } = {}) {
   if (typeof document === 'undefined') return Promise.resolve(false);
 
@@ -368,8 +544,21 @@ export function confirmDialog({
   const body = clear(dialog.querySelector('#app-dialog-body'));
   const actions = clear(dialog.querySelector('#app-dialog-actions'));
 
+  setDialogIcon(dialog, { danger, glyph: danger ? 'alert' : 'shield' });
   titleNode.textContent = title;
   body.append(el('p', { text: message }));
+
+  const rows = Array.isArray(details) ? details.filter(Boolean) : [];
+  if (rows.length > 0) {
+    const list = el('dl', { class: 'confirm-details' });
+    for (const row of rows) {
+      list.append(
+        el('dt', { text: String(row.label == null ? '' : row.label) }),
+        el('dd', {}, row.value && row.value.nodeType ? row.value : String(row.value == null ? '' : row.value)),
+      );
+    }
+    body.append(list);
+  }
 
   return new Promise((resolve) => {
     let settled = false;
@@ -416,11 +605,12 @@ export function confirmDialog({
  * close (including Escape) so transient content such as a one-time password
  * never lingers in the DOM. onClose receives the close value.
  */
-export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClose = null } = {}) {
+export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClose = null, icon: iconGlyph = 'info', danger = false } = {}) {
   if (typeof document === 'undefined') return { dialog: null, close: () => {} };
 
   const dialog = ensureDialogHost();
   dialog.querySelector('#app-dialog-title').textContent = title;
+  setDialogIcon(dialog, { danger, glyph: iconGlyph });
 
   const body = clear(dialog.querySelector('#app-dialog-body'));
   for (const node of [bodyNodes].flat()) {
@@ -466,6 +656,7 @@ export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
   if (typeof document === 'undefined') return;
   const dialog = ensureDialogHost();
   dialog.querySelector('#app-dialog-title').textContent = title;
+  setDialogIcon(dialog, { danger: false, glyph: 'info' });
 
   const body = clear(dialog.querySelector('#app-dialog-body'));
   const fragment = el('div', {});
@@ -515,6 +706,12 @@ export function wireFooterDialogs(root) {
 
 /* -------------------------------------------------------------- app chrome */
 
+const NAV_ICONS = {
+  dashboard: 'home',
+  patients: 'users',
+  admin: 'shield',
+};
+
 function renderNav(navNode, navItems, activeKey) {
   clear(navNode);
   const list = el('ul', { class: 'site-nav__list' });
@@ -525,7 +722,7 @@ function renderNav(navNode, navItems, activeKey) {
         class: isActive ? 'site-nav__link is-active' : 'site-nav__link',
         href: item.href,
         'aria-current': isActive ? 'page' : null,
-      }, item.label),
+      }, icon(NAV_ICONS[item.key] || 'chevronRight'), item.label),
     ));
   }
   navNode.append(list);
@@ -547,9 +744,16 @@ function renderUserArea(host, user, onLogout) {
   const roleText = roles.length > 0 ? roles.map(roleLabel).join(', ') : 'No role assigned';
 
   host.append(
+    el('div', { class: 'role-chip' },
+      icon('flask', 'icon--sm'),
+      el('span', { text: roleText }),
+    ),
     el('div', { class: 'user-chip' },
-      el('span', { class: 'user-chip__name', text: user.display_name || user.email || 'Signed in' }),
-      el('span', { class: 'user-chip__role', text: roleText }),
+      avatar(user.display_name || user.email || '?', { size: 'sm' }),
+      el('div', { class: 'user-chip__text' },
+        el('span', { class: 'user-chip__name', text: user.display_name || user.email || 'Signed in' }),
+        el('span', { class: 'user-chip__role', text: roleText }),
+      ),
     ),
     el('button', {
       class: 'btn btn-secondary btn-sm',
@@ -563,7 +767,7 @@ function renderUserArea(host, user, onLogout) {
         });
         if (confirmed && onLogout) await onLogout();
       },
-    }, 'Sign out'),
+    }, icon('logout', 'icon--sm'), 'Sign out'),
   );
 }
 

@@ -201,10 +201,12 @@ const AI_IDS = [
 const PATIENT_IDS = [
   'page-body',
   'patient-heading',
+  'patient-avatar',
   'demographics-region',
   'summary-region',
   'labs-region',
   'prescriptions-region',
+  'encounters-region',
   ...AI_IDS,
 ];
 
@@ -405,7 +407,7 @@ await check('patients network failure renders offline banner with retry', async 
 
 await check('patient detail renders demographics, summary, labs, prescriptions', async () => {
   globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
@@ -417,10 +419,12 @@ await check('patient detail renders demographics, summary, labs, prescriptions',
   assertContains(demo, ui.formatDate('1980-05-04'), 'birth date not formatted');
 
   const summary = textOf(document.getElementById('summary-region'));
-  assertContains(summary, 'Routine follow-up (synthetic).', 'encounter missing');
-  assertContains(summary, 'office_visit', 'encounter type badge missing');
   assertContains(summary, 'Amoxicillin (500 mg, Oral)', 'active medication missing');
   assertContains(summary, 'No active problems recorded.', 'problems empty state missing');
+
+  const encounters = textOf(document.getElementById('encounters-region'));
+  assertContains(encounters, 'Routine follow-up (synthetic).', 'encounter missing');
+  assertContains(encounters, 'office_visit', 'encounter type badge missing');
 
   const labs = textOf(document.getElementById('labs-region'));
   assertContains(labs, 'Haemoglobin', 'lab name missing');
@@ -443,7 +447,7 @@ await check('patient detail isolates a 403 lab section from the rest', async () 
     labs: { status: 403 },
     prescriptions: PRESCRIPTIONS,
   });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
@@ -454,7 +458,7 @@ await check('patient detail isolates a 403 lab section from the rest', async () 
 
 await check('patient detail shows friendly state without an id', async () => {
   globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
   globalThis.location.search = '';
   await freshPage('patient.js');
   await settle();
@@ -999,6 +1003,140 @@ await check('admin renders a read-only staff table for a nurse without unmaintai
   const region = textOf(document.getElementById('staff-region'));
   assert(!region.includes('Grant role'), 'grant control must not render without role:assign');
   assert(!region.includes('Deactivate'), 'deactivate control must not render without staff:manage');
+});
+
+/* ------------------------------------------- dashboard + patient detail UI */
+
+await check('dashboard renders welcome, role badges, quick actions, and recent patient cards', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patients: {
+      items: [
+        PATIENT,
+        { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', date_of_birth: '1975-01-20', sex: 'M', provenance: 'synthetic' },
+      ],
+      total: 2,
+      limit: 8,
+      offset: 0,
+    },
+  });
+  const document = bootDom([...CHROME_IDS, 'page-body', 'welcome-heading']);
+  await freshPage('dashboard.js');
+  await settle();
+
+  assertContains(textOf(document.getElementById('welcome-heading')), 'Welcome back, Dr Ada Example', 'welcome heading missing');
+  const body = textOf(document.getElementById('page-body'));
+  assertContains(body, 'Quick actions', 'quick actions heading missing');
+  assertContains(body, 'Recent patients', 'recent patients heading missing');
+  assertContains(body, 'MRN-0001', 'recent patient card missing');
+  assertContains(body, 'MRN-0002', 'second patient card missing');
+  assertContains(body, 'Synthetic demo data', 'provenance badge missing');
+  assertContains(body, 'Doctor', 'role badge missing');
+  assertContains(body, 'Synthetic demo data \u2014 not for clinical use', 'demo disclosure card missing');
+
+  const hrefs = document.getElementById('page-body').querySelectorAll('a').map((a) => a.getAttribute('href'));
+  assert(hrefs.includes('patient.html?id=p1'), 'patient card link missing');
+  assert(hrefs.includes('patients.html'), 'quick action link to patients missing');
+  const patientCalls = calls.filter((call) => call.url.includes('/api/v1/patients'));
+  assertEqualLocal(patientCalls.length, 1, 'exactly one recent-patients fetch expected');
+  assertContains(patientCalls[0].url, 'limit=8', 'recent patients fetch must be bounded');
+});
+
+await check('dashboard hides patient content without patient:read and keeps admin access', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: CLIN_ADMIN,
+    patients: { items: [PATIENT], total: 1, limit: 8, offset: 0 },
+  });
+  const document = bootDom([...CHROME_IDS, 'page-body', 'welcome-heading']);
+  await freshPage('dashboard.js');
+  await settle();
+
+  const body = textOf(document.getElementById('page-body'));
+  assert(!body.includes('Recent patients'), 'recent patients must not render without patient:read');
+  assert(!body.includes('MRN-0001'), 'no patient data may render without patient:read');
+  assertContains(body, 'Staff management', 'admin quick action missing');
+  assertEqualLocal(
+    calls.filter((call) => call.url.includes('/api/v1/patients')).length,
+    0,
+    'no patient fetch may happen without patient:read',
+  );
+});
+
+await check('patient header renders the avatar initials and copies the MRN', async () => {
+  globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const demo = textOf(document.getElementById('demographics-region'));
+  assertContains(demo, 'Synthetic demo data', 'provenance badge missing');
+  assertContains(demo, 'MRN: MRN-0001', 'MRN missing');
+  assertContains(demo, ui.formatDate('1980-05-04'), 'birth date not shown in the header meta line');
+  assertEqualLocal(textOf(document.getElementById('patient-avatar')), 'AT', 'avatar initials wrong');
+  assertContains(textOf(document.getElementById('patient-heading')), 'Ann Test', 'heading not set');
+
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { clipboard: { writeText: async (text) => { copied.push(text); } } },
+    configurable: true,
+  });
+  await clickButton(document.getElementById('demographics-region'), 'Copy MRN');
+  await settle();
+  assertEqualLocal(copied[0], 'MRN-0001', 'copy button did not copy the MRN');
+  assertContains(textOf(document.getElementById('demographics-region')), 'copied to the clipboard', 'copy feedback missing');
+});
+
+await check('patient record tabs switch panels with the ARIA tabs pattern', async () => {
+  globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  const document = bootDom([
+    ...CHROME_IDS,
+    ...PATIENT_IDS,
+    {
+      id: 'patient-tabs',
+      class: 'tabs',
+      attrs: { role: 'tablist' },
+      children: [
+        {
+          id: 'tab-summary',
+          tag: 'button',
+          class: 'tab is-active',
+          attrs: { role: 'tab', 'aria-controls': 'panel-summary', 'aria-selected': 'true' },
+          text: 'Summary',
+        },
+        {
+          id: 'tab-labs',
+          tag: 'button',
+          class: 'tab',
+          attrs: { role: 'tab', 'aria-controls': 'panel-labs', 'aria-selected': 'false', tabindex: '-1' },
+          text: 'Labs',
+        },
+      ],
+    },
+    { id: 'panel-summary', class: 'tab-panel', attrs: { role: 'tabpanel' } },
+    { id: 'panel-labs', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  ]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const summaryPanel = document.getElementById('panel-summary');
+  const labsPanel = document.getElementById('panel-labs');
+  assertEqualLocal(summaryPanel.hidden, false, 'summary panel must start visible');
+  assertEqualLocal(labsPanel.hidden, true, 'labs panel must start hidden');
+
+  await document.getElementById('tab-labs').dispatch('click');
+  assertEqualLocal(labsPanel.hidden, false, 'labs panel must show after clicking its tab');
+  assertEqualLocal(summaryPanel.hidden, true, 'summary panel must hide after switching');
+  assertEqualLocal(document.getElementById('tab-labs').getAttribute('aria-selected'), 'true', 'aria-selected not set on the new tab');
+  assertEqualLocal(document.getElementById('tab-summary').getAttribute('aria-selected'), 'false', 'aria-selected not cleared on the old tab');
+
+  await document.getElementById('tab-labs').dispatch('keydown', { key: 'ArrowLeft' });
+  assertEqualLocal(summaryPanel.hidden, false, 'arrow key must move selection back to the summary tab');
+  assertEqualLocal(labsPanel.hidden, true, 'labs panel must hide after arrow-key navigation');
 });
 
 /* ------------------------------------------------------------- login + session */

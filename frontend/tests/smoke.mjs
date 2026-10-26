@@ -171,6 +171,68 @@ for (const file of htmlFiles) {
   }
 }
 
+/* ------------------------------------------------- 1c. design-system hygiene */
+
+await check('styles.css defines the design tokens and motion safety', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const token of ['--color-primary', '--color-canvas', '--font-sans', '--space-4', '--radius-lg', '--shadow-1']) {
+    assert(css.includes(`${token}:`), `missing design token ${token}`);
+  }
+  assert(css.includes('prefers-reduced-motion'), 'missing prefers-reduced-motion handling');
+  assert(css.includes('prefers-color-scheme: dark'), 'missing dark-scheme token set');
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert(!/https?:\/\//.test(code), 'external URL referenced from the stylesheet');
+  assert(!/@import\s+url\(/.test(code), 'external CSS import found');
+});
+
+await check('no inline style attributes anywhere (CSP style-src self)', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    const found = source.match(/\sstyle\s*=\s*["'][^"']*["']/g) || [];
+    assert(found.length === 0, `${file} has inline style attributes`);
+  }
+  for (const file of jsFiles) {
+    const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
+    assert(!/\bstyle\s*[:=]\s*['"`]/.test(source), `assets/js/${file} sets inline styles`);
+    assert(!/setAttribute\(\s*['"]style['"]/.test(source), `assets/js/${file} sets a style attribute`);
+    assert(!/\.style\.\w+\s*=/.test(source), `assets/js/${file} mutates element styles directly`);
+  }
+});
+
+const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'admin.html'];
+for (const file of SHELL_PAGES) {
+  const source = await readFile(path.join(frontendRoot, file), 'utf8');
+  await check(`${file}: app shell design structure present`, () => {
+    assert(source.includes('class="app-shell"'), 'missing app shell');
+    assert(source.includes('class="sidebar"'), 'missing sidebar');
+    assert(source.includes('class="topbar"'), 'missing topbar');
+    assert(source.includes('class="help-card"'), 'missing sidebar help card');
+    assert(source.includes('class="brand__mark"'), 'missing brand mark');
+    assert(source.includes('MediCore'), 'missing product brand');
+  });
+}
+
+await check('patient.html: redesigned patient detail structures present', async () => {
+  const source = await readFile(path.join(frontendRoot, 'patient.html'), 'utf8');
+  for (const marker of [
+    'class="card patient-header"',
+    'id="patient-avatar"',
+    'role="tablist"',
+    'class="ai-card"',
+    'INFORMATIONAL ONLY',
+    'class="ai-card__disclaimer"',
+  ]) {
+    assert(source.includes(marker), `missing ${marker}`);
+  }
+});
+
+await check('index.html: brand panel and info-row disclosures present', async () => {
+  const source = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  for (const marker of ['class="auth-hero"', 'class="info-rows"', 'What this demo is', 'What this demo is not', 'MediCore']) {
+    assert(source.includes(marker), `missing ${marker}`);
+  }
+});
+
 /* ------------------------------------------------------ 2. module import safety */
 
 const api = await import(path.join(jsDir, 'api.js'));

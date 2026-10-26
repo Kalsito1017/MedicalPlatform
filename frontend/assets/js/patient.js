@@ -134,7 +134,7 @@ function listItemLabel(entry) {
 
 // Runs one section load: skeleton -> data -> renderer, or a friendly error
 // panel with retry. Renderers own their empty states.
-function loadSection(container, fetcher, render, { loadingLabel = 'Loading' } = {}) {
+function loadSection(container, fetcher, render, { loadingLabel = 'Loading', onError = null } = {}) {
   const attempt = () => {
     ui.renderLoading(container, { label: loadingLabel, rows: 3 });
     Promise.resolve()
@@ -148,42 +148,77 @@ function loadSection(container, fetcher, render, { loadingLabel = 'Loading' } = 
           onRetry: attempt,
           headingTag: 'h3',
         });
+        if (typeof onError === 'function') onError(error);
       });
   };
   attempt();
+}
+
+/** Clipboard copy control with an accessible, honest fallback message. */
+function copyValueButton(value, label, feedbackText) {
+  const feedback = ui.el('p', {
+    class: 'copy-feedback',
+    role: 'status',
+    'aria-live': 'polite',
+    text: '',
+  });
+  const button = ui.el('button', {
+    class: 'btn btn-secondary btn-sm',
+    type: 'button',
+    onClick: async () => {
+      const nav = typeof navigator !== 'undefined' ? navigator : null;
+      if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+        try {
+          await nav.clipboard.writeText(value);
+          feedback.textContent = feedbackText;
+          return;
+        } catch {
+          // Clipboard denied or unavailable: fall through to manual copy.
+        }
+      }
+      feedback.textContent =
+        'Automatic copy is unavailable here. Select the value and copy it manually.';
+    },
+  }, ui.icon('copy', 'icon--sm'), label);
+  return { button, feedback };
 }
 
 function renderDemographics(patient) {
   const region = document.getElementById('demographics-region');
   ui.clear(region);
 
+  const name = patientName(patient);
   const provenance = firstValue(patient, ['provenance']) || 'synthetic';
   const birth = ui.formatDate(firstValue(patient, ['birth_date', 'date_of_birth', 'dob']));
+  const sex = firstValue(patient, ['sex', 'gender']);
+  const mrn =
+    firstValue(patient, ['mrn', 'medical_record_number', 'record_number']) || 'Not recorded';
 
+  const avatarNode = document.getElementById('patient-avatar');
+  if (avatarNode) avatarNode.textContent = ui.initials(name);
+
+  const metaLine = [birth ? `Born ${birth}` : 'Date of birth not recorded', sex || null]
+    .filter(Boolean)
+    .join(' \u2022 ');
+
+  const copy = copyValueButton(mrn, 'Copy MRN', 'MRN copied to the clipboard.');
   region.append(
-    ui.el('dl', { class: 'detail-grid' },
-      ui.el('dt', { text: 'Name' }),
-      ui.el('dd', { text: patientName(patient) }),
-      ui.el('dt', { text: 'Medical record number' }),
-      ui.el('dd', {
-        text: firstValue(patient, ['mrn', 'medical_record_number', 'record_number']) || 'Not recorded',
+    ui.el('div', { class: 'badge-list' },
+      ui.el('span', {
+        class: provenance === 'synthetic' ? 'badge badge--synthetic' : 'badge badge--neutral',
+        text: provenance === 'synthetic' ? 'Synthetic demo data' : provenance,
       }),
-      ui.el('dt', { text: 'Date of birth' }),
-      ui.el('dd', { text: birth || 'Not recorded' }),
-      ui.el('dt', { text: 'Sex' }),
-      ui.el('dd', { text: firstValue(patient, ['sex', 'gender']) || 'Not recorded' }),
-      ui.el('dt', { text: 'Data provenance' }),
-      ui.el('dd', {},
-        ui.el('span', {
-          class: provenance === 'synthetic' ? 'badge badge--synthetic' : 'badge badge--neutral',
-          text: provenance === 'synthetic' ? 'Synthetic demo data' : provenance,
-        }),
-      ),
     ),
+    ui.el('div', { class: 'patient-header__meta' },
+      ui.el('span', { class: 'mono', text: `MRN: ${mrn}` }),
+      copy.button,
+    ),
+    copy.feedback,
+    ui.el('p', { class: 'patient-header__line', text: metaLine }),
   );
 
   const heading = document.getElementById('patient-heading');
-  if (heading) heading.textContent = patientName(patient);
+  if (heading) heading.textContent = name;
 }
 
 function renderSummary(summary) {
@@ -223,6 +258,26 @@ function renderSummary(summary) {
     ? ui.el('ul', { class: 'compact-list' }, activeMeds.map((entry) => ui.el('li', { text: medLabel(entry) })))
     : ui.el('p', { class: 'text-muted', text: 'No active medications recorded.' });
 
+  region.append(
+    ui.el('div', { class: 'summary-grid' },
+      block('Active problems', problemsNode),
+      block('Latest labs', labsNode),
+      block('Active medications', medsNode),
+    ),
+    ui.el('p', {
+      class: 'card__note',
+      text: 'Summary content is synthetic demo data and is not a clinical assessment.',
+    }),
+  );
+
+  renderEncounters(encounters);
+}
+
+function renderEncounters(encounters) {
+  const region = document.getElementById('encounters-region');
+  if (!region) return;
+  ui.clear(region);
+
   const encountersNode = encounters.length > 0
     ? ui.el('ol', { class: 'timeline' }, encounters.map((encounter) => {
         const date = ui.formatDate(firstValue(encounter, ['date', 'encounter_date', 'occurred_at', 'datetime', 'start']));
@@ -239,15 +294,10 @@ function renderSummary(summary) {
     : ui.el('p', { class: 'text-muted', text: 'No encounters recorded.' });
 
   region.append(
-    ui.el('div', { class: 'summary-grid' },
-      block('Encounters', encountersNode),
-      block('Active problems', problemsNode),
-      block('Latest labs', labsNode),
-      block('Active medications', medsNode),
-    ),
+    encountersNode,
     ui.el('p', {
       class: 'card__note',
-      text: 'Summary content is synthetic demo data and is not a clinical assessment.',
+      text: 'Encounters are synthetic demo data and are not clinical documentation.',
     }),
   );
 }
@@ -407,11 +457,28 @@ function loadPrescriptions() {
 }
 
 function loadSummary() {
+  const encountersRegion = document.getElementById('encounters-region');
+  if (encountersRegion) ui.renderLoading(encountersRegion, { label: 'Loading encounters', rows: 2 });
   loadSection(
     document.getElementById('summary-region'),
     () => api.get(`/patients/${encodeURIComponent(state.patientId)}/summary`),
     renderSummary,
-    { loadingLabel: 'Loading patient summary' },
+    {
+      loadingLabel: 'Loading patient summary',
+      onError: () => {
+        if (!encountersRegion) return;
+        ui.clear(encountersRegion);
+        encountersRegion.append(
+          ui.el('div', { class: 'state-panel state-panel--empty' },
+            ui.el('h3', { class: 'state-panel__title', text: 'Encounters unavailable' }),
+            ui.el('p', {
+              class: 'state-panel__text',
+              text: 'The patient summary could not be loaded, so encounters are unavailable. Use the retry action in the summary panel.',
+            }),
+          ),
+        );
+      },
+    },
   );
 }
 
@@ -468,6 +535,7 @@ ui.onReady(async () => {
   loadSummary();
   loadLabs();
   loadPrescriptions();
+  initTabs();
 
   // ================================================================
   // AI ASSISTANT PANEL (PLAN.md Phase 8 UI) — landed here, anchored to
@@ -482,6 +550,49 @@ ui.onReady(async () => {
   // ================================================================
   initAiPanel(user);
 });
+
+/* --------------------------------------------------------- record tabs */
+// Icon tabs (Summary | Labs | Prescriptions | Encounters) switching the
+// section panels. Full ARIA tabs pattern: roving tabindex, arrow-key
+// navigation, Home/End support. Every panel keeps loading independently.
+
+function initTabs() {
+  const tablist = document.querySelector('.tabs');
+  if (!tablist) return;
+  const tabs = Array.from(tablist.querySelectorAll('.tab'));
+  if (tabs.length === 0) return;
+
+  const activate = (tab, { focus = false } = {}) => {
+    for (const other of tabs) {
+      const selected = other === tab;
+      other.classList.toggle('is-active', selected);
+      other.setAttribute('aria-selected', selected ? 'true' : 'false');
+      other.setAttribute('tabindex', selected ? '0' : '-1');
+      const panel = document.getElementById(other.getAttribute('aria-controls'));
+      if (panel) panel.hidden = !selected;
+    }
+    if (focus && typeof tab.focus === 'function') tab.focus();
+  };
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => activate(tab));
+    tab.addEventListener('keydown', (event) => {
+      const key = event && event.key;
+      if (!key) return;
+      let next = null;
+      if (key === 'ArrowRight') next = (index + 1) % tabs.length;
+      else if (key === 'ArrowLeft') next = (index - 1 + tabs.length) % tabs.length;
+      else if (key === 'Home') next = 0;
+      else if (key === 'End') next = tabs.length - 1;
+      if (next === null) return;
+      if (event.preventDefault) event.preventDefault();
+      activate(tabs[next], { focus: true });
+    });
+  });
+
+  const initial = tabs.find((tab) => tab.classList.contains('is-active')) || tabs[0];
+  activate(initial);
+}
 
 /* ------------------------------------------------------ AI assistant panel */
 
@@ -572,10 +683,28 @@ function citationLabel(citation) {
   return 'Synthetic record reference';
 }
 
-function renderAiAnswer(payload) {
+function chatBubble(variant, ...children) {
+  return ui.el('div', { class: `chat-bubble chat-bubble--${variant}` }, children.flat());
+}
+
+function chatMeta(text) {
+  return ui.el('p', { class: 'chat-bubble__meta', text });
+}
+
+function renderAiAnswer(payload, question = '') {
   const region = document.getElementById('ai-response-region');
   if (!region) return;
   ui.clear(region);
+
+  const answeredAt = ui.formatDateTime(new Date().toISOString()) || '';
+  if (question) {
+    region.append(
+      chatBubble('user',
+        ui.el('p', { text: question }),
+        answeredAt ? chatMeta(answeredAt) : null,
+      ),
+    );
+  }
 
   const answer = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
   const usedTools = Array.isArray(payload && payload.used_tools) ? payload.used_tools : [];
@@ -583,7 +712,7 @@ function renderAiAnswer(payload) {
   const disclaimer = payload && typeof payload.disclaimer === 'string' ? payload.disclaimer.trim() : '';
   const model = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
 
-  const card = ui.el('div', { class: 'card ai-response' },
+  const bubble = chatBubble('assistant',
     ui.el('div', { class: 'badge-list' },
       ui.el('span', { class: 'badge badge--synthetic', text: 'AI-generated' }),
       ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),
@@ -591,13 +720,13 @@ function renderAiAnswer(payload) {
   );
 
   const paragraphs = answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-  card.append(
+  bubble.append(
     paragraphs.length > 0
       ? ui.el('div', { class: 'ai-answer' }, paragraphs.map((text) => ui.el('p', { text })))
       : ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' }),
   );
 
-  card.append(
+  bubble.append(
     ui.el('div', { class: 'alert alert--info', role: 'note' },
       ui.el('p', {
         text: 'AI-generated synthetic-demo assistance about synthetic demo data \u2014 not a diagnosis or treatment recommendation.',
@@ -607,7 +736,7 @@ function renderAiAnswer(payload) {
   );
 
   if (usedTools.length > 0) {
-    card.append(
+    bubble.append(
       ui.el('div', { class: 'ai-sources' },
         ui.el('p', { class: 'field-hint', text: 'Sources consulted:' }),
         ui.el('ul', { class: 'chip-list' },
@@ -618,7 +747,7 @@ function renderAiAnswer(payload) {
   }
 
   if (citations.length > 0) {
-    card.append(
+    bubble.append(
       ui.el('div', { class: 'ai-citations' },
         ui.el('p', { class: 'field-hint', text: 'References to synthetic records:' }),
         ui.el('ul', { class: 'compact-list' },
@@ -628,14 +757,13 @@ function renderAiAnswer(payload) {
     );
   }
 
-  card.append(
-    ui.el('p', {
-      class: 'card__note',
-      text: model ? `Model: ${model}` : 'Model not reported by the backend.',
-    }),
+  bubble.append(
+    chatMeta(
+      `${model ? `Model: ${model}` : 'Model not reported by the backend.'}${answeredAt ? ` \u2022 ${answeredAt}` : ''}`,
+    ),
   );
 
-  region.append(card);
+  region.append(bubble);
   setAiStatus('Answer received. AI-generated synthetic-demo assistance \u2014 not a diagnosis or treatment recommendation.');
 }
 
@@ -712,6 +840,10 @@ async function askAssistant() {
     ui.clear(region);
     region.setAttribute('aria-busy', 'true');
     region.append(
+      chatBubble('user',
+        ui.el('p', { text: question }),
+        chatMeta(ui.formatDateTime(new Date().toISOString()) || ''),
+      ),
       ui.el('div', { class: 'state-panel', role: 'status' },
         ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
         ui.el('p', {
@@ -728,7 +860,7 @@ async function askAssistant() {
       { patient_id: state.patientId, question },
       controller ? { signal: controller.signal } : undefined,
     );
-    renderAiAnswer(payload);
+    renderAiAnswer(payload, question);
   } catch (error) {
     if (error && error.name === 'AbortError') {
       if (region) {

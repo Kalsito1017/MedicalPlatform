@@ -105,9 +105,7 @@ function roleBadges(roles) {
   if (!Array.isArray(roles) || roles.length === 0) {
     return ui.el('span', { class: 'text-muted', text: 'No roles' });
   }
-  return ui.el('div', { class: 'badge-list' },
-    roles.map((role) => ui.el('span', { class: 'badge badge--neutral', text: ui.roleLabel(role) })),
-  );
+  return ui.el('div', { class: 'badge-list' }, roles.map(ui.roleBadge));
 }
 
 function renderRowActions(user) {
@@ -168,8 +166,15 @@ function renderRowActions(user) {
 
 function renderStaffRow(user) {
   const cells = [
-    ui.el('td', { 'data-label': 'Name', text: user.display_name || 'Not recorded' }),
-    ui.el('td', { 'data-label': 'Email', text: user.email || 'Not recorded' }),
+    ui.el('td', { 'data-label': 'Staff member' },
+      ui.el('div', { class: 'cell-stack' },
+        ui.avatar(user.display_name || user.email || '?', { size: 'sm' }),
+        ui.el('div', { class: 'cell-stack__text' },
+          ui.el('span', { class: 'cell-stack__primary', text: user.display_name || 'Not recorded' }),
+          ui.el('span', { class: 'cell-stack__secondary', text: user.email || 'Not recorded' }),
+        ),
+      ),
+    ),
     ui.el('td', { 'data-label': 'Roles' }, roleBadges(user.roles)),
     ui.el('td', { 'data-label': 'Status' },
       user.is_active
@@ -197,7 +202,7 @@ function renderStaffTable() {
     return;
   }
 
-  const columns = ['Name', 'Email', 'Roles', 'Status', 'Created'];
+  const columns = ['Staff member', 'Roles', 'Status', 'Created'];
   if (canManage() || canAssign()) columns.push('Actions');
 
   const table = ui.el('table', { class: 'table table-stack' },
@@ -279,6 +284,11 @@ async function grantRole(user, role, button) {
     title: 'Grant role',
     message,
     confirmLabel: 'Grant role',
+    details: [
+      { label: 'Name', value: user.display_name || 'Not recorded' },
+      { label: 'Email', value: user.email || 'Not recorded' },
+      { label: 'Role', value: ui.roleLabel(role) },
+    ],
   });
   if (!confirmed) return;
 
@@ -304,6 +314,11 @@ async function revokeRole(user, role, button) {
       `Revoke ${ui.roleLabel(role)} from ${user.display_name}? ` +
       `This removes their ability to ${ROLE_ABILITY[role]}.`,
     confirmLabel: 'Revoke role',
+    details: [
+      { label: 'Name', value: user.display_name || 'Not recorded' },
+      { label: 'Email', value: user.email || 'Not recorded' },
+      { label: 'Role', value: ui.roleLabel(role) },
+    ],
   });
   if (!confirmed) return;
 
@@ -335,6 +350,11 @@ async function toggleActive(user, button) {
         'They will be signed out at once and cannot sign in again until this account is reactivated.',
     confirmLabel: activating ? 'Activate' : 'Deactivate',
     danger: !activating,
+    details: [
+      { label: 'Name', value: user.display_name || 'Not recorded' },
+      { label: 'Email', value: user.email || 'Not recorded' },
+      { label: 'Status now', value: user.is_active ? 'Active' : 'Inactive' },
+    ],
   });
   if (!confirmed) return;
 
@@ -486,6 +506,11 @@ function initCreateForm() {
           `Create ${displayName} and grant ${ui.roleLabel(role)}? ` +
           `This grants ${displayName} the ability to ${ROLE_ABILITY[role]}.`,
         confirmLabel: 'Create and grant role',
+        details: [
+          { label: 'Name', value: displayName },
+          { label: 'Email', value: email },
+          { label: 'Role', value: ui.roleLabel(role) },
+        ],
       });
       if (!confirmed) return;
     }
@@ -700,7 +725,21 @@ ui.onReady(async () => {
     if (loading) loading.hidden = true;
 
     const createSection = document.getElementById('create-staff-section');
-    if (createSection) createSection.hidden = !canManage();
+    const addStaffToggle = document.getElementById('add-staff-toggle');
+    if (createSection) createSection.hidden = true;
+    if (addStaffToggle) {
+      addStaffToggle.hidden = !canManage();
+      addStaffToggle.addEventListener('click', () => {
+        if (!createSection) return;
+        const expanded = addStaffToggle.getAttribute('aria-expanded') === 'true';
+        addStaffToggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
+        createSection.hidden = expanded;
+        if (!expanded) {
+          const firstField = document.getElementById('create-email');
+          if (firstField && typeof firstField.focus === 'function') firstField.focus();
+        }
+      });
+    }
     if (canManage()) initCreateForm();
 
     const auditSection = document.getElementById('audit-section');

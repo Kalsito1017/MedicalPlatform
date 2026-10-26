@@ -2,7 +2,8 @@
 // patients.html page module — synthetic patient list, search, pagination.
 // Endpoint: GET /api/v1/patients?q=&limit=&offset= -> { items, total, limit,
 // offset } (docs/API.md). Empty and missing results are friendly states, never
-// raw errors.
+// raw errors. Results render as patient cards carrying only real fields:
+// display name, MRN, date of birth, sex, provenance.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
@@ -35,60 +36,13 @@ function syncUrl() {
   window.history.replaceState(null, '', url);
 }
 
-function patientName(patient) {
-  if (patient.display_name) return patient.display_name;
-  if (patient.name) return patient.name;
-  if (patient.full_name) return patient.full_name;
-  const joined = [patient.first_name, patient.last_name].filter(Boolean).join(' ');
-  return joined || 'Synthetic patient';
-}
-
-function patientMrn(patient) {
-  return patient.mrn || patient.medical_record_number || patient.record_number || null;
-}
-
-function patientBirthDate(patient) {
-  return patient.birth_date || patient.date_of_birth || patient.dob || null;
-}
-
-function patientSex(patient) {
-  return patient.sex || patient.gender || null;
-}
-
-function renderTable(items) {
-  const table = ui.el('table', { class: 'table table-stack' },
-    ui.el('thead', {},
-      ui.el('tr', {},
-        ui.el('th', { scope: 'col', text: 'Name' }),
-        ui.el('th', { scope: 'col', text: 'MRN' }),
-        ui.el('th', { scope: 'col', text: 'Date of birth' }),
-        ui.el('th', { scope: 'col', text: 'Sex' }),
-      ),
-    ),
-    ui.el('tbody', {},
-      items.map((patient) => {
-        const id = patient.id || patient.patient_id;
-        const birth = ui.formatDate(patientBirthDate(patient));
-        return ui.el('tr', {},
-          ui.el('td', { 'data-label': 'Name' },
-            id
-              ? ui.el('a', { href: `patient.html?id=${encodeURIComponent(id)}`, text: patientName(patient) })
-              : ui.el('span', { text: patientName(patient) }),
-          ),
-          ui.el('td', { 'data-label': 'MRN', text: patientMrn(patient) || 'Not recorded' }),
-          ui.el('td', { 'data-label': 'Date of birth', text: birth || 'Not recorded' }),
-          ui.el('td', { 'data-label': 'Sex', text: patientSex(patient) || 'Not recorded' }),
-        );
-      }),
-    ),
-  );
-
+function renderCards(items) {
   return ui.el('div', {
-    class: 'table-scroll',
+    class: 'patient-cards',
     role: 'region',
     'aria-label': 'Synthetic patient list',
     tabindex: '0',
-  }, table);
+  }, items.map((patient) => ui.renderPatientCard(patient)));
 }
 
 function renderResults(page) {
@@ -105,7 +59,7 @@ function renderResults(page) {
     });
   } else {
     ui.clear(region);
-    region.append(renderTable(items));
+    region.append(renderCards(items));
     const paginationHost = ui.el('div', {});
     region.append(paginationHost);
     ui.renderPagination(paginationHost, {

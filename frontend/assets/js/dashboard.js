@@ -1,12 +1,23 @@
 // ---------------------------------------------------------------------------
 // dashboard.js — authenticated home: who you are, what you can reach, and the
-// standing synthetic-data notice. Everything rendered here comes from the
-// /api/v1/auth/me payload; nothing is cached in web storage.
+// latest synthetic patient records. Everything rendered here comes from the
+// /api/v1/auth/me payload and the paginated /api/v1/patients list; nothing is
+// cached in web storage and no data is invented.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as ui from './ui.js';
+
+const RECENT_PATIENTS = 8;
+
+function renderRoleBadges(user) {
+  const roles = Array.isArray(user.roles) ? user.roles : [];
+  if (roles.length === 0) {
+    return ui.el('p', { class: 'text-muted', text: 'No role assigned' });
+  }
+  return ui.el('div', { class: 'badge-list' }, roles.map(ui.roleBadge));
+}
 
 function renderProfileCard(user) {
   const roles = Array.isArray(user.roles) ? user.roles : [];
@@ -40,11 +51,15 @@ function renderProfileCard(user) {
   );
 }
 
+// Quick actions are real destinations only: each one leads to a working
+// section of this deployment. Controls for features that do not exist (for
+// example ordering labs or scheduling visits) are deliberately absent.
 function renderQuickLinks(user) {
   const links = [];
   if (auth.hasPermission(user, 'patient:read')) {
     links.push({
       href: 'patients.html',
+      icon: 'users',
       title: 'Find a synthetic patient',
       text: 'Search the fictional patient list and open demographics, labs, and prescriptions.',
     });
@@ -52,8 +67,9 @@ function renderQuickLinks(user) {
   if (auth.hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
     links.push({
       href: 'admin.html',
+      icon: 'shield',
       title: 'Staff management',
-      text: 'Staff accounts and role assignment. The admin data table arrives in a later phase.',
+      text: 'Staff accounts and role administration, with the audit log where permitted.',
     });
   }
 
@@ -61,9 +77,12 @@ function renderQuickLinks(user) {
   for (const link of links) {
     list.append(
       ui.el('a', { class: 'quick-link card', href: link.href },
-        ui.el('h3', { class: 'quick-link__title', text: link.title }),
-        ui.el('p', { class: 'quick-link__text', text: link.text }),
-        ui.el('span', { class: 'quick-link__cta', text: 'Open' }),
+        ui.el('span', { class: 'quick-link__icon', 'aria-hidden': 'true', html: ui.ICONS[link.icon] }),
+        ui.el('div', { class: 'quick-link__body' },
+          ui.el('h3', { class: 'quick-link__title', text: link.title }),
+          ui.el('p', { class: 'quick-link__text', text: link.text }),
+        ),
+        ui.el('span', { class: 'quick-link__cta', 'aria-hidden': 'true', html: ui.ICONS.chevronRight }),
       ),
     );
   }
@@ -74,9 +93,48 @@ function renderQuickLinks(user) {
   }
 
   return ui.el('section', { class: 'stack', 'aria-labelledby': 'quick-links-heading' },
-    ui.el('h2', { class: 'card__title', id: 'quick-links-heading', text: 'Quick links' }),
+    ui.el('h2', { class: 'card__title', id: 'quick-links-heading', text: 'Quick actions' }),
     list,
   );
+}
+
+function renderRecentPatients(user) {
+  if (!auth.hasPermission(user, 'patient:read')) return null;
+
+  const grid = ui.el('div', { class: 'patient-cards' });
+  const section = ui.el('section', { class: 'stack', 'aria-labelledby': 'recent-heading' },
+    ui.el('div', { class: 'toolbar' },
+      ui.el('h2', { class: 'card__title', id: 'recent-heading', text: 'Recent patients' }),
+      ui.el('a', { href: 'patients.html' }, 'View all patients'),
+    ),
+    grid,
+  );
+
+  ui.renderLoading(grid, { label: 'Loading recent patients', rows: 3 });
+  api
+    .get('/patients', { limit: RECENT_PATIENTS, offset: 0 })
+    .then((page) => {
+      const items = Array.isArray(page.items) ? page.items : [];
+      ui.clear(grid);
+      if (items.length === 0) {
+        ui.renderEmptyState(grid, {
+          title: 'No synthetic patients yet',
+          message: 'The fictional dataset is empty for your account. Seed the demo data and reload.',
+          headingTag: 'h3',
+        });
+        return;
+      }
+      for (const patient of items) grid.append(ui.renderPatientCard(patient));
+    })
+    .catch((error) => {
+      ui.renderErrorState(grid, error, {
+        describe: api.describeApiError,
+        onRetry: () => window.location.reload(),
+        headingTag: 'h3',
+      });
+    });
+
+  return section;
 }
 
 function renderNoticeCard() {
@@ -85,20 +143,33 @@ function renderNoticeCard() {
     ui.el('p', {
       text: 'Every record in this platform is fictional and generated for demonstration. This is not clinically validated, not a medical device, and must never be used for real patient care.',
     }),
-    ui.el('button', {
-      class: 'btn btn-secondary',
-      type: 'button',
-      onClick: ui.openAboutDemo,
-    }, 'About this demo'),
+    ui.el('div', { class: 'form-actions' },
+      ui.el('button', {
+        class: 'btn btn-secondary',
+        type: 'button',
+        onClick: ui.openAboutDemo,
+      }, 'About this demo'),
+      ui.el('a', {
+        class: 'btn btn-ghost',
+        href: 'mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue',
+      }, 'Report an issue'),
+    ),
   );
 }
 
 function render(user) {
+  const heading = document.getElementById('welcome-heading');
+  if (heading) {
+    heading.textContent = `Welcome back, ${user.display_name || user.email || 'there'}`;
+  }
+
   const body = ui.clear(document.getElementById('page-body'));
   body.append(
+    renderRoleBadges(user),
     ui.el('div', { class: 'stack-lg' },
-      renderProfileCard(user),
       renderQuickLinks(user),
+      renderRecentPatients(user),
+      renderProfileCard(user),
       renderNoticeCard(),
     ),
   );
