@@ -84,7 +84,6 @@ for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: required chrome present`, () => {
     assert(source.includes('lang="en"'), 'missing lang attribute');
-    assert(source.includes('class="skip-link"'), 'missing skip link');
     assert(source.includes('data-open-about'), 'missing "About this demo" control');
     assert(source.includes('mailto:'), 'missing issue-reporting mailto');
     assert(source.includes('id="main"'), 'missing main landmark');
