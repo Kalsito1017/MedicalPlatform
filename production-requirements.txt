@@ -1,0 +1,140 @@
+Updated Production-Enterprise Skill Checklist
+Tailored for the Clinical AI Platform (internal live-production tool)
+
+This version adapts the original enterprise readiness list to the architecture, roles, data flows, and constraints defined in PLAN.md. It treats the system as an internal production tool (not a public synthetic demo). That means real (or realistic) clinical data may eventually be involved, so HIPAA-relevant controls, audit, least-privilege, and clear non-clinical-decision boundaries are required. Free-tier / public-demo constraints from the plan are removed or elevated to proper production equivalents.
+
+Data model & schema
+Schema designed and reviewed by a human (not improvised table-by-table). Align with the plan’s admin, patients, laboratory, and medications schemas (or equivalent).
+Foreign keys, constraints, indexes, and timestamps on all clinical and admin tables.
+Soft deletes (or equivalent audit-friendly deletion) for patient, encounter, lab, prescription, and staff records.
+Timezones stored correctly (UTC in DB, explicit conversion in application layer).
+Support for names with apostrophes, accents, emoji, and right-to-left text.
+Money / dosage / numeric clinical values stored as integers or precise decimals (never binary floats).
+Migrations that run forward and can roll back; zero-downtime or low-lock strategies for production.
+Idempotent or clearly resettable seed / demo-data process (synthetic data only until formal clinical data approval).
+Provenance / “synthetic vs real” labeling if any demo data remains in the system.
+Authentication, sessions & identity
+Login that correctly handles + and other valid characters in emails.
+Password reset links that expire and are single-use.
+MFA (TOTP or equivalent) plus a documented recovery path for lost devices.
+Sessions that time out; ability to revoke all sessions for a user.
+SSO / SAML for enterprise / hospital IT environments.
+SCIM (or equivalent) so offboarding immediately removes access.
+Rate limits and progressive lockouts on login (protect against guessing without locking out legitimate users).
+Secure, HTTP-only cookies (or carefully managed tokens) with Secure, appropriate SameSite, and CSRF protection.
+No long-lived sensitive tokens in browser storage.
+Demo / shared accounts are prohibited in production; every user has a unique identity.
+Authorization & roles
+Roles deeper than “admin vs everyone else”: doctor, nurse, clinical administrator, technical administrator (exactly as defined in the plan).
+Explicit permission matrix (e.g. patient:read, lab:read, prescription:read, staff:read, staff:manage, role:assign, audit:read).
+Least privilege and deny-by-default on every endpoint and MCP tool.
+Server-side authorization on every protected action; frontend hiding is not sufficient.
+Checks that prevent user A from reading user B’s (or patient X’s) data by changing an ID in the URL.
+Patient-care relationship / assignment policy before any real clinical data is used (plan’s simplified demo policy is insufficient for production).
+No self-role escalation. Role changes are authorized, validated, and audited.
+Technical administrators do not automatically receive clinical data permissions.
+Admin “log in as this user” (impersonation) with full audit trail, if support tooling is required.
+Multi-tenancy / isolation (if more than one organization will ever use it)
+Tenant isolation so one organization’s bug or query cannot surface another organization’s records.
+If the tool remains strictly single-tenant internal, document that decision and the corresponding controls.
+MCP server & LLM integration
+MCP tools are narrow, typed, read-only by default, and restricted to an allowlist (search_authorized_patients, get_patient_summary, get_patient_lab_results, get_recent_prescriptions, etc.).
+No arbitrary SQL, shell, or general-purpose database tools exposed to the LLM.
+Acting user identity is derived from a verified authentication context, never from an LLM-supplied argument.
+Same authorization layer used by the REST API is re-executed inside every MCP tool.
+Query / result / time limits, timeouts, and safe error handling on all tools.
+System instructions that force the model to use tools for record-specific facts and to distinguish retrieved data from general explanation.
+Bounds on prompt size, tool calls, and request duration.
+Protection against prompt injection in any field that reaches the model.
+Patient / clinical data kept out of prompts that leave the network (or covered by a BAA with the model provider).
+Model spend caps, evals, fallback when the provider is down, and a deprecation / migration plan.
+Human approval step for any irreversible action the AI might trigger.
+Clear labeling that AI output is not a diagnosis, treatment recommendation, or validated clinical decision.
+Audit, logging & privacy
+Audit events for login success/failure, logout, permission denials, patient-data reads, MCP tool calls, staff/role changes, and impersonation.
+Audit records show who viewed a record, not only who changed it.
+Structured logs with request/correlation IDs; no passwords, tokens, session cookies, full clinical payloads, or secrets.
+Safe redaction of sensitive fields.
+Retention rules and code that deletes data according to policy (including GDPR-style requests if applicable).
+Data residency controls if required by contract or regulation.
+Security hardening
+Server-side validation on all inputs.
+Parameterized queries / ORM only (no string-concatenated SQL).
+Protection against SQL injection, XSS, CSRF, and the rest of the OWASP Top 10.
+File uploads (if any) scanned, size-limited, and stored so they cannot be executed.
+Restrictive CORS (only known frontend origins).
+Security headers on every response.
+Encryption in transit (TLS) and at rest.
+Least-privilege database accounts; MCP and application never receive superuser credentials.
+Secrets only in environment variables / secret manager; never in code, repo, logs, or AI chat history.
+Dependency scanning and review of every package.
+Rate limits on costly AI endpoints and login.
+Regular access reviews.
+Penetration test and answers (with evidence) to security questionnaires.
+Vulnerability disclosure process.
+Plan for stolen laptop / compromised credentials.
+SOC 2 (policies + evidence) if required by the organization.
+HIPAA controls and BAAs with every vendor that touches patient data (including the LLM provider) the moment any real patient record is present.
+PCI scope kept out of the system (no card numbers).
+Infrastructure, reliability & operations
+Database migrations that run forward and roll back; tested on production-like data volumes.
+Indexes for all query patterns that will appear with real data volume.
+Connection pooling.
+Nightly backups + tested restores + point-in-time recovery.
+Dev, staging, and production environments that match.
+Infrastructure as code.
+Deploy pipeline that runs tests before anything reaches users; one-click rollbacks; zero-downtime deploys where possible.
+Feature flags.
+Health checks (/health/live, /health/ready).
+Background job queues with retries, backoff, and dead-letter handling (if async work is added).
+Caching with proper invalidation.
+Structured logs, error tracking, uptime checks from outside the network, alerts that page a human, dashboards, and tracing.
+On-call rotation, runbooks, and postmortems.
+Status page (internal or external as appropriate).
+CDN and performance considerations for any remote users.
+DNS, SSL certificates, and automated renewals.
+Cost alerts.
+Disaster-recovery plan, tested periodically.
+Second region only if the contract or uptime requirement demands it.
+Testing & quality
+Unit tests for permission mapping and authorization decisions.
+API tests for auth, roles, validation, pagination, and error shapes.
+Data-layer tests for migrations, foreign keys, and seed behavior.
+MCP tests for schemas, authorization, bounds, and allowlisting.
+LLM tests using mocked provider responses.
+Tests that users cannot elevate roles or access unauthorized records.
+Audit-event tests.
+Frontend tests for login state, role-based navigation, patient list/detail, and error states.
+End-to-end smoke tests covering the main clinical workflows.
+Load testing before any wider rollout.
+Regression tests.
+Accessibility (keyboard navigation, screen-reader support, contrast) — required for many enterprise / healthcare contracts.
+Test data that looks realistic but is never real production patient data.
+Frontend & UX (production standards)
+Responsive layouts (desktop, tablet, mobile).
+Loading, empty, error, and offline states on every screen.
+Actionable error messages.
+Forms that preserve user input on validation failure.
+Confirmation for destructive or high-impact admin actions.
+“Synthetic demo data — not for clinical use” notice removed or replaced with the appropriate production disclaimer once real data is approved.
+No clinical data in local storage, analytics, or browser console.
+Keyboard navigation and accessible markup for primary workflows.
+Admin & staff management
+Staff list, create/invite, activate/deactivate, assign/remove roles.
+All changes audited and protected against CSRF.
+Prevent removal of the last required administrator.
+Admin panel only visible and usable by authorized roles; backend still enforces everything.
+Compliance, legal & process
+Privacy policy and terms that match actual data handling.
+Documented data-retention and reset procedures.
+Explicit statement that the system is not clinically validated and is not a medical device (unless a separate regulatory path is completed).
+Architecture decision records.
+README that gets a new engineer running locally in under an hour.
+Changelog.
+Code review on every change; branching strategy; monthly dependency upgrades.
+Deletion of dead code left by earlier AI attempts.
+Bus factor higher than one; accounts, domains, and repos in the organization’s name.
+Explicit non-goals (carry forward from the plan)
+Do not claim the system is suitable for real-time clinical decision-making.
+Do not put real patient data into the public internet or an external LLM without BAAs and formal approval.
+Do not expose the MCP transport publicly without strong authentication and network controls.

@@ -1,0 +1,45 @@
+# Secrets and environment — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+credentials.json
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node / frontend tooling
+node_modules/
+.npm/
+*.local
+
+# Database artifacts
+*.sql.gz
+*.dump
+db-data/
+postgres-data/
+
+# Logs and runtime
+*.log
+logs/
+tmp/
+.opencode/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
