@@ -105,6 +105,31 @@ for (const file of htmlFiles) {
 
 /* -------------------------------------------------- 1b. asset and DOM wiring */
 
+await check('patient.html: AI assistant panel is labelled and bounded', async () => {
+  const source = await readFile(path.join(frontendRoot, 'patient.html'), 'utf8');
+  assert(source.includes('id="ai-question-form"'), 'missing AI question form');
+  assert(source.includes('id="ai-char-count"'), 'missing character counter');
+  assert(source.includes('id="ai-cancel"'), 'missing cancel control');
+  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing AI non-diagnosis label');
+  assert(source.includes('2000'), 'missing question limit copy');
+});
+
+await check('admin.js: high-impact actions carry explicit consequence copy', async () => {
+  const source = await readFile(path.join(jsDir, 'admin.js'), 'utf8');
+  assert(source.includes('This grants'), 'missing grant consequence sentence');
+  assert(source.includes('This removes their ability to'), 'missing revoke consequence sentence');
+  assert(source.includes('Deactivating immediately ends this person'), 'missing session-revocation warning');
+  assert(source.includes('This is shown once. Store it now.'), 'missing one-time password warning');
+  assert(source.includes('targets your own account'), 'missing self-escalation warning');
+});
+
+await check('patient.js: AI output is labelled AI-generated and size bounded', async () => {
+  const source = await readFile(path.join(jsDir, 'patient.js'), 'utf8');
+  assert(source.includes('AI-generated'), 'missing AI-generated label');
+  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing non-diagnosis label');
+  assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
+});
+
 const entryModules = {
   'index.html': 'login.js',
   'dashboard.html': 'dashboard.js',

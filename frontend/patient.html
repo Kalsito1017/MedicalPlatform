@@ -77,14 +77,34 @@
         </div>
       </section>
 
-      <!-- ===================================================================
-           EXTENSION POINT: AI ASSISTANT PANEL (PLAN.md Phase 8 UI).
-           The AI assistant panel attaches here, after the prescriptions
-           section. It is intentionally not rendered in this build: no fake AI.
-           The wiring lives at the matching EXTENSION POINT block in
-           assets/js/patient.js. See that comment for the API contract
-           (POST /api/v1/ai/ask) and labelling requirements.
-           =================================================================== -->
+      <section class="section-block" id="ai-panel" aria-labelledby="ai-heading">
+        <h2 id="ai-heading">AI assistant</h2>
+        <div class="card">
+          <p class="card__note">
+            Ask questions about this synthetic patient. Answers are AI-generated synthetic-demo
+            assistance built from fictional data — they are not a diagnosis or treatment
+            recommendation, and nothing here is clinically validated.
+          </p>
+          <form id="ai-question-form" novalidate>
+            <div class="field">
+              <label for="ai-question">Your question about this synthetic patient</label>
+              <textarea id="ai-question" rows="3" aria-describedby="ai-question-hint ai-char-count"></textarea>
+              <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are not stored in your browser.</p>
+              <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
+              <p class="field-error" id="ai-question-error" hidden></p>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" type="submit" id="ai-submit">Ask the assistant</button>
+              <button class="btn btn-secondary" type="button" id="ai-cancel" hidden>Cancel request</button>
+            </div>
+          </form>
+          <div id="ai-status" class="visually-hidden" role="status" aria-live="polite"></div>
+          <div id="ai-response-region" role="region" aria-label="Assistant response">
+            <p class="text-muted">No question asked yet.</p>
+          </div>
+          <p class="field-hint">All assistant output is AI-generated synthetic-demo assistance, not a diagnosis or treatment recommendation.</p>
+        </div>
+      </section>
     </div>
   </main>
 

@@ -28,6 +28,8 @@ class ShimNode {
     this.disabled = false;
     this.hidden = false;
     this.value = '';
+    this.open = false;
+    this.returnValue = '';
     this._innerHTML = '';
     this._classSet = new Set();
     const self = this;
@@ -134,6 +136,19 @@ class ShimNode {
     ShimDocument.activeElement = this;
   }
 
+  /* <dialog> semantics: modal open/close plus the close event. */
+  showModal() {
+    this.open = true;
+    this.setAttribute('open', '');
+  }
+  close(value) {
+    if (!this.open) return;
+    this.open = false;
+    this.removeAttribute('open');
+    if (value !== undefined) this.returnValue = String(value);
+    this.dispatch('close');
+  }
+
   matches(selector) {
     if (selector.startsWith('.')) return this._classSet.has(selector.slice(1));
     if (selector.startsWith('#')) return this.id === selector.slice(1);
@@ -168,6 +183,9 @@ export class ShimDocument {
     this.body = new ShimNode('body');
     this.documentElement = new ShimNode('html');
     this.listeners = {};
+  }
+  get activeElement() {
+    return ShimDocument.activeElement;
   }
   createElement(tag) {
     return new ShimNode(tag);

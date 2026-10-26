@@ -409,6 +409,58 @@ export function confirmDialog({
   });
 }
 
+/**
+ * Modal dialog with app-authored body nodes and custom action buttons.
+ * The native <dialog> traps focus while open; focus moves to the first action
+ * on open and returns to the opener on close. Body and actions are cleared on
+ * close (including Escape) so transient content such as a one-time password
+ * never lingers in the DOM. onClose receives the close value.
+ */
+export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClose = null } = {}) {
+  if (typeof document === 'undefined') return { dialog: null, close: () => {} };
+
+  const dialog = ensureDialogHost();
+  dialog.querySelector('#app-dialog-title').textContent = title;
+
+  const body = clear(dialog.querySelector('#app-dialog-body'));
+  for (const node of [bodyNodes].flat()) {
+    if (node == null) continue;
+    body.append(node.nodeType ? node : document.createTextNode(String(node)));
+  }
+
+  const actions = clear(dialog.querySelector('#app-dialog-actions'));
+  for (const node of [actionNodes].flat()) {
+    if (node == null) continue;
+    actions.append(node.nodeType ? node : document.createTextNode(String(node)));
+  }
+
+  const opener =
+    document.activeElement && typeof document.activeElement.focus === 'function'
+      ? document.activeElement
+      : null;
+
+  let finished = false;
+  const finish = (value) => {
+    if (finished) return;
+    finished = true;
+    dialog.removeEventListener('close', onCloseEvent);
+    clear(body);
+    clear(actions);
+    closeDialog(dialog, value);
+    if (opener) opener.focus();
+    if (typeof onClose === 'function') onClose(value);
+  };
+  const onCloseEvent = () => finish(dialog.returnValue);
+  dialog.addEventListener('close', onCloseEvent);
+
+  if (typeof dialog.showModal === 'function') {
+    dialog.showModal();
+    const first = actions.querySelector('button');
+    if (first) first.focus();
+  }
+  return { dialog, close: finish };
+}
+
 /** Read-only informational dialog ("About this demo"). */
 export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
   if (typeof document === 'undefined') return;

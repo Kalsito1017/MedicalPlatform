@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
   <title>Admin — Clinical AI Platform (synthetic demo)</title>
-  <meta name="description" content="Staff administration shell of the Clinical AI Platform demonstration. Staff management arrives in a later phase.">
+  <meta name="description" content="Staff administration for the Clinical AI Platform demonstration: synthetic demo accounts, roles, and activation. Fictional demo data only.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="assets/css/styles.css">
   <script>
@@ -47,7 +47,63 @@
       <p class="lede">Staff accounts and role administration. Access is enforced by the backend, not by this interface.</p>
     </div>
     <div id="page-body">
-      <p class="text-muted">Loading your session…</p>
+      <p class="text-muted" id="admin-loading">Loading your session…</p>
+
+      <section class="section-block" id="create-staff-section" hidden aria-labelledby="create-staff-heading">
+        <h2 id="create-staff-heading">Create a staff account</h2>
+        <div class="card">
+          <form id="create-staff-form" novalidate>
+            <div class="field">
+              <label for="create-email">Email address</label>
+              <input type="email" id="create-email" name="email" autocomplete="off" aria-describedby="create-email-error">
+              <p class="field-error" id="create-email-error" hidden></p>
+            </div>
+            <div class="field">
+              <label for="create-name">Display name</label>
+              <input type="text" id="create-name" name="display-name" autocomplete="off" aria-describedby="create-name-error">
+              <p class="field-error" id="create-name-error" hidden></p>
+            </div>
+            <div class="field">
+              <label for="create-password">Password (optional)</label>
+              <input type="password" id="create-password" name="new-password" autocomplete="new-password" aria-describedby="create-password-hint create-password-error">
+              <p class="field-hint" id="create-password-hint">Leave blank to generate a strong password — the generated password is shown exactly once. If you set one, use at least 8 characters.</p>
+              <p class="field-error" id="create-password-error" hidden></p>
+            </div>
+            <div class="field">
+              <label for="create-role">Role (optional)</label>
+              <select id="create-role" name="role" aria-describedby="create-role-hint">
+                <option value="">No role yet — one can be assigned afterwards</option>
+                <option value="doctor">Doctor</option>
+                <option value="nurse">Nurse</option>
+                <option value="clinical_admin">Clinical administrator</option>
+                <option value="tech_admin">Technical administrator</option>
+              </select>
+              <p class="field-hint" id="create-role-hint">Adding a role is confirmed separately. The backend refuses any role change that would escalate your own account.</p>
+            </div>
+            <div class="form-actions">
+              <button class="btn btn-primary" type="submit" id="create-submit">Create staff account</button>
+            </div>
+          </form>
+          <div id="create-status" class="status-region" role="status" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <section class="section-block" id="staff-section" aria-labelledby="staff-heading">
+        <h2 id="staff-heading">Staff accounts</h2>
+        <div id="staff-status" class="status-region" role="status" aria-live="polite" tabindex="-1"></div>
+        <div id="staff-region">
+          <p class="text-muted">Loading staff accounts…</p>
+        </div>
+      </section>
+
+      <section class="section-block" id="audit-section" hidden aria-labelledby="audit-heading">
+        <h2 id="audit-heading">Audit events</h2>
+        <p class="text-muted">A read-only view of the audit log (newest first): who did what and when. It never contains passwords, tokens, or clinical payloads.</p>
+        <div id="audit-status" class="status-region" role="status" aria-live="polite"></div>
+        <div id="audit-region">
+          <p class="text-muted">Loading audit events…</p>
+        </div>
+      </section>
     </div>
   </main>
 

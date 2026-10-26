@@ -15,7 +15,11 @@
  * What this verifies: page render flows execute without throwing and produce
  * the expected text/structure (list + pagination, patient sections, per-section
  * 403 handling, empty/offline states, login validation + uniform 401 message,
- * role-aware nav, anonymous redirect).
+ * role-aware nav, anonymous redirect, admin staff table + create/role/activate
+ * flows with confirm dialogs and 403/409 rendering, one-time generated
+ * password display, AI assistant panel states: answer labelling, 503
+ * unavailable, 429 rate limit, 2000-char limit, loading/cancel, permission
+ * gating).
  * What this does NOT verify: real browser DOM, layout/CSS, focus behaviour,
  * screen-reader output, and live backend integration.
  * ------------------------------------------------------------------------- */
@@ -117,6 +121,112 @@ const PRESCRIPTIONS = {
   offset: 0,
 };
 
+/* -------------------------------------------- admin + AI panel fixtures */
+
+const NURSE = {
+  id: 'u7',
+  email: 'nurse@example.com',
+  display_name: 'Nan Nurse',
+  roles: ['nurse'],
+  permissions: ['patient:read', 'lab:read', 'prescription:read', 'staff:read'],
+  is_active: true,
+};
+
+function staffUser(overrides) {
+  return {
+    id: 'u-1',
+    email: 'person@example.com',
+    display_name: 'Pat Person',
+    roles: [],
+    is_active: true,
+    created_at: '2026-10-26T13:00:00Z',
+    updated_at: '2026-10-26T13:00:00Z',
+    ...overrides,
+  };
+}
+
+const AUDIT_EVENT = {
+  id: 'ae1',
+  actor_user_id: 'u2',
+  actor_email: 'admin@example.com',
+  actor_display_name: 'Cal Admin',
+  action: 'role.grant',
+  resource_type: 'user_role',
+  resource_id: 'u-3:doctor',
+  outcome: 'success',
+  request_id: 'req-77',
+  created_at: '2026-10-26T13:05:00Z',
+};
+
+const AI_ANSWER = {
+  answer: 'The latest synthetic haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
+  used_tools: ['get_patient_lab_results'],
+  citations: [{ type: 'lab_result', id: 'DEMO-LAB-0001' }],
+  model: 'demo-model-1',
+  ai_generated: true,
+  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
+};
+
+const ADMIN_IDS = [
+  'admin-loading',
+  'create-staff-section',
+  'create-staff-form',
+  'create-email',
+  'create-email-error',
+  'create-name',
+  'create-name-error',
+  'create-password',
+  'create-password-error',
+  'create-role',
+  'create-submit',
+  'create-status',
+  'staff-section',
+  'staff-status',
+  'staff-region',
+  'audit-section',
+  'audit-status',
+  'audit-region',
+];
+const AI_IDS = [
+  'ai-panel',
+  'ai-question-form',
+  'ai-question',
+  'ai-char-count',
+  'ai-question-error',
+  'ai-submit',
+  'ai-cancel',
+  'ai-status',
+  'ai-response-region',
+];
+const PATIENT_IDS = [
+  'page-body',
+  'patient-heading',
+  'demographics-region',
+  'summary-region',
+  'labs-region',
+  'prescriptions-region',
+  ...AI_IDS,
+];
+
+function buttonByText(root, text) {
+  return root.querySelectorAll('button').find((button) => button.textContent.trim() === text) || null;
+}
+
+async function clickButton(root, text) {
+  const button = buttonByText(root, text);
+  if (!button) throw new Error(`button not found: ${text}`);
+  await button.dispatch('click');
+}
+
+function firstRow(root) {
+  const body = root.querySelector('tbody');
+  return body ? body.querySelector('tr') : null;
+}
+
+function badgeTexts(root) {
+  return root.querySelectorAll('.badge').map((badge) => badge.textContent);
+}
+
 const json = (status, body, headers = {}) => ({
   ok: status >= 200 && status < 300,
   status,
@@ -129,12 +239,32 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, calls = [] }) {
-  // A payload carrying a numeric `status` (and no `items`) is an error response.
+function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, routes = [], calls = [] }) {
+  // A payload carrying a numeric `status` (and no `ok` flag) is an error
+  // response: { status, code?, message?, retryAfter? }. A non-200 success
+  // carries `ok: true` (e.g. { status: 204, ok: true }).
   const respond = (payload) => {
     if (payload instanceof Error) throw payload;
-    if (payload && typeof payload === 'object' && typeof payload.status === 'number' && !('items' in payload)) {
-      return json(payload.status, { error: { code: 'forbidden', message: 'denied by policy' } });
+    if (payload && typeof payload === 'object' && typeof payload.status === 'number' && payload.ok !== true) {
+      const code = payload.code || ({
+        400: 'validation_error',
+        401: 'unauthenticated',
+        403: 'forbidden',
+        404: 'not_found',
+        409: 'conflict',
+        429: 'rate_limited',
+        500: 'internal_error',
+        503: 'dependency_unavailable',
+      }[payload.status] || 'forbidden');
+      const headers = payload.retryAfter != null ? { 'Retry-After': String(payload.retryAfter) } : {};
+      return json(
+        payload.status,
+        { error: { code, message: payload.message || '', request_id: payload.requestId || 'req-test' } },
+        headers,
+      );
+    }
+    if (payload && typeof payload === 'object' && payload.ok === true) {
+      return json(payload.status, payload.body !== undefined ? payload.body : null);
     }
     return json(200, payload);
   };
@@ -142,6 +272,17 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     calls.push({ url, init });
     const [path] = url.split('?');
     const method = (init.method || 'GET').toUpperCase();
+
+    for (const route of routes) {
+      const routeMethod = (route.method || 'GET').toUpperCase();
+      const matches = typeof route.match === 'string' ? path === route.match : route.match.test(path);
+      if (routeMethod !== method || !matches) continue;
+      const payload = typeof route.response === 'function'
+        ? route.response({ path, method, init, body: init.body ? JSON.parse(init.body) : null })
+        : route.response;
+      return respond(payload);
+    }
+
     if (path.endsWith('/auth/me')) {
       return respond(me);
     }
@@ -152,6 +293,18 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     if (/\/patients\/[^/]+\/summary$/.test(path)) return respond(summary);
     if (/\/patients\/[^/]+$/.test(path)) return respond(patient);
     if (path.endsWith('/patients')) return respond(patients);
+    if (path.endsWith('/staff') && method === 'GET') {
+      if (staff === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(staff);
+    }
+    if (path.endsWith('/audit') && method === 'GET') {
+      if (audit === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(audit);
+    }
+    if (path.endsWith('/ai/ask') && method === 'POST') {
+      if (ai === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(ai);
+    }
     throw new Error(`unstubbed request: ${method} ${url}`);
   };
 }
@@ -308,6 +461,195 @@ await check('patient detail shows friendly state without an id', async () => {
   assertContains(textOf(document.getElementById('page-body')), 'No patient selected', 'missing-id copy');
 });
 
+/* --------------------------------------------------------- AI assistant panel */
+
+await check('AI panel renders the answer with AI-generated labelling, tools, and citations', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: AI_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const askCall = calls.find((call) => call.url.includes('/ai/ask'));
+  assert(askCall, 'AI endpoint not called');
+  const body = JSON.parse(askCall.init.body);
+  assertEqualLocal(body.patient_id, 'p1', 'patient_id missing from the AI request');
+  assertEqualLocal(body.question, 'What is the latest haemoglobin?', 'question missing from the AI request');
+
+  const region = textOf(document.getElementById('ai-response-region'));
+  assertContains(region, 'The latest synthetic haemoglobin is 13.5 g/dL.', 'answer text missing');
+  assertContains(region, 'It is within the recorded reference range.', 'second answer paragraph missing');
+  assertContains(region, 'AI-generated', 'AI-generated label missing');
+  assertContains(region, 'not a diagnosis or treatment recommendation', 'diagnosis disclaimer missing');
+  assertContains(region, AI_ANSWER.disclaimer, 'backend disclaimer missing');
+  assertContains(region, 'Sources consulted', 'sources label missing');
+  assertContains(region, 'get_patient_lab_results', 'tool chip missing');
+  assertContains(region, 'Synthetic lab result DEMO-LAB-0001', 'citation label missing');
+  assertContains(region, 'Model: demo-model-1', 'model fine print missing');
+});
+
+await check('AI panel shows a calm unavailable state on 503, not a crash', async () => {
+  globalThis.fetch = makeFetch({
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: { status: 503, code: 'dependency_unavailable', message: 'The LLM is not configured.' },
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const region = document.getElementById('ai-response-region');
+  const text = textOf(region);
+  assertContains(text, 'AI assistant unavailable', 'unavailable title missing');
+  assertContains(text, 'runs without a language model', 'unavailable explanation missing');
+  assertEqualLocal(region.querySelector('.state-panel--error'), null, '503 must not render as an error crash');
+  assertEqualLocal(document.getElementById('ai-submit').disabled, false, 'submit must stay usable after 503');
+});
+
+await check('AI panel rate limits with a retry countdown on 429', async () => {
+  globalThis.fetch = makeFetch({
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: { status: 429, code: 'rate_limited', message: '', retryAfter: 45 },
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const text = textOf(document.getElementById('ai-response-region'));
+  assertContains(text, 'Too many questions', 'rate-limit title missing');
+  assertContains(text, '45 seconds', 'retry countdown missing');
+  assertEqualLocal(document.getElementById('ai-response-region').querySelector('.state-panel--error'), null, '429 must not render as a crash');
+});
+
+await check('AI panel enforces the 2000-character question limit', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: AI_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  const submit = document.getElementById('ai-submit');
+  input.value = 'x'.repeat(2001);
+  await input.dispatch('input');
+  assertContains(textOf(document.getElementById('ai-char-count')), '2001 / 2000 characters', 'counter must show the length');
+  assertEqualLocal(submit.disabled, true, 'submit must disable over the limit');
+  assertEqualLocal(input.getAttribute('aria-invalid'), 'true', 'textarea must be marked invalid over the limit');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+  assertEqualLocal(calls.filter((call) => call.url.includes('/ai/ask')).length, 0, 'no request may be sent over the limit');
+
+  input.value = 'x'.repeat(2000);
+  await input.dispatch('input');
+  assertEqualLocal(submit.disabled, false, 'submit must enable at exactly 2000 characters');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+  const askCall = calls.find((call) => call.url.includes('/ai/ask'));
+  assert(askCall, 'request missing at exactly 2000 characters');
+  assertEqualLocal(JSON.parse(askCall.init.body).question.length, 2000, 'question length wrong');
+});
+
+await check('AI panel shows a loading state and supports cancelling the request', async () => {
+  const baseFetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/ai/ask')) {
+      // Pending request that rejects with AbortError when the signal aborts,
+      // exactly like a real fetch() in the browser.
+      return new Promise((resolve, reject) => {
+        if (init.signal) {
+          init.signal.addEventListener('abort', () => {
+            const error = new Error('The request was aborted.');
+            error.name = 'AbortError';
+            reject(error);
+          });
+        }
+      });
+    }
+    return baseFetch(url, init);
+  };
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  assertContains(textOf(document.getElementById('ai-response-region')), 'Consulting the assistant', 'loading state missing');
+  assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
+
+  await document.getElementById('ai-cancel').dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('ai-response-region')), 'Request cancelled', 'cancel outcome missing');
+  assertContains(textOf(document.getElementById('ai-status')), 'Request cancelled', 'cancel not announced');
+  assertEqualLocal(document.getElementById('ai-submit').disabled, false, 'submit must re-enable after cancel');
+});
+
+await check('AI panel is not interactive without permission to view patients', async () => {
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  assertEqualLocal(document.getElementById('ai-question-form').hidden, true, 'question form must hide without patient:read');
+  assertContains(
+    textOf(document.getElementById('ai-response-region')),
+    'only available to accounts that can view this patient',
+    'permission note missing',
+  );
+});
+
 /* --------------------------------------------------------------- admin page */
 
 await check('admin page denies a doctor honestly and shows no fake controls', async () => {
@@ -319,15 +661,344 @@ await check('admin page denies a doctor honestly and shows no fake controls', as
   assertContains(body, 'You do not have permission', 'denial copy missing');
 });
 
-await check('admin page shows the honest placeholder for a clinical admin', async () => {
-  globalThis.fetch = makeFetch({ me: CLIN_ADMIN });
-  const document = bootDom([...CHROME_IDS, 'page-body']);
+await check('admin staff table renders the Page shape with roles, status, and pagination', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: CLIN_ADMIN,
+    staff: {
+      items: [
+        staffUser({ id: 'u-1', display_name: 'Ann Doctor', email: 'ann@example.com', roles: ['doctor'] }),
+        staffUser({
+          id: 'u-2b',
+          display_name: 'Tom Tech',
+          email: 'tom@example.com',
+          roles: ['clinical_admin', 'tech_admin'],
+          is_active: false,
+          created_at: '2026-10-20T09:00:00Z',
+        }),
+      ],
+      total: 25,
+      limit: 20,
+      offset: 0,
+    },
+    audit: { items: [AUDIT_EVENT], total: 1, limit: 10, offset: 0 },
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
   await freshPage('admin.js');
   await settle();
-  const body = textOf(document.getElementById('page-body'));
-  assertContains(body, 'Staff management loads here', 'placeholder copy missing');
-  const nav = textOf(document.getElementById('site-nav'));
-  assertContains(nav, 'Admin', 'admin nav missing for clinical_admin');
+
+  const region = textOf(document.getElementById('staff-region'));
+  assertContains(region, 'Ann Doctor', 'display name missing');
+  assertContains(region, 'ann@example.com', 'email missing');
+  assertContains(region, 'Technical administrator', 'role label missing');
+  assertContains(region, ui.displayDate('2026-10-20T09:00:00Z'), 'created date missing');
+  assertContains(region, 'Showing 1\u20132 of 25 staff accounts', 'pagination summary wrong');
+  const badges = badgeTexts(firstRow(document.getElementById('staff-region')));
+  assert(badges.includes('Doctor') && badges.includes('Active'), `role/status badges wrong: ${badges}`);
+  const secondBadges = badgeTexts(document.getElementById('staff-region').querySelector('tbody').querySelectorAll('tr')[1]);
+  assert(secondBadges.includes('Inactive'), `inactive badge missing: ${secondBadges}`);
+
+  const audit = textOf(document.getElementById('audit-region'));
+  assertContains(audit, 'role.grant', 'audit action missing');
+  assertContains(audit, 'Cal Admin', 'audit actor missing');
+  assertContains(audit, 'user_role u-3:doctor', 'audit resource missing');
+  assertContains(audit, 'req-77', 'audit request id missing');
+
+  const next = buttonByText(document.getElementById('staff-region'), 'Next');
+  assert(next, 'Next button missing');
+  await next.dispatch('click');
+  await settle();
+  const staffCalls = calls.filter((call) => call.url.startsWith('/api/v1/staff'));
+  assertContains(staffCalls[staffCalls.length - 1].url, 'offset=20', 'pagination offset missing');
+  assertContains(textOf(document.getElementById('site-nav')), 'Admin', 'admin nav missing for clinical_admin');
+});
+
+await check('admin role grant confirms the consequence and refreshes the row', async () => {
+  const calls = [];
+  const base = staffUser({ id: 'u-3', display_name: 'Nina Nurse', email: 'nina@example.com', roles: ['nurse'] });
+  globalThis.fetch = makeFetch({
+    calls,
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    routes: [{
+      method: 'POST',
+      match: /\/staff\/u-3\/roles$/,
+      response: { ...base, roles: ['nurse', 'doctor'] },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  const region = document.getElementById('staff-region');
+  const row = firstRow(region);
+  const select = row.querySelector('select');
+  assert(select, 'role select missing');
+  const grantButton = buttonByText(row, 'Grant role');
+  assert(grantButton, 'grant button missing');
+  assertEqualLocal(grantButton.disabled, true, 'grant button must start disabled');
+
+  select.value = 'doctor';
+  await select.dispatch('change');
+  assertEqualLocal(grantButton.disabled, false, 'grant button must enable after a selection');
+
+  await grantButton.dispatch('click');
+  await settle();
+  const dialog = textOf(document.getElementById('app-dialog-body'));
+  assertContains(dialog, 'This grants Nina Nurse the ability to view patient records', 'consequence sentence missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Grant role');
+  await settle();
+
+  const roleCall = calls.find((call) => call.url.includes('/roles'));
+  assert(roleCall, 'role endpoint not called');
+  assertEqualLocal(roleCall.init.body, '{"role":"doctor"}', 'role request body');
+
+  const updatedRow = firstRow(document.getElementById('staff-region'));
+  const badges = badgeTexts(updatedRow);
+  assert(badges.includes('Nurse') && badges.includes('Doctor'), `row not refreshed: ${badges}`);
+  assertContains(textOf(document.getElementById('staff-status')), 'Role granted', 'success not announced');
+  assertEqualLocal(document.activeElement && document.activeElement.id, 'staff-status', 'focus must move to the status region');
+});
+
+await check('admin role revoke renders the 409 last-admin conflict cleanly', async () => {
+  const base = staffUser({ id: 'u-9', display_name: 'Cal Admin', email: 'admin@example.com', roles: ['clinical_admin'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    routes: [{
+      method: 'DELETE',
+      match: /\/staff\/u-9\/roles\/[^/]+$/,
+      response: { status: 409, code: 'conflict', message: 'At least one active administrator must remain.' },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  const row = firstRow(document.getElementById('staff-region'));
+  await clickButton(row, 'Revoke Clinical administrator');
+  await settle();
+  const dialog = textOf(document.getElementById('app-dialog-body'));
+  assertContains(dialog, 'This removes their ability to', 'revoke consequence missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Revoke role');
+  await settle();
+
+  const status = textOf(document.getElementById('staff-status'));
+  assertContains(status, 'Action not allowed right now', '409 title missing');
+  assertContains(status, 'At least one active administrator must remain.', '409 server message missing');
+  assert(badgeTexts(row).includes('Clinical administrator'), 'role badge must remain after a refused revoke');
+});
+
+await check('admin self-escalation 403 from the backend is rendered cleanly', async () => {
+  const base = staffUser({ id: CLIN_ADMIN.id, display_name: CLIN_ADMIN.display_name, email: CLIN_ADMIN.email, roles: ['clinical_admin'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    routes: [{
+      method: 'POST',
+      match: /\/staff\/u2\/roles$/,
+      response: { status: 403, code: 'forbidden', message: 'Self role assignment is not permitted' },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  const row = firstRow(document.getElementById('staff-region'));
+  const select = row.querySelector('select');
+  select.value = 'tech_admin';
+  await select.dispatch('change');
+  await buttonByText(row, 'Grant role').dispatch('click');
+  await settle();
+  const dialog = textOf(document.getElementById('app-dialog-body'));
+  assertContains(dialog, 'targets your own account', 'self-escalation warning missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Grant role');
+  await settle();
+
+  const status = textOf(document.getElementById('staff-status'));
+  assertContains(status, 'You do not have permission', '403 title missing');
+  assertContains(status, 'Self role assignment is not permitted', '403 server message missing');
+});
+
+await check('admin deactivate confirms session revocation and is reversible', async () => {
+  const patches = [];
+  const base = staffUser({ id: 'u-5', display_name: 'Eva Example', email: 'eva@example.com', roles: ['nurse'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    routes: [{
+      method: 'PATCH',
+      match: /\/staff\/u-5$/,
+      response: ({ body }) => {
+        patches.push(body);
+        return { ...base, is_active: body.is_active };
+      },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  const rowNow = () => firstRow(document.getElementById('staff-region'));
+  await clickButton(rowNow(), 'Deactivate');
+  await settle();
+  const dialog = textOf(document.getElementById('app-dialog-body'));
+  assertContains(dialog, 'Deactivating immediately ends this person\u0027s sessions.', 'session-revocation warning missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Deactivate');
+  await settle();
+
+  assertEqualLocal(patches.length, 1, 'PATCH not sent');
+  assertEqualLocal(patches[0].is_active, false, 'deactivate body wrong');
+  assert(badgeTexts(rowNow()).includes('Inactive'), 'inactive badge missing after deactivation');
+
+  await clickButton(rowNow(), 'Activate');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Activate');
+  await settle();
+
+  assertEqualLocal(patches.length, 2, 'second PATCH not sent');
+  assertEqualLocal(patches[1].is_active, true, 'activate body wrong');
+  assert(badgeTexts(rowNow()).includes('Active'), 'active badge missing after reactivation');
+  assertContains(textOf(document.getElementById('staff-status')), 'can sign in again', 'activation not announced');
+});
+
+await check('admin create staff shows the generated password once with a warning', async () => {
+  const calls = [];
+  const created = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: CLIN_ADMIN,
+    staff: { items: [], total: 0, limit: 20, offset: 0 },
+    routes: [{
+      method: 'POST',
+      match: /\/staff$/,
+      response: ({ body }) => {
+        created.push(body);
+        return {
+          user: staffUser({ id: 'u-new', email: body.email, display_name: body.display_name, roles: [] }),
+          generated_password: 'Gen-9x-Pass-1',
+        };
+      },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  document.getElementById('create-email').value = 'new@example.com';
+  document.getElementById('create-name').value = 'New Person';
+  await document.getElementById('create-staff-form').dispatch('submit');
+  await settle();
+
+  assertEqualLocal(created.length, 1, 'create request missing');
+  assertEqualLocal(created[0].email, 'new@example.com', 'email body wrong');
+  assertEqualLocal(created[0].display_name, 'New Person', 'display name body wrong');
+  assert(!('password' in created[0]), 'password key must be omitted when the field is blank');
+  assert(!('roles' in created[0]), 'roles must never be sent to POST /staff (schema forbids it)');
+
+  const modalBody = document.getElementById('app-dialog-body');
+  const modalText = textOf(modalBody);
+  assertContains(modalText, 'Gen-9x-Pass-1', 'generated password not displayed');
+  assertContains(modalText, 'This is shown once. Store it now.', 'one-time warning missing');
+  const copyButton = buttonByText(modalBody, 'Copy password');
+  assert(copyButton, 'copy button missing');
+  assertContains(textOf(document.getElementById('create-status')), 'Account created', 'creation not announced');
+
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', {
+    value: { clipboard: { writeText: async (text) => { copied.push(text); } } },
+    configurable: true,
+  });
+  await copyButton.dispatch('click');
+  await settle();
+  assertEqualLocal(copied[0], 'Gen-9x-Pass-1', 'copy button did not copy the password');
+  assertContains(textOf(modalBody), 'copied to the clipboard', 'copy feedback missing');
+
+  await clickButton(document.getElementById('app-dialog-actions'), 'Close');
+  await settle();
+  assert(!textOf(document.body).includes('Gen-9x-Pass-1'), 'password must not linger in the DOM after close');
+  const reloads = calls.filter((call) => call.url.startsWith('/api/v1/staff') && (call.init.method || 'GET') === 'GET');
+  assert(reloads.length >= 2, 'staff list must reload after creation');
+});
+
+await check('admin create staff with a role confirms the grant and assigns it after creation', async () => {
+  const created = [];
+  const roleCalls = [];
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [], total: 0, limit: 20, offset: 0 },
+    routes: [
+      {
+        method: 'POST',
+        match: /\/staff$/,
+        response: ({ body }) => {
+          created.push(body);
+          return {
+            user: staffUser({ id: 'u-new', email: body.email, display_name: body.display_name }),
+            generated_password: null,
+          };
+        },
+      },
+      {
+        method: 'POST',
+        match: /\/staff\/u-new\/roles$/,
+        response: ({ body }) => {
+          roleCalls.push(body);
+          return staffUser({ id: 'u-new', display_name: 'New Person', roles: [body.role] });
+        },
+      },
+    ],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  document.getElementById('create-email').value = 'new@example.com';
+  document.getElementById('create-name').value = 'New Person';
+  document.getElementById('create-password').value = 'short';
+  document.getElementById('create-role').value = 'nurse';
+  await document.getElementById('create-staff-form').dispatch('submit');
+  await settle();
+  assertContains(textOf(document.getElementById('create-password-error')), 'at least 8 characters', 'password length validation missing');
+  assertEqualLocal(created.length, 0, 'no request may be sent while the form is invalid');
+
+  document.getElementById('create-password').value = 'long-enough-password';
+  await document.getElementById('create-staff-form').dispatch('submit');
+  await settle();
+  const dialog = textOf(document.getElementById('app-dialog-body'));
+  assertContains(dialog, 'This grants New Person the ability to view permitted patient information', 'create+grant consequence missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create and grant role');
+  await settle();
+
+  assertEqualLocal(created.length, 1, 'create request missing');
+  assertEqualLocal(created[0].password, 'long-enough-password', 'password body wrong');
+  assertEqualLocal(roleCalls.length, 1, 'role grant request missing');
+  assertEqualLocal(roleCalls[0].role, 'nurse', 'role body wrong');
+  assertContains(textOf(document.getElementById('create-status')), 'Nurse granted', 'role outcome not announced');
+  assert(!textOf(document.getElementById('app-dialog-body')).includes('Generated password'), 'no one-time dialog expected for a supplied password');
+});
+
+await check('admin renders a read-only staff table for a nurse without unmaintainable controls', async () => {
+  globalThis.fetch = makeFetch({
+    me: NURSE,
+    staff: {
+      items: [staffUser({ id: 'u-1', display_name: 'Ann Doctor', roles: ['doctor'] })],
+      total: 1,
+      limit: 20,
+      offset: 0,
+    },
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  assertContains(textOf(document.getElementById('staff-region')), 'Ann Doctor', 'staff row missing');
+  assertEqualLocal(document.getElementById('create-staff-section').hidden, true, 'create form must hide without staff:manage');
+  assertEqualLocal(document.getElementById('audit-section').hidden, true, 'audit section must hide without audit:read');
+  const region = textOf(document.getElementById('staff-region'));
+  assert(!region.includes('Grant role'), 'grant control must not render without role:assign');
+  assert(!region.includes('Deactivate'), 'deactivate control must not render without staff:manage');
 });
 
 /* ------------------------------------------------------------- login + session */

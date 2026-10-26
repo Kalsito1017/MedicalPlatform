@@ -1,11 +1,13 @@
 // ---------------------------------------------------------------------------
 // patient.html page module — one synthetic patient: demographics, summary
-// (encounters, problems, latest labs, active meds), lab results, prescriptions.
+// (encounters, problems, latest labs, active meds), lab results, prescriptions,
+// and the AI assistant panel.
 // Endpoints (docs/API.md):
 //   GET /api/v1/patients/{id}                -> demographics + provenance
 //   GET /api/v1/patients/{id}/summary        -> synthetic summary
 //   GET /api/v1/patients/{id}/labs           -> Page of lab results
 //   GET /api/v1/patients/{id}/prescriptions  -> Page of prescriptions
+//   POST /api/v1/ai/ask                      -> AI-generated answer (optional)
 // Every section has its own loading, empty, and error state; missing records
 // are friendly empty states, not errors.
 // ---------------------------------------------------------------------------
@@ -189,7 +191,7 @@ function renderSummary(summary) {
   ui.clear(region);
 
   const encounters = asList(firstValue(summary, ['encounters']) || summary.encounters);
-  const problems = asList(summary.problems);
+  const problems = asList(firstValue(summary, ['active_problems', 'problems']));
   const latestLabs = asList(
     firstValue(summary, ['latest_labs', 'latestLabs', 'labs']) || summary.latest_labs
   );
@@ -450,8 +452,9 @@ ui.onReady(async () => {
   }
   state.patientId = patientId;
 
+  let user;
   try {
-    const user = await auth.initAuthChrome({ active: 'patients' });
+    user = await auth.initAuthChrome({ active: 'patients' });
     if (!user) return;
   } catch (error) {
     ui.renderErrorState(document.getElementById('page-body'), error, {
@@ -467,13 +470,281 @@ ui.onReady(async () => {
   loadPrescriptions();
 
   // ================================================================
-  // EXTENSION POINT: AI ASSISTANT PANEL (PLAN.md Phase 8 UI)
-  // The AI panel attaches here, anchored to the #ai-panel placeholder in
-  // patient.html (directly after the prescriptions section). It will POST
-  // /api/v1/ai/ask { patient_id, question } via api.post(), render the
-  // { answer, used_tools, citations, model, ai_generated, disclaimer }
-  // response with explicit AI-generated labelling, and handle 503
-  // (dependency_unavailable) with a graceful unavailable state. Build no
-  // interactive AI controls until that wave.
+  // AI ASSISTANT PANEL (PLAN.md Phase 8 UI) — landed here, anchored to
+  // #ai-panel in patient.html. POST /api/v1/ai/ask { patient_id, question }
+  // via api.post(); the { answer, used_tools, citations, model, ai_generated,
+  // disclaimer } response is rendered as plain text only, explicitly labelled
+  // AI-generated, with the disclaimer shown prominently. 503
+  // (dependency_unavailable) is a normal demo state and renders an honest
+  // unavailable panel; 429 renders a retry countdown; other errors go through
+  // api.describeApiError. Questions and answers are never stored in web
+  // storage and never logged.
   // ================================================================
+  initAiPanel(user);
 });
+
+/* ------------------------------------------------------ AI assistant panel */
+
+const QUESTION_MAX = 2000;
+const aiRequest = { controller: null };
+
+function setAiStatus(message) {
+  const status = document.getElementById('ai-status');
+  if (status) status.textContent = message;
+}
+
+function syncQuestionCounter() {
+  const input = document.getElementById('ai-question');
+  const counter = document.getElementById('ai-char-count');
+  const submit = document.getElementById('ai-submit');
+  const errorNode = document.getElementById('ai-question-error');
+  if (!input || !counter || !submit) return;
+
+  const length = input.value.length;
+  const over = length > QUESTION_MAX;
+  counter.textContent = over
+    ? `${length} / ${QUESTION_MAX} characters — over the limit`
+    : `${length} / ${QUESTION_MAX} characters`;
+  counter.classList.toggle('char-counter--over', over);
+  if (over) {
+    input.setAttribute('aria-invalid', 'true');
+    if (errorNode) {
+      errorNode.textContent = `Questions are limited to ${QUESTION_MAX} characters. Shorten your question to ask.`;
+      errorNode.hidden = false;
+    }
+  } else {
+    input.removeAttribute('aria-invalid');
+    if (errorNode) {
+      errorNode.textContent = '';
+      errorNode.hidden = true;
+    }
+  }
+  submit.disabled = length === 0 || over;
+}
+
+function initAiPanel(user) {
+  const form = document.getElementById('ai-question-form');
+  const input = document.getElementById('ai-question');
+  const cancel = document.getElementById('ai-cancel');
+  if (!form || !input || !cancel) return;
+
+  // The panel is only interactive for accounts that may view patient data;
+  // the backend still re-checks every request server-side.
+  if (!auth.hasPermission(user, 'patient:read')) {
+    form.hidden = true;
+    const region = document.getElementById('ai-response-region');
+    if (region) {
+      ui.clear(region);
+      region.append(ui.el('p', {
+        class: 'text-muted',
+        text: 'The AI assistant is only available to accounts that can view this patient. Access is enforced by the backend.',
+      }));
+    }
+    setAiStatus('The AI assistant is not available for this account.');
+    return;
+  }
+
+  input.addEventListener('input', syncQuestionCounter);
+  cancel.addEventListener('click', () => {
+    if (aiRequest.controller) aiRequest.controller.abort();
+  });
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    askAssistant();
+  });
+  syncQuestionCounter();
+}
+
+function citationLabel(citation) {
+  if (typeof citation === 'string') {
+    return `Synthetic record reference: ${citation}`;
+  }
+  if (citation && typeof citation === 'object') {
+    const type = firstValue(citation, ['resource_type', 'type', 'kind']);
+    const id = firstValue(citation, ['resource_id', 'record_id', 'id']);
+    const text = firstValue(citation, ['label', 'title', 'text', 'description', 'name']);
+    if (type && id) return `Synthetic ${String(type).replace(/_/g, ' ')} ${id}`;
+    if (text && id) return `Synthetic record reference: ${text} (${id})`;
+    if (text) return `Synthetic record reference: ${text}`;
+    if (id) return `Synthetic record reference: ${id}`;
+    return `Synthetic record reference: ${listItemLabel(citation)}`;
+  }
+  return 'Synthetic record reference';
+}
+
+function renderAiAnswer(payload) {
+  const region = document.getElementById('ai-response-region');
+  if (!region) return;
+  ui.clear(region);
+
+  const answer = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
+  const usedTools = Array.isArray(payload && payload.used_tools) ? payload.used_tools : [];
+  const citations = Array.isArray(payload && payload.citations) ? payload.citations : [];
+  const disclaimer = payload && typeof payload.disclaimer === 'string' ? payload.disclaimer.trim() : '';
+  const model = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
+
+  const card = ui.el('div', { class: 'card ai-response' },
+    ui.el('div', { class: 'badge-list' },
+      ui.el('span', { class: 'badge badge--synthetic', text: 'AI-generated' }),
+      ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),
+    ),
+  );
+
+  const paragraphs = answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  card.append(
+    paragraphs.length > 0
+      ? ui.el('div', { class: 'ai-answer' }, paragraphs.map((text) => ui.el('p', { text })))
+      : ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' }),
+  );
+
+  card.append(
+    ui.el('div', { class: 'alert alert--info', role: 'note' },
+      ui.el('p', {
+        text: 'AI-generated synthetic-demo assistance about synthetic demo data \u2014 not a diagnosis or treatment recommendation.',
+      }),
+      disclaimer ? ui.el('p', { text: disclaimer }) : null,
+    ),
+  );
+
+  if (usedTools.length > 0) {
+    card.append(
+      ui.el('div', { class: 'ai-sources' },
+        ui.el('p', { class: 'field-hint', text: 'Sources consulted:' }),
+        ui.el('ul', { class: 'chip-list' },
+          usedTools.map((tool) => ui.el('li', { class: 'chip', text: String(tool) })),
+        ),
+      ),
+    );
+  }
+
+  if (citations.length > 0) {
+    card.append(
+      ui.el('div', { class: 'ai-citations' },
+        ui.el('p', { class: 'field-hint', text: 'References to synthetic records:' }),
+        ui.el('ul', { class: 'compact-list' },
+          citations.map((citation) => ui.el('li', { text: citationLabel(citation) })),
+        ),
+      ),
+    );
+  }
+
+  card.append(
+    ui.el('p', {
+      class: 'card__note',
+      text: model ? `Model: ${model}` : 'Model not reported by the backend.',
+    }),
+  );
+
+  region.append(card);
+  setAiStatus('Answer received. AI-generated synthetic-demo assistance \u2014 not a diagnosis or treatment recommendation.');
+}
+
+function renderAiUnavailable(region) {
+  ui.clear(region);
+  region.append(
+    ui.el('div', { class: 'state-panel state-panel--empty' },
+      ui.el('h3', { class: 'state-panel__title', text: 'AI assistant unavailable' }),
+      ui.el('p', {
+        class: 'state-panel__text',
+        text: 'The AI assistant is switched off or unreachable in this deployment. This demo runs without a language model unless one is configured, so assistant answers can be unavailable. Everything else on this page keeps working, and you can try again later.',
+      }),
+    ),
+  );
+  setAiStatus('AI assistant unavailable.');
+}
+
+function renderAiRateLimited(region, error) {
+  const seconds = error && error.retryAfter ? Math.ceil(error.retryAfter) : null;
+  ui.clear(region);
+  region.append(
+    ui.el('div', { class: 'state-panel state-panel--empty' },
+      ui.el('h3', { class: 'state-panel__title', text: 'Too many questions' }),
+      ui.el('p', {
+        class: 'state-panel__text',
+        text: seconds
+          ? `You have asked too many questions in a short time. Please retry in ${seconds} seconds.`
+          : 'You have asked too many questions in a short time. Please wait a moment and try again.',
+      }),
+    ),
+  );
+  setAiStatus(seconds ? `Too many questions. Retry in ${seconds} seconds.` : 'Too many questions.');
+}
+
+function renderAiError(error) {
+  const region = document.getElementById('ai-response-region');
+  if (!region) return;
+  if (error instanceof api.ApiError && error.status === 503) {
+    renderAiUnavailable(region);
+    return;
+  }
+  if (error instanceof api.ApiError && error.status === 429) {
+    renderAiRateLimited(region, error);
+    return;
+  }
+  ui.renderErrorState(region, error, {
+    describe: api.describeApiError,
+    onRetry: () => askAssistant(),
+    headingTag: 'h3',
+  });
+  setAiStatus('The assistant request did not succeed. See the message on this page.');
+}
+
+async function askAssistant() {
+  const input = document.getElementById('ai-question');
+  const region = document.getElementById('ai-response-region');
+  const submit = document.getElementById('ai-submit');
+  const cancel = document.getElementById('ai-cancel');
+  const question = input ? input.value.trim() : '';
+
+  if (!question || question.length > QUESTION_MAX) {
+    syncQuestionCounter();
+    return;
+  }
+
+  if (aiRequest.controller) aiRequest.controller.abort();
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  aiRequest.controller = controller;
+
+  if (submit) submit.disabled = true;
+  if (cancel) cancel.hidden = false;
+  setAiStatus('Consulting the assistant\u2026');
+  if (region) {
+    ui.clear(region);
+    region.setAttribute('aria-busy', 'true');
+    region.append(
+      ui.el('div', { class: 'state-panel', role: 'status' },
+        ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
+        ui.el('p', {
+          class: 'state-panel__text',
+          text: 'The assistant is reviewing this synthetic record to answer your question.',
+        }),
+      ),
+    );
+  }
+
+  try {
+    const payload = await api.post(
+      '/ai/ask',
+      { patient_id: state.patientId, question },
+      controller ? { signal: controller.signal } : undefined,
+    );
+    renderAiAnswer(payload);
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      if (region) {
+        ui.clear(region);
+        region.append(
+          ui.el('p', { class: 'text-muted', text: 'Request cancelled. Ask again whenever you are ready.' }),
+        );
+      }
+      setAiStatus('Request cancelled.');
+    } else {
+      renderAiError(error);
+    }
+  } finally {
+    aiRequest.controller = null;
+    if (region) region.removeAttribute('aria-busy');
+    if (cancel) cancel.hidden = true;
+    syncQuestionCounter();
+  }
+}
