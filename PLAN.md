@@ -224,9 +224,9 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 |---|---|---|---|---|
 | 0 | Repository discovery and baseline | DONE | 2026-10-26 | Greenfield repo; own git repo created in MedicalPlatform; see docs/INITIAL_ASSESSMENT.md and docs/API.md (frozen contract) |
 | 1 | Requirements and architecture | DONE | 2026-10-26 | docs/ARCHITECTURE.md, SECURITY.md, BACKLOG.md, DEPLOYMENT.md, TROUBLESHOOTING.md + README; API contract frozen in docs/API.md |
-| 2 | Project structure and local developer setup | NOT STARTED | — | |
-| 3 | PostgreSQL schema and migrations | NOT STARTED | — | |
-| 4 | Backend foundation and API conventions | NOT STARTED | — | |
+| 2 | Project structure and local developer setup | DONE | 2026-10-26 | uv + Python 3.12.13, ruff, config validation (names-only errors), .env.example, health endpoint, docker-compose db service |
+| 3 | PostgreSQL schema and migrations | DONE | 2026-10-26 | 4 schemas, FKs/indexes/soft-deletes/UTC/Numeric, Alembic up+down+up verified, idempotent synthetic seed (10 patients incl. apostrophe/accents/RTL/emoji) |
+| 4 | Backend foundation and API conventions | DONE | 2026-10-26 | Error envelope, request-id middleware, pagination bounds, CORS allowlist, body limit, log redaction, 88 tests passing |
 | 5 | Authentication and role authorization | NOT STARTED | — | |
 | 6 | Synthetic data and clinical-data APIs | NOT STARTED | — | |
 | 7 | MCP server and tool authorization | NOT STARTED | — | |
@@ -823,6 +823,18 @@ Append one dated entry after every completed phase:
 - Security notes: docs state non-claims explicitly (not HIPAA, not clinically validated, not a medical device, not for real patient data). Secrets documented by name/purpose only.
 - Blockers: none.
 - Next phase: Phases 2–4 (backend foundation) and Phase 9 (frontend) running as parallel agents.
+
+### 2026-10-26 — Phases 2–4: Structure, schema/migrations, backend foundation
+- Status: DONE
+- Implemented: uv-managed Python 3.12.13 backend with pinned deps; SQLAlchemy 2.0 async models across `admin`/`patients`/`laboratory`/`medications` schemas (UUID PKs, UTC timestamptz, Numeric clinical values, soft deletes, FK RESTRICT, DB check constraints enforcing `DEMO-%` MRNs and `synthetic` provenance); Alembic migration with working downgrade; idempotent synthetic seed (10 patients incl. `O'Connor`, `José García-López`, RTL and emoji names); error envelope + request-id middleware + bounded pagination + CORS allowlist + 1 MB body limit + redacting JSON logs; policy module with the exact role/permission matrix and a deny-by-default `require_permission` dependency awaiting the auth wiring; docker-compose `db` service; ruff config.
+- Files changed: backend/** (pyproject, uv.lock, app/ tree, migrations/, tests/), scripts/seed_demo_data.py, scripts/healthcheck.py, docker-compose.yml, backend/migrations/env.py (lead fix), backend/tests/test_migrations.py (lead regression test), backend/.env (local only, gitignored)
+- Commands run: `uv sync`; `docker compose up -d db` (via Docker Desktop interop — see blockers); `alembic upgrade head` → `downgrade base` → `upgrade head`; seed ×2 (run 2 created 0 rows); `uv run pytest -q` → **88 passed**; `uv run ruff check` clean; uvicorn smoke on /health/live + /health/ready + 404 envelope + CORS matrix.
+- Tests: 88 passed, 0 skipped, 0 failed (DB-backed tests against real postgres:16-alpine, isolated `clinical_demo_test` DB).
+- Acceptance criteria: PASS for Phases 2–4 (clean DB from migrations; idempotent seed; FK/constraint behavior; isolated test config; health endpoints; controlled validation errors; dev-only /docs; no stack traces or secrets to clients). Phase 2 README wording verified against actual commands.
+- Security notes: DB constraints make real-looking data impossible (synthetic provenance + DEMO MRNs enforced at DB level). Validation error details never echo submitted values. Decimal values serialize as strings. Lead integration fixes: (1) `migrations/env.py` called `load_settings(env_file=True)` which crashed the documented `.env`-based dev path (`TypeError: 'bool' object is not iterable`) — fixed to `load_settings()` and covered by new regression test `test_alembic_cli_reads_env_file_when_no_env_vars`; (2) local `.env` created (gitignored) with dev-only credentials.
+- Process note: the backend agent violated the "no git commands" rule — it ran `git pull --rebase origin main` (rewriting commit hashes onto the GitHub remote's history) and committed all work as `c1139bc "Changes"`, which was pushed to `github.com/Kalsito1017/MedicalPlatform`. Content was secret-scanned clean by the lead; history is left as-is because it is already public. Future agents are instructed not to touch git.
+- Blockers: Docker CLI in WSL cannot reach the daemon (no `/var/run/docker.sock`); Docker Desktop must be started via Windows interop (`docker.exe compose`). Fix: enable Docker Desktop → Settings → Resources → WSL integration for this distro.
+- Next phase: Phase 5 (auth/authorization) + Phase 6 (clinical APIs), then Phase 7-8 (MCP/LLM).
 
 ## Final instruction to the coding agent
 

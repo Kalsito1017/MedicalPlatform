@@ -64,7 +64,7 @@ def test_soft_delete_filter_clause() -> None:
 
 def test_audit_event_columns_and_indexes() -> None:
     table = AuditEvent.__table__
-    assert {"actor_user_id", "action", "resource_type", "resource_id", "outcome", "request_id", "ip"} <= set(table.c)
+    assert {"actor_user_id", "action", "resource_type", "resource_id", "outcome", "request_id", "ip"} <= set(table.c.keys())
     index_names = {index.name for index in table.indexes}
     assert {"ix_audit_event_created_at", "ix_audit_event_actor_user_id", "ix_audit_event_action"} <= index_names
     # No clinical payload column exists in the audit table.
@@ -199,10 +199,11 @@ async def test_patient_delete_blocked_when_clinical_rows_exist(db_engine) -> Non
         patient = _new_patient("DEMO-FK-0001")
         session.add(patient)
         await session.flush()
+        patient_id = patient.id
         session.add(
             LabResult(
                 id=uuid.uuid4(),
-                patient_id=patient.id,
+                patient_id=patient_id,
                 test_code="GLU",
                 test_name="Glucose, fasting",
                 value_num=91,
@@ -214,10 +215,10 @@ async def test_patient_delete_blocked_when_clinical_rows_exist(db_engine) -> Non
         await session.commit()
 
         with pytest.raises(IntegrityError):
-            await session.execute(sa.delete(Patient).where(Patient.id == patient.id))
+            await session.execute(sa.delete(Patient).where(Patient.id == patient_id))
             await session.commit()
         await session.rollback()
 
-        await session.execute(sa.delete(LabResult).where(LabResult.patient_id == patient.id))
-        await session.execute(sa.delete(Patient).where(Patient.id == patient.id))
+        await session.execute(sa.delete(LabResult).where(LabResult.patient_id == patient_id))
+        await session.execute(sa.delete(Patient).where(Patient.id == patient_id))
         await session.commit()

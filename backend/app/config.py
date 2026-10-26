@@ -118,10 +118,13 @@ class Settings(BaseSettings):
         return self.migration_database_url or self.database_url
 
 
-def load_settings(*, env_file: str | None | bool = True) -> Settings:
-    """Build Settings, converting validation failures into a names-only error."""
+def load_settings(*, env_file: str | None = ".env") -> Settings:
+    """Build Settings, converting validation failures into a names-only error.
+
+    Pass env_file=None to read the environment only (tests).
+    """
     try:
-        return Settings(_env_file=env_file)  # type: ignore[call-arg]
+        return Settings(_env_file=env_file)
     except ValidationError as exc:
         missing: list[str] = []
         invalid: list[str] = []

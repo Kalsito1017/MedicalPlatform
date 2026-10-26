@@ -30,7 +30,7 @@ def _database_url() -> str:
     url = os.environ.get("MIGRATION_DATABASE_URL") or os.environ.get("DATABASE_URL")
     if url:
         return url
-    return load_settings(env_file=True).effective_migration_url.get_secret_value()
+    return load_settings().effective_migration_url.get_secret_value()
 
 
 def run_migrations_offline() -> None:

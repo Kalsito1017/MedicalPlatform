@@ -163,7 +163,9 @@ async def seed_staff(
         configured_email = getattr(settings, spec.email_attr)
         email = (configured_email or spec.default_email).strip().lower()
         configured_password = getattr(settings, spec.password_attr)
-        plain_password = configured_password.get_secret_value() if configured_password else None
+        plain_password = configured_password.get_secret_value() if configured_password is not None else None
+        if plain_password is not None and not plain_password.strip():
+            plain_password = None
 
         user = await session.scalar(select(StaffUser).where(StaffUser.email == email))
         if user is None:
@@ -228,34 +230,41 @@ async def seed_patient_details(
 ) -> None:
     today = datetime.now(timezone.utc).date()
 
+    # Every random draw happens unconditionally so re-runs consume an identical
+    # sequence and cannot create rows with different ids than the first run.
     for index in range(rng.randint(2, 4)):
         encounter_id = demo_id("encounter", patient.mrn, str(index))
+        occurred_day = today - timedelta(days=120 * index + rng.randint(5, 110))
+        occurred_hour = rng.randint(8, 16)
+        encounter_type = rng.choice(ENCOUNTER_TYPES)
+        summary_text = _synthetic_encounter_summary(rng, encounter_type)
+
         encounter = await session.get(Encounter, encounter_id)
         if encounter is None:
-            days_ago = 120 * index + rng.randint(5, 110)
-            occurred_day = today - timedelta(days=days_ago)
-            encounter_type = rng.choice(ENCOUNTER_TYPES)
             encounter = Encounter(
                 id=encounter_id,
                 patient_id=patient.id,
-                occurred_at=datetime.combine(occurred_day, time(hour=rng.randint(8, 16), tzinfo=timezone.utc)),
+                occurred_at=datetime.combine(occurred_day, time(hour=occurred_hour, tzinfo=timezone.utc)),
                 encounter_type=encounter_type,
-                summary=_synthetic_encounter_summary(rng, encounter_type),
+                summary=summary_text,
             )
             session.add(encounter)
             summary.bump("encounters", created=True)
         else:
             summary.bump("encounters", created=False)
 
-        for lab_index, (code, name, unit, ref_low, ref_high) in enumerate(rng.sample(LAB_TESTS, rng.randint(2, 4))):
+        lab_specs = rng.sample(LAB_TESTS, rng.randint(2, 4))
+        for lab_index, (code, name, unit, ref_low, ref_high) in enumerate(lab_specs):
+            midpoint = (ref_low + ref_high) / 2
+            spread = (ref_high - ref_low) or 1.0
+            value = round(midpoint + rng.uniform(-0.85, 0.85) * spread, 2)
+            collected_hour = rng.randint(7, 11)
+            resulted_hour = rng.randint(12, 18)
+
             lab_id = demo_id("lab", patient.mrn, str(index), str(lab_index))
             if await session.get(LabResult, lab_id) is not None:
                 summary.bump("lab_results", created=False)
                 continue
-            midpoint = (ref_low + ref_high) / 2
-            spread = (ref_high - ref_low) or 1.0
-            value = round(midpoint + rng.uniform(-0.85, 0.85) * spread, 2)
-            collected_day = encounter.occurred_at.date()
             session.add(
                 LabResult(
                     id=lab_id,
@@ -268,21 +277,27 @@ async def seed_patient_details(
                     ref_low=Decimal(str(ref_low)),
                     ref_high=Decimal(str(ref_high)),
                     status="final",
-                    collected_at=datetime.combine(collected_day, time(hour=rng.randint(7, 11), tzinfo=timezone.utc)),
-                    resulted_at=datetime.combine(collected_day, time(hour=rng.randint(12, 18), tzinfo=timezone.utc)),
+                    collected_at=datetime.combine(occurred_day, time(hour=collected_hour, tzinfo=timezone.utc)),
+                    resulted_at=datetime.combine(occurred_day, time(hour=resulted_hour, tzinfo=timezone.utc)),
                 )
             )
             summary.bump("lab_results", created=True)
 
     for index in range(rng.randint(1, 3)):
         prescription_id = demo_id("prescription", patient.mrn, str(index))
-        if await session.get(Prescription, prescription_id) is not None:
-            summary.bump("prescriptions", created=False)
-            continue
         code, med_name, _form = MEDICATION_CATALOG[rng.randrange(len(MEDICATION_CATALOG))]
         status = rng.choice(PRESCRIPTION_STATUSES)
         start_day = today - timedelta(days=rng.randint(30, 500))
         end_day = start_day + timedelta(days=rng.randint(20, 180)) if status in ("completed", "stopped") else None
+        dose_amount = Decimal(str(rng.choice([2.5, 5.0, 10.0, 20.0, 50.0, 100.0, 500.0])))
+        dose_unit = rng.choice(DOSE_UNITS)
+        route = rng.choice(ROUTES)
+        frequency = rng.choice(FREQUENCIES)
+        prescriber_id = rng.choice(prescriber_ids)
+
+        if await session.get(Prescription, prescription_id) is not None:
+            summary.bump("prescriptions", created=False)
+            continue
         session.add(
             Prescription(
                 id=prescription_id,
@@ -290,14 +305,14 @@ async def seed_patient_details(
                 encounter_id=None,
                 medication_id=med_ids[code],
                 medication_name=med_name,
-                dose_amount=Decimal(str(rng.choice([2.5, 5.0, 10.0, 20.0, 50.0, 100.0, 500.0]))),
-                dose_unit=rng.choice(DOSE_UNITS),
-                route=rng.choice(ROUTES),
-                frequency=rng.choice(FREQUENCIES),
+                dose_amount=dose_amount,
+                dose_unit=dose_unit,
+                route=route,
+                frequency=frequency,
                 status=status,
                 start_date=start_day,
                 end_date=end_day,
-                prescriber_id=rng.choice(prescriber_ids),
+                prescriber_id=prescriber_id,
             )
         )
         summary.bump("prescriptions", created=True)
@@ -332,7 +347,7 @@ async def seed_patients(
 
 
 async def run_seed() -> Summary:
-    settings = load_settings(env_file=True)
+    settings = load_settings()
     engine = create_async_engine(settings.database_url.get_secret_value(), pool_pre_ping=True)
     hasher = PasswordHasher()
     summary = Summary()

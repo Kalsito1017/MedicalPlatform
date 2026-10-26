@@ -8,8 +8,18 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Encounter, LabResult, Medication, Patient, Prescription, Role, StaffUser, UserRole
-from tests.conftest import run_seed
+from app.models import (
+    AuditEvent,
+    Encounter,
+    LabResult,
+    Medication,
+    Patient,
+    Prescription,
+    Role,
+    StaffUser,
+    UserRole,
+)
+from conftest import run_seed
 
 DEMO_PASSWORDS = {
     "DEMO_ADMIN_PASSWORD": "test-only-admin-pw",
@@ -39,9 +49,14 @@ async def _counts(session: AsyncSession) -> dict[str, int]:
 
 async def _clear_all(db_engine) -> None:
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        for model in (UserRole, Prescription, LabResult, Encounter, Patient, Medication, StaffUser, Role):
+        for model in (AuditEvent, UserRole, Prescription, LabResult, Encounter, Patient, Medication, StaffUser, Role):
             await session.execute(sa.delete(model))
         await session.commit()
+
+
+def _ensure_seeded() -> None:
+    result = run_seed(extra_env=DEMO_PASSWORDS)
+    assert result.returncode == 0, f"seed failed:\n{result.stdout}\n{result.stderr}"
 
 
 async def _count_after_runs(db_engine, runs: int) -> tuple[dict[str, int], str]:
@@ -78,9 +93,10 @@ async def test_seed_is_idempotent(db_engine) -> None:
 
 @pytest.mark.postgres
 async def test_seed_data_is_synthetic_and_unique(db_engine) -> None:
+    _ensure_seeded()
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         total = (await session.execute(sa.select(sa.func.count()).select_from(Patient))).scalar_one()
-        distinct_mrns = (await session.execute(sa.select(sa.func.count(distinct(Patient.mrn))))).scalar_one()
+        distinct_mrns = (await session.execute(sa.select(sa.func.count(Patient.mrn.distinct())))).scalar_one()
         assert total == distinct_mrns
 
         non_demo = (
@@ -99,11 +115,12 @@ async def test_seed_data_is_synthetic_and_unique(db_engine) -> None:
         assert all(email == email.lower() for email in emails)
 
         hashes = (await session.execute(sa.select(StaffUser.password_hash))).scalars().all()
-        assert hashes and all(hash and hash.startswith("$argon2") for hash in hashes)
+        assert hashes and all(value and value.startswith("$argon2") for value in hashes)
 
 
 @pytest.mark.postgres
 async def test_seed_utf8_names_roundtrip(db_engine) -> None:
+    _ensure_seeded()
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         oconnor = await session.scalar(sa.select(Patient).where(Patient.mrn == "DEMO-0007"))
         assert oconnor is not None and oconnor.family_name == "O'Connor"
@@ -122,8 +139,7 @@ async def test_seed_utf8_names_roundtrip(db_engine) -> None:
 async def test_seed_generates_passwords_once(db_engine) -> None:
     await _clear_all(db_engine)
 
-    result = run_seed(extra_env={**{key: "" for key in DEMO_PASSWORDS}, "APP_ENV": "test"})
-    # Empty values are falsy in Settings; treat empty as missing.
+    result = run_seed(extra_env={key: None for key in DEMO_PASSWORDS})
     assert result.returncode == 0, f"seed failed:\n{result.stdout}\n{result.stderr}"
     assert "Set these in your .env" in result.stdout
     for name in DEMO_PASSWORDS:

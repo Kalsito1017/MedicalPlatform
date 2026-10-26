@@ -10,7 +10,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -231,7 +231,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         status = exc.status_code
         code = _CODE_BY_STATUS.get(status, "validation_error" if status < 500 else "internal_error")
         default_message = _DEFAULT_MESSAGE_BY_CODE[code]
-        message = exc.detail if isinstance(exc.detail, str) and exc.detail and status < 500 else default_message
+        # Stock framework details ("Not Found", ...) are replaced by the contract
+        # message; explicit custom details are preserved for 4xx.
+        framework_defaults = {"Not Found", "Method Not Allowed"}
+        detail = exc.detail if isinstance(exc.detail, str) else ""
+        message = detail if detail and detail not in framework_defaults and status < 500 else default_message
         headers = dict(exc.headers) if exc.headers else {}
         return JSONResponse(
             status_code=status,
@@ -242,10 +246,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(Exception)
     async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         # Generic to the client; the diagnostic detail stays in server logs.
-        logger.exception("unhandled exception", extra={"request_id": _request_id(request)})
+        # (This response is sent by ServerErrorMiddleware, outside the request-id
+        # middleware, so the header is attached here explicitly.)
+        request_id = _request_id(request)
+        logger.exception("unhandled exception", extra={"request_id": request_id})
         return JSONResponse(
             status_code=500,
-            content=_envelope("internal_error", "An unexpected error occurred.", _request_id(request)),
+            content=_envelope("internal_error", "An unexpected error occurred.", request_id),
+            headers={"X-Request-Id": request_id},
         )
 
 

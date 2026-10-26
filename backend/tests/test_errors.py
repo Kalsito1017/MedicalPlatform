@@ -8,19 +8,15 @@ import pytest_asyncio
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from app.api.deps import Pagination
 from app.authorization.policy import require_permission
 from app.config import load_settings
 from app.main import create_app
-from app.schemas.common import PaginationParams
 
 
 class EchoPayload(BaseModel):
     name: str = Field(min_length=1)
     password: str
-
-
-class TestModel(BaseModel):
-    name: str
 
 
 router = APIRouter()
@@ -42,7 +38,7 @@ async def needs_auth(_principal=Depends(require_permission("patient:read"))) -> 
 
 
 @router.get("/test/paged")
-async def paged(pagination: PaginationParams) -> dict:
+async def paged(pagination: Pagination) -> dict:
     return {"limit": pagination.limit, "offset": pagination.offset}
 
 
@@ -112,8 +108,8 @@ async def test_request_id_echoed_when_safe(route_client) -> None:
 
 
 async def test_unsafe_request_id_is_replaced(route_client) -> None:
-    response = await route_client.get("/health/live", headers={"X-Request-Id": "bad id \n injection"})
-    assert response.headers["X-Request-Id"] != "bad id \n injection"
+    response = await route_client.get("/health/live", headers={"X-Request-Id": "bad id *!"})
+    assert response.headers["X-Request-Id"] != "bad id *!"
     uuid.UUID(response.headers["X-Request-Id"])  # must be a generated UUID
 
 

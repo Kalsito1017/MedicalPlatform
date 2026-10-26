@@ -1,9 +1,58 @@
-"""Configuration validation tests: clear, non-secret errors."""
+"""Configuration validation and logging redaction tests."""
 from __future__ import annotations
+
+import json
+import logging
 
 import pytest
 
-from app.config import ConfigurationError, Settings, load_settings
+from app.config import (
+    ConfigurationError,
+    JsonLogFormatter,
+    Settings,
+    load_settings,
+    redact_fields,
+    scrub,
+)
+
+
+def test_redact_fields_masks_sensitive_names() -> None:
+    redacted = redact_fields(
+        {
+            "password": "hunter2",
+            "api_key": "oc_sk_123",
+            "Authorization": "Bearer abc",
+            "cookie": "cap_session=abc",
+            "session_token": "abc",
+            "request_id": "req-1",
+            "nested": {"secret": "s3cr3t", "action": "login"},
+        }
+    )
+    assert redacted["password"] == "[REDACTED]"
+    assert redacted["api_key"] == "[REDACTED]"
+    assert redacted["Authorization"] == "[REDACTED]"
+    assert redacted["cookie"] == "[REDACTED]"
+    assert redacted["session_token"] == "[REDACTED]"
+    assert redacted["nested"]["secret"] == "[REDACTED]"
+    assert redacted["nested"]["action"] == "login"
+    assert redacted["request_id"] == "req-1"
+
+
+def test_scrub_masks_inline_dsn_credentials() -> None:
+    scrubbed = scrub("connect failed postgresql+asyncpg://app:change-me@localhost:5432/db")
+    assert "change-me" not in scrubbed
+    assert "app" in scrubbed
+
+
+def test_formatter_output_is_json_with_redaction() -> None:
+    record = logging.LogRecord("app.test", logging.INFO, __file__, 1, "msg", None, None)
+    record.password = "hunter2"  # type: ignore[attr-defined]
+    record.request_id = "req-2"  # type: ignore[attr-defined]
+    payload = json.loads(JsonLogFormatter().format(record))
+    assert payload["password"] == "[REDACTED]"
+    assert payload["request_id"] == "req-2"
+    assert payload["level"] == "INFO"
+    assert "hunter2" not in json.dumps(payload)
 
 SECRET_SENTINEL = "sentinel-secret-value-9f3c2b"
 

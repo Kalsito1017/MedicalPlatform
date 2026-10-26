@@ -56,13 +56,19 @@ def run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_seed(extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    """Run the demo seed script against the isolated test database."""
+def run_seed(extra_env: dict[str, str | None] | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the demo seed script against the isolated test database.
+
+    A None value in extra_env removes that variable from the environment.
+    """
     env = os.environ.copy()
     env["DATABASE_URL"] = TEST_DB_URL
     env.setdefault("APP_SECRET_KEY", "test-only-secret-not-for-production")
-    if extra_env:
-        env.update(extra_env)
+    for key, value in (extra_env or {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
     return subprocess.run(
         [sys.executable, str(REPO_ROOT / "scripts" / "seed_demo_data.py")],
         cwd=REPO_ROOT,
