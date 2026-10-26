@@ -90,7 +90,7 @@ Every clinical payload includes `"provenance": "synthetic"` and the UI renders a
 | Method | Path | Permission | Notes |
 |---|---|---|---|
 | GET | `/api/v1/staff` | `staff:read` | Paginated; never returns password hashes or tokens. |
-| POST | `/api/v1/staff` | `staff:manage` | Create account. Password set via seeded env or invite flow. |
+| POST | `/api/v1/staff` | `staff:manage` | Create account. Body: `{email, display_name, password?}` (extra fields rejected). If `password` is omitted, a strong password is generated and returned **once** in `generated_password`. Duplicate email → 409. Roles are granted separately via the role endpoints below. |
 | PATCH | `/api/v1/staff/{user_id}` | `staff:manage` | Display name, activate/deactivate. |
 | POST | `/api/v1/staff/{user_id}/roles` | `role:assign` | `{ "role": "nurse" }`. Self-escalation → 403. |
 | DELETE | `/api/v1/staff/{user_id}/roles/{role}` | `role:assign` | Last-admin protection → 409. |
