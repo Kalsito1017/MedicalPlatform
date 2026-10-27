@@ -225,6 +225,7 @@ function renderAiAnswer(container, payload) {
       ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),
     ),
   );
+  bubble.prepend(ui.assistantTurnHead());
 
   const paragraphs = answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
   bubble.append(
@@ -416,6 +417,10 @@ async function askAssistant() {
   turn.classList.remove('is-ready');
   turn.append(
     ui.el('div', { class: 'state-panel' },
+      ui.el('div', { class: 'state-panel__media' },
+        ui.assistantAvatar({ size: 'lg' }),
+        ui.emojiLoadingNode(),
+      ),
       ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
       ui.el('p', {
         class: 'state-panel__text',

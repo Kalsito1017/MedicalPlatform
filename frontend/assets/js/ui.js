@@ -350,6 +350,39 @@ function detectPlatform() {
  * elsewhere, "Ctrl/⌘ K" when the platform cannot be determined. Pass a
  * platform string to test the mapping.
  */
+// --- Assistant identity + thinking ticker ---------------------------------
+// The site favicon doubles as the assistant's identity image.
+const ASSISTANT_LOGO_SRC = 'assets/images/favicon.svg';
+
+export function assistantAvatar({ size = '' } = {}) {
+  return el('img', {
+    class: size ? `ai-avatar ai-avatar--${size}` : 'ai-avatar',
+    src: ASSISTANT_LOGO_SRC,
+    alt: '',
+    'aria-hidden': 'true',
+  });
+}
+
+// Emoji loading ticker for the assistant's thinking state. Decorative:
+// the surrounding status text announces the state for assistive technology.
+export function emojiLoadingNode() {
+  const glyphs = ['🩺', '💊', '🔬', '🧠'];
+  return el(
+    'div',
+    { class: 'ai-emoji-loader', 'aria-hidden': 'true' },
+    glyphs.map((glyph) => el('span', { class: 'ai-emoji-loader__glyph', text: glyph })),
+  );
+}
+
+export function assistantTurnHead() {
+  return el(
+    'div',
+    { class: 'ai-turn__head' },
+    assistantAvatar({ size: 'sm' }),
+    el('span', { class: 'ai-turn__name', text: 'Assistant' }),
+  );
+}
+
 export function commandShortcutLabel(platform = null) {
   const value = platform == null ? detectPlatform() : String(platform);
   if (/mac|iphone|ipad|ipod/i.test(value)) return '\u2318K';

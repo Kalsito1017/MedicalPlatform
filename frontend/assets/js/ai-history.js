@@ -117,6 +117,7 @@ export function historyEntryNode(entry, { compact = false } = {}) {
       whenExact ? ui.el('p', { class: 'chat-bubble__meta', text: whenExact }) : null,
     ),
     ui.el('div', { class: 'chat-bubble chat-bubble--assistant' },
+      ui.assistantTurnHead(),
       ui.el('div', { class: 'badge-list' },
         ui.el('span', { class: 'badge badge--synthetic', text: 'AI-generated' }),
         ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),

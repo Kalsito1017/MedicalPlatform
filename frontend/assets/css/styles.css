@@ -3310,3 +3310,95 @@ h2,
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
+
+/* --- Assistant identity + emoji thinking ticker (loading animation) ------
+   The favicon is the assistant's identity image; the emoji ticker animates
+   the "Consulting the assistant" state. Pure transform/opacity keyframes
+   without fill-mode (interruptible, per DESIGN.md item 11). */
+.ai-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  flex: none;
+  box-shadow: var(--shadow-1);
+}
+
+.ai-avatar--sm {
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+
+.ai-avatar--lg {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-md);
+}
+
+.ai-turn__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.ai-turn__name {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.state-panel__media {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.ai-emoji-loader {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 28px;
+}
+
+.ai-emoji-loader__glyph {
+  font-size: 20px;
+  line-height: 1;
+  animation: emoji-pulse 1.8s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.ai-emoji-loader__glyph:nth-child(2) {
+  animation-delay: 0.22s;
+}
+
+.ai-emoji-loader__glyph:nth-child(3) {
+  animation-delay: 0.44s;
+}
+
+.ai-emoji-loader__glyph:nth-child(4) {
+  animation-delay: 0.66s;
+}
+
+@keyframes emoji-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0) scale(1);
+  }
+
+  30% {
+    opacity: 1;
+    transform: translateY(-3px) scale(1.18);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-emoji-loader__glyph {
+    animation: none;
+    opacity: 1;
+  }
+}
