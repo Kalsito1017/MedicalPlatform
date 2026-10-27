@@ -280,6 +280,14 @@ function renderList() {
     input.setAttribute('aria-activedescendant', `command-menu-option-${state.activeIndex}`);
   }
 
+  // Keep the active option visible while arrowing through long lists: follow
+  // the selection without jumping when it is already in view. 'nearest' keeps
+  // motion minimal and instant (no smooth scrolling to interrupt).
+  const activeOption = list.querySelector(`#command-menu-option-${state.activeIndex}`);
+  if (activeOption && typeof activeOption.scrollIntoView === 'function') {
+    activeOption.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+
   prefetch.wirePatientIntent(list, state.user);
 
   if (state.patientsNote) {

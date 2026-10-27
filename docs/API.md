@@ -310,6 +310,17 @@ model, patient_id) to the caller's private history in the same commit as its
 `ai.ask` audit event — one row per request, never double-written on a single
 request lifecycle.
 
+**Answer format (Markdown subset, Bulgarian by default).** The `answer` string
+is a small Markdown subset (headings `##`/`###`, **bold**/*italic*, lists,
+pipe tables with a header separator row, and a trailing
+`### Records consulted` section that the frontend folds into a collapsible
+disclosure). The frontend renders it with a safe DOM-only Markdown renderer —
+it never parses HTML, so any HTML in an answer is displayed as inert text.
+Answers are in **Bulgarian by default** (клиничните данни са на български);
+when the question is clearly in another language the answer follows the
+question. Clinical flags appear in the answer's language (e.g. Bulgarian
+"високо"/"ниско" with ↑/↓) while lab units and codes stay exactly as recorded.
+
 ## Permission matrix (source of truth: `backend/app/authorization/policy.py`)
 
 Three roles only (`tech_admin` was removed from the system entirely — owner

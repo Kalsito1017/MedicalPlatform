@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as markdown from './markdown.js';
 import * as overlayHistory from './overlay-history.js';
 import * as ui from './ui.js';
 
@@ -66,10 +67,10 @@ function toggleEntry(summary, detail) {
 }
 
 function answerParagraphs(answer) {
-  const paragraphs = answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-  return paragraphs.length > 0
-    ? ui.el('div', { class: 'ai-answer' }, paragraphs.map((text) => ui.el('p', { text })))
-    : ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' });
+  // Untrusted model output: the safe Markdown-subset renderer builds DOM
+  // nodes only (never HTML); an empty answer keeps the calm fallback note.
+  return markdown.answerBody(answer)
+    || ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' });
 }
 
 function citationsBlock(citations) {

@@ -217,6 +217,31 @@ const AI_GENERAL_ANSWER = {
   disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
+// A doctor-scannable Markdown answer as the prompt steers it: bold summary,
+// a pipe table with a header separator row, bolded numeric results/flags,
+// and a trailing "### Records consulted" section (Bulgarian answer text —
+// the backend steers answers to Bulgarian by default).
+const AI_MARKDOWN_ANSWER = {
+  answer: [
+    '**Обобщение:** 2-ма пациенти с отклонения в калия (K) — и двамата с повишени стойности.',
+    '',
+    '| Пациент | Тест | Стойност | Флаг |',
+    '|---|---|---|---|',
+    '| 5340c8c2-… | K | **6.1 mmol/L** | **високо ↑** |',
+    '| 9f2c11aa-… | K | **5.9 mmol/L** | **високо ↑** |',
+    '',
+    '### Records consulted',
+    '',
+    '- 5340c8c2-…',
+    '- 9f2c11aa-…',
+  ].join('\n'),
+  used_tools: ['find_patients_by_lab'],
+  citations: [{ type: 'patient', id: 'p1' }],
+  model: 'demo-model-1',
+  ai_generated: true,
+  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
+};
+
 /* Conversation history fixtures (docs/API.md "AI assistant" history). */
 const minutesAgo = (n) => new Date(Date.now() - n * 60 * 1000).toISOString();
 const CONVERSATIONS = {
@@ -1255,6 +1280,88 @@ await check('AI panel quick action "Summarize this patient" fills the composer a
     'What are the latest abnormal results?',
     'suggestion chip must fill the composer',
   );
+});
+
+/* ------------------------------------- Markdown answer rendering (renderer) */
+
+await check('AI page renders a Markdown answer as real table/strong/details DOM', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ calls, me: DOCTOR, ai: AI_MARKDOWN_ANSWER });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Кои пациенти имат отклонения в калия?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const answerBody = document.getElementById('ai-response-region').querySelector('.ai-answer');
+  assert(answerBody, 'the answer body must render');
+
+  const table = answerBody.querySelector('table');
+  assert(table, 'the pipe table must render as a real <table>');
+  assertEqualLocal(table.querySelectorAll('thead').length, 1, 'the table needs one head section');
+  assertEqualLocal(table.querySelectorAll('tbody').length, 1, 'the table needs one body section');
+  assertEqualLocal(
+    JSON.stringify(table.querySelectorAll('th').map((th) => th.textContent)),
+    JSON.stringify(['Пациент', 'Тест', 'Стойност', 'Флаг']),
+    'header cells must render',
+  );
+  const numericHeads = table.querySelectorAll('th').filter((th) => th.classList.contains('ai-md-num'));
+  assertEqualLocal(
+    JSON.stringify(numericHeads.map((th) => th.textContent)),
+    JSON.stringify(['Стойност']),
+    'only the numeric column right-aligns',
+  );
+  const rows = table.querySelector('tbody').querySelectorAll('tr');
+  assertEqualLocal(rows.length, 2, 'both patient rows must render');
+  assertEqualLocal(rows[0].querySelectorAll('td')[2].querySelector('strong').textContent, '6.1 mmol/L', 'the numeric result must render bold');
+
+  const bolds = answerBody.querySelectorAll('strong').map((node) => node.textContent);
+  assert(bolds.includes('високо ↑'), 'the abnormal flag must render bold');
+
+  const details = answerBody.querySelector('details');
+  assert(details, 'the records-consulted tail must fold into a native disclosure');
+  assert(details.querySelector('summary'), 'the disclosure needs a summary');
+  assertContains(textOf(details), '5340c8c2', 'the records list must stay inside the disclosure');
+  assertEqualLocal(answerBody.querySelectorAll('h4').length, 0, 'the folded heading must not also render');
+  assertContains(textOf(document.getElementById('ai-response-region')), '2-ма пациенти', 'the bold summary must render');
+});
+
+await check('patient rail + history render Markdown answers through the safe renderer', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: AI_MARKDOWN_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Има ли отклонения в калия?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const answerBody = document.getElementById('ai-response-region').querySelector('.ai-answer');
+  assert(answerBody, 'the answer body must render');
+  assert(answerBody.querySelector('table'), 'the patient answer must render a real table');
+  assert(answerBody.querySelector('details'), 'the patient answer must render the records disclosure');
+
+  // The same Markdown answer in the conversation history (ai-history.js).
+  const historyList = document.getElementById('ai-history-list');
+  const historyAnswer = historyList.querySelector('.ai-answer');
+  assert(historyAnswer, 'the history entry must render the answer body');
+  assert(historyAnswer.querySelector('table'), 'the history entry must render the table');
+  assert(historyAnswer.querySelector('details'), 'the history entry must render the disclosure');
 });
 
 /* --------------------------------------------------------------- admin page */

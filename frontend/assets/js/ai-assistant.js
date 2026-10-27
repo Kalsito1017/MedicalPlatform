@@ -26,6 +26,7 @@ import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as markdown from './markdown.js';
 import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
@@ -227,11 +228,11 @@ function renderAiAnswer(container, payload) {
   );
   bubble.prepend(ui.assistantTurnHead());
 
-  const paragraphs = answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
+  // The answer body is untrusted model output: rendered through the safe
+  // Markdown-subset renderer (markdown.js builds DOM nodes only, never HTML).
+  const answerNode = answer ? markdown.answerBody(answer) : null;
   bubble.append(
-    paragraphs.length > 0
-      ? ui.el('div', { class: 'ai-answer' }, paragraphs.map((text) => ui.el('p', { text })))
-      : ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' }),
+    answerNode || ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' }),
   );
 
   bubble.append(

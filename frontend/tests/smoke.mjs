@@ -229,6 +229,19 @@ await check('no inline style attributes anywhere (CSP style-src self)', async ()
   }
 });
 
+await check('answer rendering never parses HTML (innerHTML family banned)', async () => {
+  // The AI answer body is untrusted model output (an XSS boundary): the
+  // markdown.js renderer and the three answer renderers must build DOM nodes
+  // only. ui.js keeps its documented innerHTML uses for APP-AUTHORED markup
+  // (icons, static dialog copy) and is deliberately not in this list.
+  for (const file of ['markdown.js', 'ai-assistant.js', 'patient.js', 'ai-history.js']) {
+    const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
+    for (const banned of ['innerHTML', 'insertAdjacentHTML', 'outerHTML', 'DOMParser', 'parseFromString']) {
+      assert(!source.includes(banned), `assets/js/${file} must never use ${banned} on answer content`);
+    }
+  }
+});
+
 await check('sheet.js writes only the sanctioned --sheet-dy custom property', async () => {
   const source = stripComments(await readFile(path.join(jsDir, 'sheet.js'), 'utf8'));
   const writes = source.match(/setProperty\s*\(/g) || [];
