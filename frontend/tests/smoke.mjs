@@ -210,14 +210,34 @@ await check('no inline style attributes anywhere (CSP style-src self)', async ()
     const found = source.match(/\sstyle\s*=\s*["'][^"']*["']/g) || [];
     assert(found.length === 0, `${file} has inline style attributes`);
   }
+  // ALLOWLIST (one entry, documented in DESIGN.md "Swipe-to-dismiss sheets" and
+  // verified exactly below): sheet.js may write the `--sheet-dy` CSS custom
+  // property on the SHEET ELEMENT ONLY — the lead's pre-authorized exception
+  // for finger-following swipe-to-dismiss (a running pixel offset cannot be
+  // encoded as an HTML attribute). Nothing else in the app may write styles;
+  // every other module keeps the full ban.
+  const STYLE_WRITE_ALLOWLIST = new Set(['sheet.js']);
   for (const file of jsFiles) {
     const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
     assert(!/\bstyle\s*[:=]\s*['"`]/.test(source), `assets/js/${file} sets inline styles`);
     assert(!/setAttribute\(\s*['"]style['"]/.test(source), `assets/js/${file} sets a style attribute`);
+    assert(!/cssText/.test(source), `assets/js/${file} mutates element styles directly`);
+    if (STYLE_WRITE_ALLOWLIST.has(file)) continue;
     assert(!/\.style\b/.test(source), `assets/js/${file} touches element styles directly`);
     assert(!/setProperty\s*\(/.test(source), `assets/js/${file} mutates CSS custom properties`);
-    assert(!/cssText/.test(source), `assets/js/${file} mutates element styles directly`);
   }
+});
+
+await check('sheet.js writes only the sanctioned --sheet-dy custom property', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'sheet.js'), 'utf8'));
+  const writes = source.match(/setProperty\s*\(/g) || [];
+  assertEqual(writes.length, 1, 'sheet.js must contain exactly one style write');
+  assert(
+    /sheet\.style\.setProperty\('--sheet-dy',\s*`\$\{Math\.round\(value\)\}px`\)/.test(source),
+    'the only style write must be sheet.style.setProperty(--sheet-dy, …) on the sheet element',
+  );
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(css.includes('var(--sheet-dy, 0px)'), 'styles.css must consume --sheet-dy');
 });
 
 /* --------------------------------------------- 1d. wave UI pattern hygiene */
@@ -239,6 +259,73 @@ await check('styles.css defines the wave UI pattern utilities', async () => {
     assert(css.includes(marker), `styles.css missing ${marker}`);
   }
   assert(css.includes('skeleton-bar--circle'), 'card-shaped skeleton variant missing');
+});
+
+/* --------------------------------------------- 1e. wave UI-B pattern hygiene */
+
+await check('styles.css defines the wave UI-B pattern utilities', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const marker of [
+    '.blur-placeholder',
+    '.blur-region.is-ready',
+    '@keyframes blur-in',
+    'view-transition-name',
+    '::view-transition-old(vt-dialog-surface)',
+    'prefers-reduced-motion: reduce',
+    '.sheet-grabber',
+    'var(--sheet-dy, 0px)',
+    '@keyframes toast-in',
+    '@keyframes overlay-in',
+    '@keyframes reveal-in',
+  ]) {
+    assert(css.includes(marker), `styles.css missing ${marker}`);
+  }
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert(!/https?:\/\//.test(code), 'external URL referenced from the stylesheet');
+});
+
+await check('pages declare modulepreload hints for the shared module graph', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('rel="modulepreload"'), `${file} missing modulepreload hints`);
+    assert(source.includes('assets/js/ui.js'), `${file} must warm the ui.js module`);
+    assert(source.includes('assets/js/api.js'), `${file} must warm the api.js module`);
+  }
+});
+
+await check('prefetch.js is permission-gated, in-memory, TTL-respecting, idle-scheduled', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'prefetch.js'), 'utf8'));
+  assert(source.includes("'patient:read'"), 'prefetch must gate on patient:read');
+  assert(source.includes('cache.peek'), 'prefetch must respect the cache TTL');
+  assert(source.includes('modulepreload'), 'module warm-up must use link hints (no early execution)');
+  assert(source.includes('requestIdleCallback'), 'warm-up must run on idle with a fallback');
+  assert(!/(local|session)Storage/.test(source), 'prefetch must stay in-memory only');
+  assert(source.includes('setTimeout'), 'intent prefetch must be debounced');
+});
+
+await check('overlay-history.js unwinds overlays LIFO and never breaks a UI close', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'overlay-history.js'), 'utf8'));
+  assert(source.includes('pushState'), 'overlays must push history entries');
+  assert(source.includes("addEventListener('popstate'"), 'Back must be handled via popstate');
+  assert(source.includes('stack.pop()'), 'overlays must unwind LIFO');
+  assert(source.includes('selfBacksPending'), 'self-inflicted popstates must never double-close');
+  assert(source.includes('entry.pushed'), 'history.back() must only run for entries this module pushed');
+});
+
+await check('DESIGN.md documents the wave UI-B patterns and their decisions', async () => {
+  const doc = await readFile(path.join(frontendRoot, 'DESIGN.md'), 'utf8');
+  for (const marker of [
+    'Pre-rendering',
+    'Blur placeholders',
+    'View transitions',
+    'Swipe-to-dismiss',
+    'Interruptible',
+    'Predictive back',
+    'Idempotency',
+    '--sheet-dy',
+  ]) {
+    assert(doc.includes(marker), `DESIGN.md missing documentation for ${marker}`);
+  }
 });
 
 await check('forms carry correct autofill semantics', async () => {
@@ -336,6 +423,53 @@ await check('ui.roleLabel maps contract role keys to friendly labels', () => {
 await check('ui.displayDate never renders undefined', () => {
   assertEqual(ui.displayDate(undefined), 'Not recorded', 'undefined fallback');
   assertEqual(ui.displayDate(null), 'Not recorded', 'null fallback');
+});
+
+await check('command shortcut chips are platform-neutral', async () => {
+  assertEqual(ui.commandShortcutLabel('MacIntel'), '\u2318K', 'macOS label');
+  assertEqual(ui.commandShortcutLabel('iPhone'), '\u2318K', 'iOS label');
+  assertEqual(ui.commandShortcutLabel('Win32'), 'Ctrl K', 'Windows label');
+  assertEqual(ui.commandShortcutLabel('Linux x86_64'), 'Ctrl K', 'Linux label');
+  assertEqual(ui.commandShortcutLabel(''), 'Ctrl/\u2318 K', 'unknown platform must stay neutral');
+  for (const file of SHELL_PAGES) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('data-command-shortcut'), `${file} missing the adaptive command chip`);
+    assert(
+      !/<kbd class="kbd">&#8984;K<\/kbd>/.test(source),
+      `${file} hardcodes the macOS-only glyph in a chip`,
+    );
+  }
+});
+
+await check('ui.withViewTransition falls back gracefully and wraps updates', () => {
+  const previousDocument = globalThis.document;
+  // Fallback (no startViewTransition): the update runs synchronously and the
+  // returned object mimics the ViewTransition shape.
+  globalThis.document = {};
+  let ran = 0;
+  const fallback = ui.withViewTransition(() => {
+    ran += 1;
+    return 'done';
+  });
+  assertEqual(ran, 1, 'the fallback must run the update immediately');
+  assert(fallback.finished instanceof Promise, 'fallback must expose finished');
+  assertEqual(typeof fallback.skipTransition, 'function', 'fallback must expose skipTransition');
+
+  // Supported: the update is handed to document.startViewTransition exactly once.
+  let viaStub = 0;
+  globalThis.document = {
+    startViewTransition(update) {
+      viaStub += 1;
+      const value = update();
+      return { finished: Promise.resolve(value), skipTransition() {} };
+    },
+  };
+  ui.withViewTransition(() => {
+    ran += 1;
+  });
+  assertEqual(viaStub, 1, 'startViewTransition must be used when available');
+  assertEqual(ran, 2, 'the update must run exactly once through the stub');
+  globalThis.document = previousDocument;
 });
 
 for (const file of jsFiles) {
@@ -491,6 +625,48 @@ await check('request returns null for 204 responses', async () => {
   globalThis.fetch = async () => empty;
   const result = await api.request('/auth/logout', { method: 'POST', body: {} });
   assertEqual(result, null, 'expected null body');
+});
+
+/* ------------------------------------------ 5. idempotency key behaviour */
+
+await check('mutating requests carry a fresh Idempotency-Key; GETs never do', async () => {
+  const calls = [];
+  globalThis.document = { cookie: 'csrf_token=token-9' };
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, { ok: true });
+  };
+  await api.get('/patients');
+  await api.post('/auth/login', { email: 'a@b.co', password: 'x' });
+  await api.patch('/staff/u1', { is_active: false });
+  await api.del('/staff/u1/roles/nurse');
+  assert(!('Idempotency-Key' in calls[0].init.headers), 'GET must not send Idempotency-Key');
+  const keys = [calls[1], calls[2], calls[3]].map((call) => call.init.headers['Idempotency-Key']);
+  for (const key of keys) {
+    assert(typeof key === 'string' && key.length > 0, 'mutating request missing Idempotency-Key');
+  }
+  assertEqual(new Set(keys).size, 3, 'every NEW mutating request must get a fresh key');
+});
+
+await check('retrying a request reuses its Idempotency-Key', async () => {
+  const calls = [];
+  globalThis.document = { cookie: '' };
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, { ok: true });
+  };
+  await api.post('/ai/ask', { question: 'x' }, { idempotencyKey: 'retry-key-1' });
+  await api.post('/ai/ask', { question: 'x' }, { idempotencyKey: 'retry-key-1' });
+  assertEqual(calls[0].init.headers['Idempotency-Key'], 'retry-key-1', 'retry must reuse the key');
+  assertEqual(calls[1].init.headers['Idempotency-Key'], 'retry-key-1', 'retry must reuse the key');
+});
+
+await check('newIdempotencyKey is random and never encodes request data', () => {
+  const first = api.newIdempotencyKey();
+  const second = api.newIdempotencyKey();
+  assert(typeof first === 'string' && first.length >= 16, 'key must be a random token');
+  assert(first !== second, 'keys must be fresh');
+  assert(!first.includes('patient'), 'a key must never encode request contents');
 });
 
 /* -------------------------------------------------------------- report */

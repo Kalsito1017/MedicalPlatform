@@ -257,7 +257,8 @@ chips; AI page: the suggestion chips fill the composer), and a real
 "Keyboard shortcuts" entry. Fuzzy-ish filtering (subsequence scoring), typed
 filter, ↑/↓ + Enter + Esc, `aria-activedescendant` listbox semantics, empty
 state "No matches", focus restored to the opener on close. At mobile widths
-(≤620px) the palette becomes a full-width sheet.
+(≤620px) the palette becomes a bottom sheet with swipe-to-dismiss (see
+"Swipe-to-dismiss sheets" below).
 
 ### 4. Shortcut hints (kbd chips)
 `.kbd` chips render **real** keybindings only: the ⌘K chip in the topbar
@@ -353,3 +354,187 @@ output, dark-mode contrast of the new components, `corner-shape` rendering in
 a supporting browser, and real notch behaviour (safe-area insets) are
 code-reviewed and test-covered for behaviour only — see the final report's
 browser checklist.
+
+## 8. Wave UI-B pattern library (owner list items 7–12, 19)
+
+Same buildless system as section 6: `styles.css` classes plus small ES modules
+(`ui.js`, `sheet.js`, `overlay-history.js`, `prefetch.js`, `api.js`,
+`toast.js`). No inline styles anywhere — with exactly one documented exception
+(see "Swipe-to-dismiss sheets"), no external resources, no web storage, no
+console logging.
+
+### 7. Pre-rendering and intent prefetch
+
+- **Module warm-up.** Every page declares static `<link rel="modulepreload">`
+  hints for its shared graph (`ui.js`, `api.js`, `cache.js`, `auth.js`,
+  `command-menu.js` on shell pages). On idle (`requestIdleCallback`, with a
+  `setTimeout` fallback — `prefetch.onIdle`) each page additionally warms the
+  **next-likely page modules** for its navigation flow (login → dashboard;
+  dashboard/patients → patient; patient ↔ ai; admin → patients) by injecting
+  the same link hints (`prefetch.warmModules`). Link hints fetch+parse without
+  **executing** the module — a dynamic `import()` would RUN the page module, so
+  it is deliberately not used.
+- **Hover-intent / focus-intent prefetch.** Patient cards
+  (`ui.renderPatientCard` stamps `data-prefetch-patient`) and "Go to patient"
+  command-menu entries (plus arrow-key selection in the palette) warm the
+  patient-detail API data through `cache.js` after a ~150ms intent debounce
+  (`prefetch.wirePatientIntent`, `prefetch.warmPatientRecord`) — a stray mouse
+  pass never fires a request.
+- **Privacy stance.** Permission-gated: nothing is prefetched unless the
+  signed-in `/auth/me` payload includes `patient:read` (never beyond the
+  authenticated user's permissions; the backend still re-checks every request).
+  In-memory only: warmed responses live in `cache.js`'s per-document Map —
+  never web storage, never logged. Cache-TTL respecting: a fresh cache entry is
+  not re-fetched. Anonymous pages get zero prefetches.
+- **Honest scope limit.** The app is multi-page: a full cross-page navigation
+  starts a new document, so the in-memory cache cannot carry over — the warm-up
+  pays off for within-page revisits (tabs, back/forward within a page view,
+  re-opened sections) and for module parse time on the next navigation.
+  Persisting prefetched clinical payloads across documents would require web
+  storage (banned for clinical data) or a service worker (out of scope).
+
+### 8. Blur placeholders
+
+The app has no raster images (initials avatars only), so the classic
+blur-up image placeholder is adapted: HERO-ish async regions show a soft
+blurred/low-detail placeholder — `.blur-placeholder` / `.blur-block` slabs with
+a CSS `filter: blur()` gradient, shaped to approximate the content layout
+(`ui.renderBlurPlaceholder`, `ui.blurPlaceholderNode`). Used for the **patient
+header card** (`#demographics-region`), the **AI answer turn** (patient rail
+and AI page), and the **dashboard welcome** region. Deliberately distinct from
+the wave UI-A shimmer skeletons: skeletons approximate table/list rows and stay
+where they fit (lists, staff/audit tables, section rows). Arrival is a class
+toggled on `data-ready` state (`ui.markBlurReady` → `.blur-region.is-ready`),
+and the real content sharpens in via the `blur-in` opacity/filter animation —
+never a style write. `prefers-reduced-motion`: instant swap (the global rule
+kills the animation).
+
+### 9. View transitions
+
+`ui.withViewTransition(update)` wraps `document.startViewTransition` with a
+feature test and a graceful fallback: no API (or `prefers-reduced-motion`) →
+the update runs immediately and the return value mimics the `ViewTransition`
+shape. Applied to the same-document swaps where they read best: patient detail
+**tab switches** (`patient.js`), history **expand/collapse** (`ai-history.js`),
+**command-menu open/close** (`command-menu.js`), and every **dialog open/close**
+(`ui.js` `closeDialog`). Stable `view-transition-name`s live in `styles.css` on
+the main content regions — `.patient-main` (`vt-record-panels`),
+`.command-menu` (`vt-command-menu`), `.dialog` (`vt-dialog-surface`) — each
+unique per visible element. The shared dialog host re-uses ONE element for
+confirm/password/about dialogs, so its old/new snapshots deliberately skip the
+default cross-fade (`::view-transition-old/new(vt-dialog-surface)
+{ animation: none }`) which would ghost one body over the other; the record
+panels keep the default cross-fade for tab swaps. Cross-page navigations
+(document loads) are outside the API's reach in a buildless multi-page app and
+stay instant. Theme-agnostic: nothing is theme-coupled. Reduced motion:
+`ui.withViewTransition` opts out in JS and a CSS rule kills any
+`::view-transition-*` animation as belt and braces.
+
+### 10. Swipe-to-dismiss sheets
+
+On touch widths (≤620px) the overlay surfaces — `confirmDialog`, `openDialog`
+(including the generated-password modal) and the command menu — present as
+**bottom sheets** (`.dialog`/`.command-menu` fixed to the bottom edge with a
+top radius; the palette drops its former full-screen treatment). A grab handle
+(`.sheet-grabber`) is the drag surface, so scrolling the palette list or typing
+is never hijacked. Pointer Events with a touch-events fallback; vertical drags
+only (a horizontal-first gesture cancels). The sheet follows the finger while
+dragging; releasing **≥120px** down dismisses it with the **exact Esc/cancel
+semantics — never confirming** (a confirm dialog resolves `false`), sliding out
+via `.is-closing` first. Below the threshold it springs back.
+
+**Sanctioned style-write exception (lead pre-authorization, wave UI-B):**
+finger-following requires a running pixel offset and the ban on
+`el.style`/`setProperty` writes has no attribute-based encoding for one, so
+`sheet.js` — and only `sheet.js` — may write
+`sheet.style.setProperty('--sheet-dy', …)` **on the sheet element only**,
+consumed by `styles.css` as `transform: translateY(var(--sheet-dy, 0px))`.
+Everything else (drag state, closing state) is plain classes. This is the only
+style write in the entire app; `tests/smoke.mjs` allowlists exactly this
+file/property (with an allowlist comment) and fails if anything else slips in.
+
+### 11. Interruptible animations
+
+Audit of every transition/animation in `styles.css`: all motion is either a
+short keyframe (≤260ms, **no fill-mode**, end state = base state) or a pure
+transition on transform/opacity/colour — so every animation is re-targetable
+mid-flight and can never lock state or block input:
+
+- toasts: `toast-in` entrance keyframe + `.is-closing` exit transition
+  (removal after 160ms; instant under reduced motion);
+- dialogs/command menu: `overlay-in` entrance keyframe; close is a view
+  transition / instant swap;
+- skeletons: the shimmer sweep is decorative and has no state coupling;
+- sync chip: `fade-in`, class-toggled on/off (rapid toggling settles on one
+  chip — tested);
+- accordion history expand/collapse: `reveal-in` on the detail (discardable
+  mid-flight; re-expanding replays it);
+- tab indicator: 120ms colour/border transition (naturally re-targetable);
+- hover states (buttons, nav links, cards, chips): 120ms colour transitions;
+- blur placeholders: `blur-in` on arrival (class-toggled).
+
+`prefers-reduced-motion` parity: the global `animation: none; transition: none`
+rule covers all of the above, plus the view-transition pseudo kill. State-
+coupled class toggling is exercised in `tests/render-smoke.mjs` ("rapid
+toggling" scenario) — including interrupted sheet drags settling exactly once
+and mid-entrance toast dismissal.
+
+### 12. Predictive back
+
+Every overlay — command menu, dialogs/sheets (incl. the generated-password
+modal), expanded history entries, and the mobile nav drawer — participates in
+browser history (`overlay-history.js`): opening pushes one `history.pushState`
+entry (URL untouched — `?id=` deep links and `patients.html?q=` state are never
+modified), and **Back dismisses the topmost overlay first** (LIFO unwinding)
+with its exit transition instead of leaving the page. UI closes (Esc, scrim,
+buttons, swipe) consume their own history entry via `history.back()`, and
+self-inflicted popstates are swallowed so a close can never cascade. With no
+overlays open, Back behaves exactly as before. `history.back()` is only called
+for entries the module actually pushed (safe in sandboxed frames where
+`pushState` throws).
+
+**What "predictive" means here (precise):**
+
+- **True:** Back-dismisses-the-topmost-overlay with the exit transition;
+  popstate-driven state; LIFO multi-overlay unwinding; gesture-linked preview
+  where the platform exposes one — the swipe-to-dismiss sheet follows the
+  finger and previews its own dismissal before committing past the threshold.
+- **Adapted (not possible in a buildless web app):** true gesture-scrubbed
+  back previews (Android's predictive back / iOS interactive pop) are not
+  exposed to vanilla JS — no browser API reports gesture progress to the page,
+  and there is no View Transition equivalent for the history traversal. The
+  exit transition therefore plays on dismissal rather than tracking the
+  gesture; the sheet drag is the closest gesture-linked preview available.
+
+### 19. Idempotency keys
+
+- **Frontend (`api.js`).** Every mutating request (POST/PATCH/DELETE) carries
+  `Idempotency-Key: <crypto.randomUUID()>` (random fallback for older
+  engines). The key is a random token — it never encodes or contains clinical
+  data or anything user-authored (verified in tests). A retry of the SAME
+  logical request reuses its key (pass `idempotencyKey` through the request
+  options); a NEW request always gets a fresh key. GET/HEAD/OPTIONS never send
+  the header.
+- **Backend (`backend/app/api/idempotency.py` + `admin.idempotency_record`).**
+  Honoured on the two POSTs whose double-apply would hurt — `POST /staff` and
+  `POST /ai/ask`. Scope is (user_id, endpoint, key); the first successful
+  response is recorded and replayed verbatim within a 24h retention window
+  with `Idempotency-Replayed: true` (no second account, no second LLM call, no
+  second history row, no second audit event). Same key + different payload →
+  `409 conflict` (documented choice: it is a state conflict with the consumed
+  key, not a malformed body), detected via a SHA-256 request fingerprint — the
+  payload itself is never stored. Missing header = unchanged behaviour.
+  Concurrency is decided by the unique constraint (the second insert loses and
+  is served as a replay-after-read). Expired rows are pruned opportunistically.
+  Secrets never land in the record: the staff one-time generated password is
+  stored/replayed as `null` (shown exactly once). Full semantics in
+  `docs/API.md` ("Idempotent mutations").
+
+### 19b. Platform-neutral shortcut chip (UI-A follow-up)
+
+The ⌘K chip is no longer macOS-literal: `ui.commandShortcutLabel()` renders
+"⌘K" on Apple platforms, "Ctrl K" elsewhere, and "Ctrl/⌘ K" when the platform
+cannot be determined (from `navigator.userAgentData.platform` →
+`navigator.platform` → `navigator.userAgent`). The static HTML default is the
+neutral "Ctrl/⌘ K" and `data-command-shortcut` chips are rewritten at chrome
+init. The "Keyboard shortcuts" dialog continues to list both real bindings.

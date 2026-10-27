@@ -9,6 +9,7 @@ import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
 const RECENT_PATIENTS = 8;
@@ -127,6 +128,8 @@ function renderRecentPatients(user) {
         return;
       }
       for (const patient of items) grid.append(ui.renderPatientCard(patient));
+      // Hover/focus intent prefetch for the freshly rendered cards.
+      prefetch.wirePatientIntent(grid, user);
     },
     onError: (error) => {
       ui.renderErrorState(grid, error, {
@@ -177,10 +180,19 @@ function render(user) {
       renderNoticeCard(),
     ),
   );
+  ui.markBlurReady(body);
 }
 
 ui.onReady(async () => {
   ui.setRetryHandler(() => window.location.reload());
+  // Dashboard welcome hero: a soft blur placeholder stands in for the session
+  // content while it loads (blur placeholders, DESIGN.md item 8).
+  ui.renderBlurPlaceholder(document.getElementById('page-body'), {
+    label: 'Loading your session',
+    variant: 'welcome',
+  });
+  // Pre-rendering (prefetch.js): on idle, warm the likely next page modules.
+  prefetch.warmModules(['assets/js/patients.js', 'assets/js/patient.js']);
   try {
     const user = await auth.initAuthChrome({ active: 'dashboard' });
     if (!user) return;

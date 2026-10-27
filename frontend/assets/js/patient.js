@@ -18,6 +18,7 @@ import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 20;
@@ -136,18 +137,24 @@ function listItemLabel(entry) {
 
 /* ------------------------------------------------------------- sections */
 
-// Runs one section load: skeleton -> data -> renderer, or a friendly error
-// panel with retry. Renderers own their empty states. GET responses are
-// cached in memory (cache.js): revisiting a section renders the cached copy
-// instantly and revalidates in the background, re-rendering only on change.
-function loadSection(container, key, fetcher, render, { loadingLabel = 'Loading', onError = null } = {}) {
+// Runs one section load: skeleton (or blur placeholder for hero regions) ->
+// data -> renderer, or a friendly error panel with retry. Renderers own their
+// empty states. GET responses are cached in memory (cache.js): revisiting a
+// section renders the cached copy instantly and revalidates in the background,
+// re-rendering only on change.
+function loadSection(container, key, fetcher, render, { loadingLabel = 'Loading', onError = null, blurVariant = null } = {}) {
   const attempt = () => {
     if (!cache.peek(key)) {
-      ui.renderLoading(container, { label: loadingLabel, rows: 3 });
+      if (blurVariant) {
+        ui.renderBlurPlaceholder(container, { label: loadingLabel, variant: blurVariant });
+      } else {
+        ui.renderLoading(container, { label: loadingLabel, rows: 3 });
+      }
     }
     cache.swr(key, fetcher, {
       onData: (data) => {
         render(data);
+        if (blurVariant) ui.markBlurReady(container);
       },
       onError: (error) => {
         ui.renderErrorState(container, error, {
@@ -503,7 +510,9 @@ function loadDemographics() {
     cache.keyFor(path),
     () => api.get(path),
     renderDemographics,
-    { loadingLabel: 'Loading patient demographics' },
+    // Hero region: a soft blur placeholder approximates the header card, then
+    // the real demographics sharpen in (blur placeholders, DESIGN.md item 8).
+    { loadingLabel: 'Loading patient demographics', blurVariant: 'hero' },
   );
 }
 
@@ -585,6 +594,10 @@ ui.onReady(async () => {
     : [];
   commandMenu.initCommandMenu({ user, commands: aiCommands });
 
+  // Pre-rendering (prefetch.js): on idle, warm the modules a navigation from
+  // this page will likely need (link hints only — nothing is executed early).
+  prefetch.warmModules(['assets/js/ai-assistant.js', 'assets/js/patients.js']);
+
   loadDemographics();
   loadSummary();
   loadLabs();
@@ -621,14 +634,18 @@ function initTabs() {
   if (tabs.length === 0) return;
 
   const activate = (tab, { focus = false } = {}) => {
-    for (const other of tabs) {
-      const selected = other === tab;
-      other.classList.toggle('is-active', selected);
-      other.setAttribute('aria-selected', selected ? 'true' : 'false');
-      other.setAttribute('tabindex', selected ? '0' : '-1');
-      const panel = document.getElementById(other.getAttribute('aria-controls'));
-      if (panel) panel.hidden = !selected;
-    }
+    // Panel swaps run inside a view transition (ui.js wrapper: feature-detected
+    // with an instant fallback and reduced-motion opt-out).
+    ui.withViewTransition(() => {
+      for (const other of tabs) {
+        const selected = other === tab;
+        other.classList.toggle('is-active', selected);
+        other.setAttribute('aria-selected', selected ? 'true' : 'false');
+        other.setAttribute('tabindex', selected ? '0' : '-1');
+        const panel = document.getElementById(other.getAttribute('aria-controls'));
+        if (panel) panel.hidden = !selected;
+      }
+    });
     if (focus && typeof tab.focus === 'function') tab.focus();
   };
 
@@ -1008,6 +1025,10 @@ async function askAssistant() {
   setAiStatus('Consulting the assistant\u2026');
   if (region) {
     ui.clear(region);
+    // Blur placeholder for the answer turn (hero-ish async region): low-detail
+    // blurred blocks approximate the answer layout until it arrives.
+    region.classList.add('blur-region', 'is-loading');
+    region.classList.remove('is-ready');
     region.setAttribute('aria-busy', 'true');
     region.append(
       chatBubble('user',
@@ -1021,6 +1042,7 @@ async function askAssistant() {
           text: 'The assistant is reviewing this synthetic record to answer your question.',
         }),
       ),
+      ui.blurPlaceholderNode({ label: 'Consulting the assistant', variant: 'answer' }),
     );
   }
 
@@ -1046,7 +1068,10 @@ async function askAssistant() {
     }
   } finally {
     aiRequest.controller = null;
-    if (region) region.removeAttribute('aria-busy');
+    if (region) {
+      region.removeAttribute('aria-busy');
+      ui.markBlurReady(region);
+    }
     if (cancel) cancel.hidden = true;
     if (input) input.disabled = false;
     syncQuestionCounter();

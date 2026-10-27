@@ -32,6 +32,17 @@ class ShimNode {
     this.returnValue = '';
     this._innerHTML = '';
     this._classSet = new Set();
+    // Minimal CSSStyleDeclaration stand-in that RECORDS custom-property writes
+    // (the app writes exactly one: --sheet-dy on sheet elements, sheet.js).
+    this.style = {
+      values: {},
+      setProperty(name, value) {
+        this.values[name] = String(value);
+      },
+      getPropertyValue(name) {
+        return this.values[name] === undefined ? '' : this.values[name];
+      },
+    };
     const self = this;
     this.classList = {
       add: (...c) => c.forEach((x) => self._classSet.add(x)),
@@ -215,6 +226,44 @@ export class ShimDocument {
     event.preventDefault = event.preventDefault || (() => {});
     for (const handler of [...(this.listeners[type] || [])]) await handler(event);
   }
+  /* View Transitions stub: runs the DOM swap synchronously (exactly what the
+     real API expects from its update callback) and mimics the ViewTransition
+     return shape. Tests remove/replace it to exercise the ui.js fallback. */
+  startViewTransition(update) {
+    const result = typeof update === 'function' ? update() : undefined;
+    return {
+      updateCallbackDone: Promise.resolve(result),
+      ready: Promise.resolve(),
+      finished: Promise.resolve(result),
+      skipTransition() {},
+    };
+  }
+}
+
+/* Window-level event registry (window === globalThis in the shim), so
+   overlay-history.js can bind `popstate` and tests can simulate Back. */
+class ShimWindowEvents {
+  constructor() {
+    this.listeners = {};
+  }
+  addEventListener(type, handler) {
+    (this.listeners[type] = this.listeners[type] || []).push(handler);
+  }
+  removeEventListener(type, handler) {
+    const list = this.listeners[type] || [];
+    const index = list.indexOf(handler);
+    if (index >= 0) list.splice(index, 1);
+  }
+  dispatch(type, event = {}) {
+    event.preventDefault = event.preventDefault || (() => {});
+    for (const handler of [...(this.listeners[type] || [])]) handler(event);
+  }
+}
+
+/** Dispatch a window-level event (e.g. dispatchWindowEvent('popstate')). */
+export function dispatchWindowEvent(type, event = {}) {
+  const registry = globalThis.__windowEvents;
+  if (registry) registry.dispatch(type, event);
 }
 
 export function installDom() {
@@ -230,7 +279,45 @@ export function installDom() {
     assign() {},
     reload() {},
   };
-  globalThis.history = { replaceState() {}, pushState() {} };
+  // Session history with working pushState/back + popstate dispatch: Back is
+  // synchronous here (the real one is async), which keeps the LIFO overlay
+  // unwinding tests deterministic.
+  const historyEntries = [{ state: null }];
+  globalThis.history = {
+    state: null,
+    replaceState(state) {
+      historyEntries[historyEntries.length - 1] = { state };
+      this.state = state;
+    },
+    pushState(state) {
+      historyEntries.push({ state });
+      this.state = state;
+    },
+    back() {
+      if (historyEntries.length <= 1) return;
+      historyEntries.pop();
+      this.state = historyEntries[historyEntries.length - 1].state;
+      dispatchWindowEvent('popstate', { state: this.state });
+    },
+    get length() {
+      return historyEntries.length;
+    },
+  };
+  const windowEvents = new ShimWindowEvents();
+  globalThis.__windowEvents = windowEvents;
+  globalThis.addEventListener = windowEvents.addEventListener.bind(windowEvents);
+  globalThis.removeEventListener = windowEvents.removeEventListener.bind(windowEvents);
+  // Pointer events exist (sheet.js uses the pointer path); tests that need the
+  // touch fallback can delete globalThis.PointerEvent before installDom.
+  globalThis.PointerEvent = class PointerEvent {};
+  // Reduced-motion opt-out is off by default; tests replace matchMedia to
+  // simulate prefers-reduced-motion: reduce.
+  globalThis.matchMedia = (query) => ({
+    matches: false,
+    media: String(query),
+    addEventListener() {},
+    removeEventListener() {},
+  });
   return document;
 }
 

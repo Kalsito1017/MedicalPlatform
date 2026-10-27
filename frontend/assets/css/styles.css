@@ -463,6 +463,8 @@ code,
   text-decoration: none;
   color: var(--color-text-body);
   font-weight: 600;
+  /* Hover/active states: short colour transitions, interruptible mid-flight. */
+  transition: background-color 120ms ease, color 120ms ease;
 }
 
 .site-nav__link:hover {
@@ -1890,6 +1892,8 @@ a.patient-card:hover {
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   cursor: pointer;
+  /* Tab indicator: a pure colour transition — re-targetable mid-flight. */
+  transition: color 120ms ease, border-color 120ms ease;
 }
 
 .tab:hover {
@@ -2172,6 +2176,7 @@ a.patient-card:hover {
   font: inherit;
   font-size: var(--text-sm);
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 .chip--action:hover {
@@ -2666,20 +2671,15 @@ a.patient-card:hover {
   margin-bottom: var(--space-2);
 }
 
-/* Mobile: the palette becomes a full-width sheet. */
+/* Mobile: the palette becomes a bottom sheet (sheet behaviour below). */
 @media (max-width: 620px) {
   .command-menu {
-    width: 100vw;
-    height: 100%;
-    max-height: none;
-    margin: 0;
-    border-radius: 0;
-    border: 0;
+    width: 100%;
+    max-height: min(85vh, 40rem);
   }
 
   .command-menu__inner {
-    max-height: 100%;
-    height: 100%;
+    max-height: min(85vh, 40rem);
   }
 }
 
@@ -2712,6 +2712,15 @@ a.patient-card:hover {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-2);
   pointer-events: auto;
+  /* Enter (short keyframe, no fill-mode) + exit (pure transition on the
+     .is-closing class): both interruptible mid-flight (item 11). */
+  animation: toast-in 180ms ease-out;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+
+.toast.is-closing {
+  opacity: 0;
+  transform: translateY(8px);
 }
 
 .toast--error {
@@ -2850,4 +2859,231 @@ h2,
   .topbar {
     padding-left: max(var(--space-5), 22px);
   }
+}
+
+/* ============================================== wave UI-B patterns ====
+   Blur placeholders (item 8), view transitions (item 9), swipe-to-dismiss
+   bottom sheets (item 10), interruptible-animation keyframes/parity (item 11),
+   and the predictive-back overlay states (item 12). Same rules as wave UI-A:
+   no inline styles, no external resources, every animated property is a pure
+   transform/opacity/colour transition or a SHORT keyframe without fill-mode,
+   so every animation is re-targetable mid-flight and never blocks input.
+   ======================================================================= */
+
+/* ------------------------------------------------- blur placeholders */
+
+/* Soft blurred/low-detail placeholders for HERO-ish async regions (patient
+   header card, AI answer turn, dashboard welcome). Distinct from the shimmer
+   skeletons: those approximate table/list rows; these approximate a hero
+   block's layout with blurred gradient slabs. The region carries
+   .blur-region.is-loading while pending; markBlurReady() flips .is-ready and
+   the real content fades/sharpens in (class toggle only — never a style
+   write). Under prefers-reduced-motion the global rule kills the animation
+   and the swap is instant. */
+
+.blur-region.is-ready > * {
+  animation: blur-in 260ms ease-out;
+}
+
+.blur-placeholder {
+  padding: var(--space-1) 0;
+}
+
+.blur-blocks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  align-items: flex-start;
+  padding: var(--space-2) 0;
+}
+
+.blur-block {
+  width: 100%;
+  height: 0.95rem;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(
+    110deg,
+    var(--color-canvas-alt) 30%,
+    var(--color-border) 50%,
+    var(--color-canvas-alt) 70%
+  );
+  filter: blur(2px);
+  opacity: 0.9;
+}
+
+.blur-block--circle {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--radius-full);
+}
+
+.blur-block--title {
+  height: 1.5rem;
+  width: 55%;
+}
+
+.blur-block--lg {
+  width: 100%;
+}
+
+.blur-block--md {
+  width: 72%;
+}
+
+.blur-block--sm {
+  width: 45%;
+}
+
+.blur-placeholder--answer .blur-block {
+  height: 0.85rem;
+}
+
+@keyframes blur-in {
+  from {
+    opacity: 0;
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* ------------------------------------------------------ view transitions */
+
+/* Stable view-transition-names on the main content regions (ui.withViewTransition
+   wraps panel/overlay swaps). Names must be unique per VISIBLE element; each
+   name below is unique on its page. The shared dialog host re-uses one element
+   for confirm/password/about dialogs: its old/new snapshots do NOT cross-fade
+   (that would ghost one body over the other), while the record panels keep the
+   default cross-fade for tab swaps. */
+.patient-main {
+  view-transition-name: vt-record-panels;
+}
+
+.command-menu {
+  view-transition-name: vt-command-menu;
+}
+
+.dialog {
+  view-transition-name: vt-dialog-surface;
+}
+
+::view-transition-old(vt-dialog-surface),
+::view-transition-new(vt-dialog-surface) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* Reduced motion: no view-transition animation at all (belt and braces on top
+   of the JS-side opt-out in ui.withViewTransition). */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
+/* ------------------------------------------ bottom sheets + swipe dismiss */
+
+/* On touch widths (≤620px) overlay dialogs (confirmDialog, openDialog
+   including the generated-password modal) and the command menu present as
+   bottom sheets. The grab handle is the drag surface: swiping down follows
+   the finger via the --sheet-dy custom property (the ONE sanctioned dynamic
+   style write in the app, see sheet.js + DESIGN.md) and dismissing past the
+   threshold mirrors Esc/cancel — it never confirms. The settle/dismiss
+   transition is a pure transform/opacity transition (interruptible; instant
+   under prefers-reduced-motion via the global rule). */
+.sheet-grabber {
+  display: none;
+}
+
+@media (max-width: 620px) {
+  .sheet-grabber {
+    display: block;
+    width: 2.75rem;
+    height: 0.3rem;
+    margin: var(--space-2) auto 0;
+    border-radius: var(--radius-full);
+    background: var(--color-border-strong);
+  }
+
+  .dialog,
+  .command-menu {
+    position: fixed;
+    inset: auto 0 0 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    max-height: 85vh;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    transform: translateY(var(--sheet-dy, 0px));
+    transition: transform 180ms ease, opacity 180ms ease;
+  }
+
+  .dialog .dialog__inner,
+  .command-menu__inner {
+    max-height: 85vh;
+    overflow-y: auto;
+  }
+
+  /* Finger-following: no transition while dragging (1:1 tracking). */
+  .dialog.is-dragging,
+  .command-menu.is-dragging {
+    transition: none;
+  }
+
+  /* Exit (swipe past threshold or Back): slide down and fade, then close. */
+  .dialog.is-closing,
+  .command-menu.is-closing {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+/* ------------------------------------- interruptible entrance keyframes */
+
+/* Short entrance animations only — no fill-mode, end state = base state, so
+   every one is safely interruptible at any point (item 11). */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+
+@keyframes overlay-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+}
+
+@keyframes reveal-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.dialog[open],
+.command-menu[open] {
+  animation: overlay-in 160ms ease-out;
+}
+
+/* Accordion history detail: plays whenever the detail becomes visible and is
+   discarded mid-flight when it collapses (re-expanding simply replays it). */
+.ai-history__detail {
+  animation: reveal-in 160ms ease-out;
+}
+
+.sync-chip {
+  animation: fade-in 140ms ease-out;
 }

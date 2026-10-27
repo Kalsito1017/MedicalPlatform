@@ -1,4 +1,5 @@
-"""`admin` schema models: staff users, roles, role grants, sessions, audit events.
+"""`admin` schema models: staff users, roles, role grants, sessions, audit events,
+and idempotency records.
 
 Never stores plaintext passwords (argon2 hashes only), never stores raw session
 tokens (SHA-256 hashes only), and never stores clinical payloads or secrets in
@@ -15,8 +16,10 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
+    UniqueConstraint,
     Uuid,
     func,
     text,
@@ -147,6 +150,49 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class IdempotencyRecord(Base):
+    """Recorded first response for an `Idempotency-Key` request (app.api.idempotency).
+
+    One row per (user_id, endpoint, key): a REPLAY of the same key within the
+    retention window returns the recorded response instead of re-executing, and
+    the unique constraint is the concurrency arbiter (the second insert loses
+    and is treated as a replay-after-read).
+
+    Privacy: `response_body` is the JSON text of the response with any secret
+    already redacted by the caller (e.g. `generated_password` is stored as
+    `null` - a one-time password is NEVER kept here), `request_hash` is a
+    SHA-256 fingerprint of the request body used only to detect a
+    different-payload-same-key conflict (the payload itself is never stored).
+    Expired rows (`expires_at` <= now) are pruned opportunistically and are
+    treated as absent on read.
+    """
+
+    __tablename__ = "idempotency_record"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "endpoint", "key", name="uq_idempotency_record_user_endpoint_key"
+        ),
+        Index("ix_idempotency_record_expires_at", "expires_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    endpoint: Mapped[str] = mapped_column(String(64), nullable=False)
+    key: Mapped[str] = mapped_column(String(200), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status_code: Mapped[int] = mapped_column(Integer, nullable=False)
+    response_body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class Permission(TimestampMixin, Base):

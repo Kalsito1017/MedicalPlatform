@@ -23,6 +23,7 @@ import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as prefetch from './prefetch.js';
 import * as toast from './toast.js';
 import * as ui from './ui.js';
 
@@ -815,6 +816,9 @@ function renderPermissionDenied() {
 
 ui.onReady(async () => {
   ui.setRetryHandler(() => window.location.reload());
+  // Pre-rendering (prefetch.js): on idle, warm the modules a navigation from
+  // this page will likely need (link hints only — nothing is executed early).
+  prefetch.warmModules(['assets/js/patients.js']);
   try {
     const user = await auth.initAuthChrome({ active: 'admin' });
     if (!user) return;

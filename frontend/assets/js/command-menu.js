@@ -22,6 +22,9 @@
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
+import * as overlayHistory from './overlay-history.js';
+import * as prefetch from './prefetch.js';
+import * as sheet from './sheet.js';
 import * as ui from './ui.js';
 
 const PATIENT_LIMIT = 50;
@@ -85,6 +88,7 @@ const state = {
   activeIndex: 0,
   opener: null,
   ready: false,
+  overlay: null,
 };
 
 function menuDialog() {
@@ -107,6 +111,9 @@ function menuDialog() {
 
   dialog = ui.el('dialog', { id: 'command-menu', class: 'command-menu', 'aria-label': 'Command menu' },
     ui.el('div', { class: 'command-menu__inner' },
+      // Sheet drag handle on touch widths (swipe-down dismisses, cancel
+      // semantics only — see sheet.js).
+      ui.el('div', { class: 'sheet-grabber', 'aria-hidden': 'true' }),
       ui.el('div', { class: 'command-menu__search' },
         ui.icon('search', 'icon--sm'),
         input,
@@ -149,6 +156,10 @@ function menuDialog() {
   });
 
   document.body.append(dialog);
+  sheet.attachSwipeToDismiss(dialog, {
+    close: closeCommandMenu,
+    handle: dialog.querySelector('.sheet-grabber'),
+  });
   return dialog;
 }
 
@@ -204,6 +215,7 @@ function allCommands() {
       hint: mrn ? `MRN ${mrn}` : 'Synthetic demo data',
       keywords: `patient record ${name} ${mrn || ''}`,
       group: 'Patients',
+      patientId: ui.patientId(patient) != null ? String(ui.patientId(patient)) : null,
       run: () => window.location.assign(`patient.html?id=${encodeURIComponent(ui.patientId(patient))}`),
     });
   }
@@ -251,6 +263,9 @@ function renderList() {
       id: `command-menu-option-${index}`,
       role: 'option',
       'aria-selected': isActive ? 'true' : 'false',
+      // Hover/focus intent prefetch target: hovering a "Go to patient" entry
+      // warms that patient's detail data (prefetch.js, patient:read only).
+      'data-prefetch-patient': command.patientId || null,
       onClick: () => runCommand(command),
     },
       ui.el('span', { class: 'command-menu__option-title', text: command.title }),
@@ -263,8 +278,18 @@ function renderList() {
     input.setAttribute('aria-activedescendant', `command-menu-option-${state.activeIndex}`);
   }
 
+  prefetch.wirePatientIntent(list, state.user);
+
   if (state.patientsNote) {
     list.append(ui.el('li', { class: 'command-menu__note', role: 'presentation', text: state.patientsNote }));
+  }
+}
+
+/** Keyboard intent: moving onto a "Go to patient" entry warms its record. */
+function warmActiveCommand() {
+  const command = state.filtered[state.activeIndex];
+  if (command && command.patientId) {
+    prefetch.warmPatientRecord(command.patientId, state.user);
   }
 }
 
@@ -294,6 +319,7 @@ function onMenuKeydown(event) {
     if (state.filtered.length > 0) {
       state.activeIndex = (state.activeIndex + 1) % state.filtered.length;
       renderList();
+      warmActiveCommand();
     }
     return;
   }
@@ -302,6 +328,7 @@ function onMenuKeydown(event) {
     if (state.filtered.length > 0) {
       state.activeIndex = (state.activeIndex - 1 + state.filtered.length) % state.filtered.length;
       renderList();
+      warmActiveCommand();
     }
     return;
   }
@@ -351,8 +378,18 @@ export function openCommandMenu() {
   if (input) input.value = '';
   applyFilter('');
 
-  if (typeof dialog.showModal === 'function') dialog.showModal();
+  sheet.resetSheetState(dialog);
+  ui.withViewTransition(() => {
+    if (typeof dialog.showModal === 'function') dialog.showModal();
+  });
   if (input && typeof input.focus === 'function') input.focus();
+
+  // Predictive back (overlay-history.js): Back dismisses the palette first,
+  // with the palette's exit transition — it never leaves the page.
+  state.overlay = overlayHistory.pushOverlay(() => {
+    state.overlay = null;
+    closeCommandMenuSurface();
+  });
 
   loadPatientCommands();
 }
@@ -363,14 +400,25 @@ function restoreFocus() {
   if (opener && typeof opener.focus === 'function') opener.focus();
 }
 
-export function closeCommandMenu() {
+function closeCommandMenuSurface() {
   const dialog = document.getElementById('command-menu');
   if (!dialog || !dialog.open) return;
-  if (typeof dialog.close === 'function') dialog.close();
-  else {
-    dialog.removeAttribute('open');
-    restoreFocus();
-  }
+  ui.withViewTransition(() => {
+    if (typeof dialog.close === 'function') dialog.close();
+    else {
+      dialog.removeAttribute('open');
+      restoreFocus();
+    }
+  });
+}
+
+export function closeCommandMenu() {
+  // UI close path (Esc, scrim click, run command, swipe-dismiss): consume the
+  // palette's history entry, then close the surface.
+  const entry = state.overlay;
+  state.overlay = null;
+  if (entry) overlayHistory.releaseOverlay(entry);
+  closeCommandMenuSurface();
 }
 
 /**
@@ -386,6 +434,7 @@ export function initCommandMenu({ user = null, commands = [] } = {}) {
   state.patientsNote = '';
   state.filtered = [];
   state.activeIndex = 0;
+  state.overlay = null;
 
   const trigger = document.getElementById('command-menu-button');
   if (trigger) {

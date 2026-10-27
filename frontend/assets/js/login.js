@@ -7,6 +7,7 @@
 
 import * as api from './api.js';
 import * as auth from './auth.js';
+import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -174,6 +175,9 @@ ui.onReady(async () => {
   ui.wireFooterDialogs();
   ui.setRetryHandler(() => window.location.reload());
   initLoginForm();
+  // Pre-rendering (prefetch.js): a successful sign-in lands on the dashboard,
+  // so warm its module on idle (link hint only — nothing is executed early).
+  prefetch.warmModules(['assets/js/dashboard.js']);
 
   try {
     const user = await auth.currentSession();

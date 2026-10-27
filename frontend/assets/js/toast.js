@@ -32,13 +32,26 @@ function toastRegion() {
   return region;
 }
 
+const TOAST_EXIT_MS = 160;
+
 function detach(region, node) {
   if (!region || !node) return;
   // Real DOM uses parentNode; the test DOM shim uses parent.
   const parent = node.parentNode || node.parent;
-  if (parent === region && typeof region.removeChild === 'function') {
-    region.removeChild(node);
+  if (parent !== region || typeof region.removeChild !== 'function') return;
+  // Exit transition: pure CSS on the .is-closing class (interruptible; the
+  // node is removed after the short transition, instantly under reduced
+  // motion because the class simply fades nothing).
+  if (node.classList && !node.classList.contains('is-closing')) {
+    node.classList.add('is-closing');
+    const timer = setTimeout(() => {
+      const still = node.parentNode || node.parent;
+      if (still === region && typeof region.removeChild === 'function') region.removeChild(node);
+    }, TOAST_EXIT_MS);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    return;
   }
+  region.removeChild(node);
 }
 
 function scheduleDismiss(region, node, duration) {

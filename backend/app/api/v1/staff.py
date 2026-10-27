@@ -22,6 +22,12 @@ Password source for POST /staff (flagged in app.schemas.staff.StaffCreate):
 optional request field `password`; when omitted the server generates a strong
 random password returned ONCE in the 201 body. Plaintext is never logged or
 audited — only the argon2id hash is stored.
+
+POST /staff also honours an optional `Idempotency-Key` header (app.api.
+idempotency, docs/API.md "Idempotent mutations"): replays return the recorded
+response instead of creating a second account, the same key with a different
+payload is 409 `conflict`, and the one-time generated password is never stored
+in the idempotency record.
 """
 from __future__ import annotations
 
@@ -30,8 +36,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi import status as http_status
+from fastapi.responses import JSONResponse
 
 from app.api.deps import DbSession, Pagination, RequestId, reject_unknown_query
+from app.api.idempotency import (
+    ENDPOINT_STAFF_CREATE,
+    IdempotencyContext,
+    IdempotencyKey,
+)
 from app.audit.logger import write_audit_event
 from app.auth.identity import client_ip
 from app.auth.passwords import hash_password
@@ -113,8 +125,30 @@ async def create_staff(
     request: Request,
     db: DbSession,
     request_id: RequestId,
+    idem_key: IdempotencyKey,
     principal: Principal = Depends(require_permission("staff:manage")),
-) -> StaffCreateOut:
+) -> StaffCreateOut | JSONResponse:
+    """Create one staff account (201).
+
+    Idempotency (docs/API.md "Idempotent mutations"): when the request carries
+    an `Idempotency-Key`, a REPLAY of the same key + payload within the
+    retention window returns the recorded response with
+    `Idempotency-Replayed: true` and creates NO second account (and writes no
+    second audit event); the same key with a different payload is 409
+    `conflict`. The one-time generated password is never stored in the
+    idempotency record - replays return `generated_password: null`.
+    """
+    idem = IdempotencyContext.build(
+        key=idem_key,
+        user_id=principal.user_uuid,
+        endpoint=ENDPOINT_STAFF_CREATE,
+        payload=payload.model_dump(mode="json"),
+    )
+    if idem is not None:
+        replay = await idem.lookup(db)
+        if replay is not None:
+            return replay.response()
+
     generated_password: str | None = None
     plaintext_password = payload.password
     if plaintext_password is None:
@@ -128,6 +162,17 @@ async def create_staff(
         password_hash=hash_password(plaintext_password),
         is_active=payload.is_active,
     )
+    body = StaffCreateOut(
+        user=staff_service.to_staff_user_out(user, []),
+        generated_password=generated_password,
+    )
+    if idem is not None:
+        stored = body.model_dump(mode="json")
+        # Secrets never land in the record: a one-time password is shown once.
+        stored["generated_password"] = None
+        replay = await idem.record(db, status_code=201, body=stored)
+        if replay is not None:
+            return replay.response()
     await _audit(
         db,
         request=request,
@@ -138,10 +183,7 @@ async def create_staff(
         resource_id=str(user.id),
         outcome="success",
     )
-    return StaffCreateOut(
-        user=staff_service.to_staff_user_out(user, []),
-        generated_password=generated_password,
-    )
+    return body
 
 
 @router.patch("/{user_id}", response_model=StaffUserOut)

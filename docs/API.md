@@ -52,6 +52,37 @@ Filter parameters are bounded and validated; unknown filters are a `validation_e
 - CSRF: double-submit. Non-GET requests require header `X-CSRF-Token` matching the `csrf_token` cookie.
 - Every protected endpoint is authorized **server-side**. UI hiding is never the control.
 
+### Idempotent mutations (`Idempotency-Key`, wave UI-B)
+
+`POST /api/v1/staff` and `POST /api/v1/ai/ask` — the two POSTs whose
+double-apply would hurt — accept an optional request header
+`Idempotency-Key: <client-generated random token>` (1–200 chars from
+`[A-Za-z0-9._~-]`; an invalid key is `400 validation_error`). Semantics
+(same for both endpoints):
+
+- **Scope:** `(user_id, endpoint, key)`. Another user replaying the same key
+  executes normally — records never cross users or endpoints.
+- **Replay:** the same key + the **same request payload** within the retention
+  window (**24 hours**) returns the recorded response (original status code and
+  body) with response header `Idempotency-Replayed: true` **without
+  re-executing**: no second account, no second LLM call, no second history
+  row, no second audit event. For `POST /ai/ask` the replay also skips the
+  access check and the rate limiter (the original request already passed
+  both).
+- **Conflict:** the same key + a **different payload** is `409 conflict`
+  (documented choice over 422: the key was already consumed by a different
+  request of the same user — a state conflict, not a malformed body). The
+  payload is never stored; a SHA-256 request fingerprint detects the mismatch.
+- **Failures are not recorded:** only the first successful (2xx) response is
+  recorded, so a retry after an error re-executes normally.
+- **Missing header:** unchanged behaviour — fully backwards compatible.
+- **Storage:** `admin.idempotency_record` (unique on `(user_id, endpoint,
+  key)`), response body as JSON text. **Secrets are never stored:** the staff
+  one-time `generated_password` is recorded and replayed as `null` (a generated
+  password is shown exactly once). Expired rows are pruned opportunistically.
+- **Concurrency:** the unique constraint is the arbiter — the second insert
+  loses, is rolled back, and is served as a replay of the winner's record.
+
 ## Endpoints
 
 ### Health (unauthenticated)
@@ -140,7 +171,7 @@ Semantics of the added fields:
 | Method | Path | Permission | Notes |
 |---|---|---|---|
 | GET | `/api/v1/staff` | `staff:read` | Paginated; never returns password hashes or tokens. |
-| POST | `/api/v1/staff` | `staff:manage` | Create account. Body: `{email, display_name, password?}` (extra fields rejected). If `password` is omitted, a strong password is generated and returned **once** in `generated_password`. Duplicate email → 409. Roles are granted separately via the role endpoints below. |
+| POST | `/api/v1/staff` | `staff:manage` | Create account. Body: `{email, display_name, password?}` (extra fields rejected). If `password` is omitted, a strong password is generated and returned **once** in `generated_password`. Duplicate email → 409. Roles are granted separately via the role endpoints below. Supports `Idempotency-Key` (see "Idempotent mutations"): a replay returns the recorded response with `generated_password: null` and creates no second account. |
 | PATCH | `/api/v1/staff/{user_id}` | `staff:manage` | Display name, activate/deactivate. Deactivating the last **active** `clinical_admin` → 409 `conflict`. Deactivation revokes all of that account's sessions immediately. |
 | POST | `/api/v1/staff/{user_id}/roles` | `role:assign` | `{ "role": "nurse" }`. Role keys: `doctor` \| `nurse` \| `clinical_admin`; any other key (including the removed `tech_admin`) → 400 `validation_error`. Self role assignment → 403. |
 | DELETE | `/api/v1/staff/{user_id}/roles/{role}` | `role:assign` | Role keys as above (unknown key → 400). Removing `clinical_admin` from the last **active** holder → 409 `conflict` (at least one active Admin must remain). |
@@ -155,7 +186,7 @@ Semantics of the added fields:
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| POST | `/api/v1/ai/ask` | `patient:read` | Body `{ "patient_id", "question" }` (patient-scoped) or `{ "question" }` (general lookup). Response (both modes): `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited (10/min per user, shared across both modes) and bounded (`question` 1–2000 chars, never blank). 401 anonymous; 403 without `patient:read`; 400 on malformed/oversized questions; 429 `rate_limited` with `Retry-After`; 503 `dependency_unavailable` when the LLM is disabled/unreachable. Every successful ask is **persisted to the caller's history** (below) in the same request lifecycle; the response shape is unchanged (no added keys). |
+| POST | `/api/v1/ai/ask` | `patient:read` | Body `{ "patient_id", "question" }` (patient-scoped) or `{ "question" }` (general lookup). Response (both modes): `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited (10/min per user, shared across both modes) and bounded (`question` 1–2000 chars, never blank). 401 anonymous; 403 without `patient:read`; 400 on malformed/oversized questions; 429 `rate_limited` with `Retry-After`; 503 `dependency_unavailable` when the LLM is disabled/unreachable. Every successful ask is **persisted to the caller's history** (below) in the same request lifecycle; the response shape is unchanged (no added keys). Supports `Idempotency-Key` (see "Idempotent mutations"): a replay returns the recorded answer with `Idempotency-Replayed: true` and does **not** call the LLM again. |
 | GET | `/api/v1/ai/conversations` | `patient:read` | **Conversation history (new, wave V).** The caller's **own** persisted exchanges, newest first, in the standard pagination envelope `{ "items", "total", "limit", "offset" }` (`limit` 1–100 default 20, `offset` ≥ 0). Query: `patient_id` (optional UUID filter — patient-scoped exchanges only), `limit`, `offset`; unknown query parameters are `400 validation_error`. Each item: `{ "id", "patient_id", "question", "answer", "used_tools", "citations", "model", "created_at" }` where `patient_id` is `null` for general-lookup questions, `citations` are the `{type, id}` references as in the ask response, and `created_at` is ISO-8601 UTC `Z`. 401 anonymous; 403 without `patient:read`. Rows of other users are **never** returned (server-side `user_id` scoping; a foreign read is simply empty). |
 | DELETE | `/api/v1/ai/conversations` | `patient:read` | Clear the caller's **entire own** history. `204` empty body. Audited as `ai.history.clear` (metadata only). CSRF-protected. |
 | DELETE | `/api/v1/ai/conversations/{conversation_id}` | `patient:read` | Delete one **own** exchange. `204`; a foreign or unknown id is `404 not_found` (concealment) and changes nothing. Audited as `ai.history.delete` (metadata only). CSRF-protected. |

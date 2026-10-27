@@ -14,11 +14,36 @@
 //     header; auth.login() bootstraps the cookie with a cheap GET first.)
 //   * 429 responses expose Retry-After (seconds) on ApiError.retryAfter.
 //   * X-Request-Id / error.request_id is preserved for bug reports.
+//   * Idempotency (docs/API.md "Idempotent mutations"): every mutating request
+//     (POST/PATCH/DELETE) carries a fresh `Idempotency-Key`
+//     (crypto.randomUUID; a random fallback for older engines). The key is a
+//     random token - it NEVER encodes or contains clinical data or anything
+//     user-authored. A retry of the SAME logical request reuses its key (pass
+//     `idempotencyKey` through the options); a NEW request always gets a fresh
+//     key. GET/HEAD/OPTIONS never send the header.
 // ---------------------------------------------------------------------------
 
 import { API_BASE_URL } from './config.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Fresh idempotency key: a random UUID (crypto.randomUUID where available,
+ * 128 bits of randomness otherwise). Never derived from request contents.
+ */
+export function newIdempotencyKey() {
+  const cryptoObj = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') return cryptoObj.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (cryptoObj && typeof cryptoObj.getRandomValues === 'function') {
+    cryptoObj.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 /** Application error with the contract's error-envelope fields. */
 export class ApiError extends Error {
@@ -104,7 +129,7 @@ async function parseBody(response) {
  * rejects with ApiError for every failure mode, including network failure
  * (status 0, code 'network_error').
  */
-export async function request(path, { method = 'GET', body, query, signal } = {}) {
+export async function request(path, { method = 'GET', body, query, signal, idempotencyKey } = {}) {
   const upperMethod = method.toUpperCase();
   const headers = { Accept: 'application/json' };
 
@@ -112,6 +137,9 @@ export async function request(path, { method = 'GET', body, query, signal } = {}
   if (!SAFE_METHODS.has(upperMethod)) {
     const csrf = readCsrfCookie();
     if (csrf) headers['X-CSRF-Token'] = csrf;
+    // Fresh key per mutating request; a retry of the same logical request
+    // reuses the key passed via `idempotencyKey` (see header comment).
+    headers['Idempotency-Key'] = idempotencyKey || newIdempotencyKey();
   }
 
   let response;

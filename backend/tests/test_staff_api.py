@@ -545,3 +545,37 @@ async def test_staff_changes_require_authentication(make_client, make_user) -> N
             f"/api/v1/staff/{target.id}", json={"is_active": False}, headers=csrf_headers(client)
         )
     ).status_code == 401
+
+
+# --- idempotency (docs/API.md "Idempotent mutations") -----------------------
+
+
+@pytest.mark.postgres
+async def test_create_staff_replays_the_same_idempotency_key(
+    auth_client, make_user, db_engine
+) -> None:
+    """A replayed POST /staff returns the recorded response and creates no second user."""
+    from sqlalchemy import select
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import StaffUser
+
+    account = await make_user(roles=("clinical_admin",))
+    client = await auth_client(account)
+    email = f"idem-{uuid.uuid4().hex[:10]}@example.com"
+    payload = {"email": email, "display_name": "Idempotent User"}
+    headers = {**csrf_headers(client), "Idempotency-Key": f"staff-{uuid.uuid4().hex}"}
+
+    first = await client.post("/api/v1/staff", json=payload, headers=headers)
+    assert first.status_code == 201
+    assert first.headers.get("Idempotency-Replayed") is None
+
+    second = await client.post("/api/v1/staff", json=payload, headers=headers)
+    assert second.status_code == 201
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert second.json()["user"]["id"] == first.json()["user"]["id"]
+    assert second.json()["generated_password"] is None
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        users = list((await session.scalars(select(StaffUser).where(StaffUser.email == email))).all())
+    assert len(users) == 1

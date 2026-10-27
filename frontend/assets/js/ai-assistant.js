@@ -26,6 +26,7 @@ import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
 const QUESTION_MAX = 2000;
@@ -409,6 +410,10 @@ async function askAssistant() {
   );
   const turn = ui.el('div', { class: 'ai-turn', role: 'status' });
   region.append(turn);
+  // Blur placeholder for the answer turn: low-detail blurred blocks stand in
+  // for the answer until it arrives (blur placeholders, DESIGN.md item 8).
+  turn.classList.add('blur-region', 'is-loading');
+  turn.classList.remove('is-ready');
   turn.append(
     ui.el('div', { class: 'state-panel' },
       ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
@@ -417,6 +422,7 @@ async function askAssistant() {
         text: 'The assistant is searching the synthetic records your account may read.',
       }),
     ),
+    ui.blurPlaceholderNode({ label: 'Consulting the assistant', variant: 'answer' }),
   );
   region.setAttribute('aria-busy', 'true');
 
@@ -451,6 +457,7 @@ async function askAssistant() {
       syncQuestionCounter();
     }
     turn.removeAttribute('role');
+    ui.markBlurReady(turn);
   }
 }
 
@@ -488,6 +495,10 @@ ui.onReady(async () => {
     }))
     : [];
   commandMenu.initCommandMenu({ user, commands: suggestionCommands });
+
+  // Pre-rendering (prefetch.js): on idle, warm the modules a navigation from
+  // this page will likely need (link hints only — nothing is executed early).
+  prefetch.warmModules(['assets/js/patient.js', 'assets/js/patients.js']);
 
   initAiPage(user);
 });

@@ -14,6 +14,7 @@
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as overlayHistory from './overlay-history.js';
 import * as ui from './ui.js';
 
 /** One history page for the caller (patientId narrows to one patient). */
@@ -30,11 +31,38 @@ export async function clearHistory() {
 
 let entrySequence = 0;
 
+// History-entry overlay handles (predictive back): one per expanded entry so
+// Back collapses the topmost expanded entry first, in LIFO order.
+const overlays = new WeakMap();
+
+function setExpanded(summary, detail, expanded) {
+  summary.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  detail.hidden = !expanded;
+  if (expanded && typeof detail.focus === 'function') detail.focus();
+}
+
 function toggleEntry(summary, detail) {
   const open = summary.getAttribute('aria-expanded') === 'true';
-  summary.setAttribute('aria-expanded', open ? 'false' : 'true');
-  detail.hidden = open;
-  if (!open && typeof detail.focus === 'function') detail.focus();
+  if (open) {
+    // UI collapse: consume the entry's history entry (predictive back).
+    const entry = overlays.get(detail);
+    if (entry) {
+      overlays.delete(detail);
+      overlayHistory.releaseOverlay(entry);
+    }
+    ui.withViewTransition(() => setExpanded(summary, detail, false));
+    return;
+  }
+  // Expand with a view transition (instant fallback / reduced motion), then
+  // register the overlay: Back collapses it before leaving the page.
+  ui.withViewTransition(() => setExpanded(summary, detail, true));
+  overlays.set(
+    detail,
+    overlayHistory.pushOverlay(() => {
+      overlays.delete(detail);
+      setExpanded(summary, detail, false);
+    }),
+  );
 }
 
 function answerParagraphs(answer) {

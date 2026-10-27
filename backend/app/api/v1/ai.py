@@ -18,6 +18,11 @@ as the `ai.ask` audit event; the frozen ask response shape is unchanged.
 
 Non-GET is CSRF-protected by app.auth.csrf middleware.
 
+An optional `Idempotency-Key` header makes the ask safe to retry
+(app.api.idempotency, docs/API.md "Idempotent mutations"): a replay of the same
+key + payload returns the recorded answer without a second LLM call, history
+row, or audit event.
+
 Flow: authn (session) -> authz (policy + check_patient_access in patient mode,
 re-check #1) -> per-user rate limit and request bounds (shared by both modes)
 -> bounded LLM tool loop where every MCP tool re-authorizes (re-check #2) ->
@@ -33,9 +38,11 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.api.deps import DbSession, Pagination, RequestId, reject_unknown_query
+from app.api.idempotency import ENDPOINT_AI_ASK, IdempotencyContext, IdempotencyKey
 from app.audit.logger import write_audit_event
 from app.auth.identity import client_ip
 from app.authorization.policy import Principal, require_permission
@@ -93,10 +100,31 @@ async def ask(
     body: AskRequest,
     db: DbSession,
     request_id: RequestId,
+    idem_key: IdempotencyKey,
     principal: Principal = Depends(require_permission("patient:read")),
-) -> AskResponse:
-    """Answer one bounded question (AI-generated): one patient or a general lookup."""
+) -> AskResponse | JSONResponse:
+    """Answer one bounded question (AI-generated): one patient or a general lookup.
+
+    Idempotency (docs/API.md "Idempotent mutations"): when the request carries
+    an `Idempotency-Key`, a REPLAY of the same key + payload within the
+    retention window returns the recorded answer with
+    `Idempotency-Replayed: true` WITHOUT re-running the LLM tool loop and
+    without writing a second history row or audit event; the same key with a
+    different payload is 409 `conflict`. The replay check runs before the
+    access check and rate limiter (the original request already passed both).
+    """
     settings = request.app.state.settings
+
+    idem = IdempotencyContext.build(
+        key=idem_key,
+        user_id=principal.user_uuid,
+        endpoint=ENDPOINT_AI_ASK,
+        payload=body.model_dump(mode="json"),
+    )
+    if idem is not None:
+        replay = await idem.lookup(db)
+        if replay is not None:
+            return replay.response()
 
     patient_id = body.patient_id
     resource_type = "patient" if patient_id is not None else GENERAL_LOOKUP_RESOURCE_TYPE
@@ -192,6 +220,22 @@ async def ask(
             model=outcome.model,
         )
 
+    response = AskResponse(
+        answer=outcome.answer,
+        used_tools=outcome.used_tools,
+        citations=citations,
+        model=outcome.model,
+        ai_generated=True,
+        disclaimer=DISCLAIMER,
+    )
+    if idem is not None:
+        # Recorded before the single commit below so the idempotency row commits
+        # in the same transaction as the history row and the ai.ask audit event.
+        # The answer contains no secrets (it is stored in history anyway).
+        replay = await idem.record(db, status_code=200, body=response.model_dump(mode="json"))
+        if replay is not None:
+            return replay.response()
+
     await _audit_ask(
         db,
         request=request,
@@ -201,14 +245,7 @@ async def ask(
         resource_id=resource_id,
         outcome="success",
     )
-    return AskResponse(
-        answer=outcome.answer,
-        used_tools=outcome.used_tools,
-        citations=citations,
-        model=outcome.model,
-        ai_generated=True,
-        disclaimer=DISCLAIMER,
-    )
+    return response
 
 
 # --- conversation history (per-user private, docs/API.md "AI assistant") ----

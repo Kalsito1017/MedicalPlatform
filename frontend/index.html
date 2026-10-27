@@ -8,6 +8,12 @@
   <meta name="description" content="MediCore Clinical Platform demonstration. Synthetic, fictional patient data only. Not clinically validated and not a medical device.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="assets/css/styles.css">
+  <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
+       resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
+  <link rel="modulepreload" href="assets/js/ui.js">
+  <link rel="modulepreload" href="assets/js/api.js">
+  <link rel="modulepreload" href="assets/js/cache.js">
+  <link rel="modulepreload" href="assets/js/auth.js">
   <script>
     /* Deployment override — see assets/js/config.js. Example:
        window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */

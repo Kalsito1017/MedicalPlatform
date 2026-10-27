@@ -10,6 +10,7 @@ import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js';
+import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 20;
@@ -20,6 +21,9 @@ const state = {
   offset: 0,
   total: 0,
 };
+
+// Signed-in user (for permission-gated intent prefetch of patient cards).
+let currentUser = null;
 
 function readStateFromUrl() {
   const params = new URLSearchParams(window.location.search);
@@ -62,6 +66,8 @@ function renderResults(page) {
   } else {
     ui.clear(region);
     region.append(renderCards(items));
+    // Hover/focus intent prefetch for the freshly rendered cards.
+    prefetch.wirePatientIntent(region, currentUser);
     const paginationHost = ui.el('div', {});
     region.append(paginationHost);
     ui.renderPagination(paginationHost, {
@@ -161,6 +167,7 @@ ui.onReady(async () => {
   try {
     const user = await auth.initAuthChrome({ active: 'patients' });
     if (!user) return;
+    currentUser = user;
     commandMenu.initCommandMenu({
       user,
       commands: [{
@@ -183,5 +190,8 @@ ui.onReady(async () => {
     return;
   }
   initSearchForm();
+  // Pre-rendering (prefetch.js): on idle, warm the modules a navigation from
+  // this page will likely need (link hints only — nothing is executed early).
+  prefetch.warmModules(['assets/js/patient.js']);
   load();
 });

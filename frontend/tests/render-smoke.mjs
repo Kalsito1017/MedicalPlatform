@@ -24,12 +24,20 @@
  * refetch updates the DOM only on change), the ⌘K command menu (open, filter,
  * run, Esc + focus restore, bounded patient entries, real shortcut list),
  * optimistic staff mutations with rollback and error toasts, and undo toasts
- * whose Undo action runs the inverse API call.
+ * whose Undo action runs the inverse API call, plus the wave UI-B patterns:
+ * blur placeholders swapping to sharp content on the ready class, the
+ * view-transition helper (usage + instant fallback), swipe-to-dismiss sheets
+ * (below-threshold keeps the sheet, above-threshold dismisses WITHOUT
+ * confirming), interruptible-animation class re-targeting under rapid
+ * toggling, predictive back (LIFO overlay unwinding via popstate/history
+ * simulation), idle module warm-up with modulepreload hints, hover-intent
+ * patient prefetch (permission-gated, in-memory), and idempotency keys on
+ * mutating requests.
  * What this does NOT verify: real browser DOM, layout/CSS, focus behaviour,
  * screen-reader output, and live backend integration.
  * ------------------------------------------------------------------------- */
 
-import { installDom, fixture, textOf, settle } from './domshim.mjs';
+import { installDom, fixture, textOf, settle, dispatchWindowEvent } from './domshim.mjs';
 
 const JS = new URL('../assets/js/', import.meta.url).href;
 // Shared module for date expectations: Intl output varies slightly across ICU
@@ -39,6 +47,9 @@ const ui = await import(JS + 'ui.js');
 // boots a fresh document (= a fresh page load), so it starts cold exactly like
 // a real navigation. The SWR scenario loads twice within one scenario.
 const cache = await import(JS + 'cache.js');
+// Wave UI-B pattern modules (shared instances with the page modules).
+const prefetch = await import(JS + 'prefetch.js');
+const toast = await import(JS + 'toast.js');
 let scenarioId = 0;
 const results = [];
 
@@ -2054,6 +2065,392 @@ function assertEqualLocal(actual, expected, message) {
     throw new Error(`${message} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`);
   }
 }
+
+/* ============================================ wave UI-B patterns (render) === */
+
+/* ---------------------------------------------------- blur placeholders */
+
+await check('blur placeholders swap to sharp content via the ready class', async () => {
+  const document = bootDom([]);
+  const region = document.createElement('div');
+  document.body.append(region);
+
+  ui.renderBlurPlaceholder(region, { label: 'Loading patient demographics', variant: 'hero' });
+  assert(region.classList.contains('blur-region'), 'the region must carry the blur-region class');
+  assert(region.classList.contains('is-loading'), 'the region must be marked loading');
+  assert(region.querySelector('.blur-placeholder'), 'the blurred placeholder must render');
+  assertContains(textOf(region), 'Loading patient demographics', 'the placeholder must announce its label');
+  assert(region.querySelectorAll('.blur-block').length >= 3, 'placeholder blocks must approximate the layout');
+
+  ui.clear(region);
+  region.append(ui.el('p', { text: 'Real demographics' }));
+  ui.markBlurReady(region);
+  assertEqualLocal(region.querySelector('.blur-placeholder'), null, 'the placeholder must be gone');
+  assert(region.classList.contains('is-ready'), 'the ready class must be toggled on');
+  assert(!region.classList.contains('is-loading'), 'the loading class must clear');
+
+  // Re-targeting: further swaps stay consistent (class toggling is idempotent).
+  ui.renderBlurPlaceholder(region, { variant: 'answer' });
+  ui.markBlurReady(region);
+  assert(region.classList.contains('is-ready'), 'repeated swaps settle on the ready state');
+});
+
+await check('patient header card shows a blur placeholder that sharpens in on arrival', async () => {
+  let releaseDemographics = null;
+  const baseFetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  globalThis.fetch = async (url, init = {}) => {
+    const path = url.split('?')[0];
+    if (path.endsWith('/patients/p1')) {
+      // Pending demographics request (exactly like a real slow fetch).
+      return new Promise((resolve) => {
+        releaseDemographics = () => resolve(json(200, PATIENT));
+      });
+    }
+    return baseFetch(url, init);
+  };
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const region = document.getElementById('demographics-region');
+  assert(region.querySelector('.blur-placeholder'), 'the hero header must show the blur placeholder');
+  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'hero regions use blur placeholders, not skeletons');
+
+  releaseDemographics();
+  await settle();
+  assertContains(textOf(region), 'MRN-0001', 'the real demographics must replace the placeholder');
+  assertEqualLocal(region.querySelector('.blur-placeholder'), null, 'the placeholder must be gone on arrival');
+  assert(region.classList.contains('is-ready'), 'the ready class must trigger the blur-in');
+});
+
+/* ---------------------------------------------------- view transitions */
+
+await check('panel swaps run through the view-transition helper with an instant fallback', async () => {
+  globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  const document = bootDom([
+    ...CHROME_IDS,
+    ...PATIENT_IDS,
+    {
+      id: 'patient-tabs',
+      class: 'tabs',
+      attrs: { role: 'tablist' },
+      children: [
+        {
+          id: 'tab-summary',
+          tag: 'button',
+          class: 'tab is-active',
+          attrs: { role: 'tab', 'aria-controls': 'panel-summary', 'aria-selected': 'true' },
+          text: 'Summary',
+        },
+        {
+          id: 'tab-labs',
+          tag: 'button',
+          class: 'tab',
+          attrs: { role: 'tab', 'aria-controls': 'panel-labs', 'aria-selected': 'false', tabindex: '-1' },
+          text: 'Labs',
+        },
+      ],
+    },
+    { id: 'panel-summary', class: 'tab-panel', attrs: { role: 'tabpanel' } },
+    { id: 'panel-labs', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  ]);
+  globalThis.location.search = '?id=p1';
+
+  let transitions = 0;
+  const original = document.startViewTransition;
+  document.startViewTransition = (update) => {
+    transitions += 1;
+    return original.call(document, update);
+  };
+
+  await freshPage('patient.js');
+  await settle();
+
+  await document.getElementById('tab-labs').dispatch('click');
+  assertEqualLocal(document.getElementById('panel-labs').hidden, false, 'the labs panel must show');
+  assertEqualLocal(document.getElementById('panel-summary').hidden, true, 'the summary panel must hide');
+  assert(transitions >= 1, 'tab swaps must run through the view-transition helper');
+
+  // Feature-detected fallback: without startViewTransition the swap is instant.
+  document.startViewTransition = undefined;
+  transitions = 0;
+  await document.getElementById('tab-summary').dispatch('click');
+  assertEqualLocal(document.getElementById('panel-summary').hidden, false, 'the fallback must still switch panels');
+  assertEqualLocal(document.getElementById('panel-labs').hidden, true, 'the fallback must hide the other panel');
+  assertEqualLocal(transitions, 0, 'no transition may run without the API');
+});
+
+/* ------------------------------------------------- swipe-to-dismiss sheets */
+
+await check('swipe-to-dismiss keeps the sheet below the threshold and dismisses above it without confirming', async () => {
+  bootDom([]);
+
+  // First gesture: below the threshold — the sheet stays open and springs back.
+  let resolved;
+  const promise = ui.confirmDialog({
+    title: 'Sign out',
+    message: 'Sign out of the demo?',
+    confirmLabel: 'Sign out',
+  });
+  promise.then((value) => {
+    resolved = value;
+  });
+  const dialog = document.getElementById('app-dialog');
+  assert(dialog && dialog.open, 'the confirm dialog must open as a sheet');
+  const grabber = dialog.querySelector('.sheet-grabber');
+  assert(grabber, 'the sheet must expose a grab handle');
+
+  await grabber.dispatch('pointerdown', { clientX: 100, clientY: 100, pointerType: 'touch' });
+  await grabber.dispatch('pointermove', { clientX: 100, clientY: 140, pointerType: 'touch' });
+  assertEqualLocal(dialog.style.getPropertyValue('--sheet-dy'), '40px', 'the sheet must follow the finger');
+  await grabber.dispatch('pointerup', {});
+  await settle();
+  assertEqualLocal(resolved, undefined, 'a small drag must not resolve the dialog');
+  assertEqualLocal(dialog.open, true, 'a small drag must keep the sheet open');
+  assertEqualLocal(dialog.style.getPropertyValue('--sheet-dy'), '0px', 'the sheet must spring back');
+
+  // Second gesture: past the threshold — dismissed like cancel, NEVER confirmed.
+  await grabber.dispatch('pointerdown', { clientX: 100, clientY: 100, pointerType: 'touch' });
+  await grabber.dispatch('pointermove', { clientX: 100, clientY: 260, pointerType: 'touch' });
+  await grabber.dispatch('pointerup', {});
+  await settle();
+  assertEqualLocal(resolved, false, 'swipe-dismiss must resolve like cancel, never confirm');
+  assertEqualLocal(dialog.open, false, 'the sheet must close past the threshold');
+});
+
+/* ------------------------------------------------- interruptible animations */
+
+await check('state-coupled animation classes re-target cleanly under rapid toggling', async () => {
+  const document = bootDom([]);
+
+  // Sync chip: on -> off -> on settles on exactly one chip.
+  const host = document.createElement('div');
+  document.body.append(host);
+  ui.setSyncIndicator(host, true);
+  ui.setSyncIndicator(host, false);
+  ui.setSyncIndicator(host, true);
+  assertEqualLocal(host.querySelectorAll('.sync-chip').length, 1, 'the sync chip must re-target to a single instance');
+
+  // Blur region: repeated placeholder/ready swaps settle on the ready state.
+  const region = document.createElement('div');
+  document.body.append(region);
+  for (let i = 0; i < 3; i += 1) {
+    ui.renderBlurPlaceholder(region, { variant: 'hero' });
+    ui.markBlurReady(region);
+  }
+  assert(region.classList.contains('is-ready'), 'blur swaps must settle on the ready state');
+  assert(!region.classList.contains('is-loading'), 'blur swaps must clear the loading state');
+
+  // Sheet: an interrupted drag followed by a dismiss settles exactly once.
+  let resolvedCount = 0;
+  ui.confirmDialog({ title: 'Interrupt me', message: 'Rapid gestures.', confirmLabel: 'Confirm' })
+    .then(() => {
+      resolvedCount += 1;
+    });
+  const dialog = document.getElementById('app-dialog');
+  const grabber = dialog.querySelector('.sheet-grabber');
+  await grabber.dispatch('pointerdown', { clientX: 0, clientY: 0, pointerType: 'touch' });
+  await grabber.dispatch('pointermove', { clientX: 0, clientY: 60, pointerType: 'touch' });
+  await grabber.dispatch('pointercancel', {});
+  await grabber.dispatch('pointerdown', { clientX: 0, clientY: 0, pointerType: 'touch' });
+  await grabber.dispatch('pointermove', { clientX: 0, clientY: 200, pointerType: 'touch' });
+  await grabber.dispatch('pointerup', {});
+  await settle();
+  assertEqualLocal(resolvedCount, 1, 'interrupted gestures must settle exactly once');
+  assertEqualLocal(dialog.open, false, 'the interrupted-then-dismissed sheet must close');
+
+  // Toast: dismissed mid-entrance, then re-shown — the fresh toast survives.
+  const shown = toast.showToast({ message: 'First notification' });
+  shown.dismiss();
+  toast.showToast({ message: 'Second notification' });
+  await settle(300);
+  const toasts = textOf(document.getElementById('toast-region'));
+  assertContains(toasts, 'Second notification', 'the fresh toast must stay visible');
+  assert(!toasts.includes('First notification'), 'the interrupted toast must leave after its exit transition');
+});
+
+/* ------------------------------------------------------- predictive back */
+
+await check('predictive back dismisses the topmost overlay first and unwinds LIFO', async () => {
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    patients: { items: [PATIENT], total: 1, limit: 50, offset: 0 },
+  });
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const opener = document.getElementById('patient-search');
+  opener.focus();
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  const menu = document.getElementById('command-menu');
+  assert(menu.open, 'the palette must open');
+  assertEqualLocal(globalThis.history.length, 2, 'opening an overlay must push one history entry');
+
+  // Second overlay on top: the About dialog (footer control, real UI path).
+  const aboutButton = document.querySelectorAll('[data-open-about]')[0];
+  await aboutButton.dispatch('click');
+  const dialog = document.getElementById('app-dialog');
+  assert(dialog.open, 'the About dialog must stack on top');
+  assertEqualLocal(globalThis.history.length, 3, 'each overlay owns one history entry');
+
+  // Back #1: only the TOPMOST overlay closes (LIFO).
+  globalThis.history.back();
+  await settle();
+  assertEqualLocal(dialog.open, false, 'Back must dismiss the topmost overlay first');
+  assertEqualLocal(menu.open, true, 'the palette must stay open beneath it');
+
+  // Back #2: the palette closes.
+  globalThis.history.back();
+  await settle();
+  assertEqualLocal(menu.open, false, 'the second Back must dismiss the palette');
+  assertEqualLocal(globalThis.history.length, 1, 'overlay history entries must unwind cleanly');
+  assertEqualLocal(globalThis.location.href, 'http://localhost/page.html', 'URL state must be untouched');
+
+  // UI close (Esc) consumes its own entry: no history leak.
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  assertEqualLocal(globalThis.history.length, 2, 'reopening must push one entry');
+  await document.getElementById('command-menu-input').dispatch('keydown', {
+    key: 'Escape',
+    prevented: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+  });
+  await settle();
+  assertEqualLocal(document.getElementById('command-menu').open, false, 'Esc must close the palette');
+  assertEqualLocal(globalThis.history.length, 1, 'a UI close must consume its history entry');
+
+  // The mobile nav drawer participates too.
+  await document.getElementById('nav-toggle').dispatch('click');
+  assertEqualLocal(globalThis.history.length, 2, 'the drawer must push one entry');
+  globalThis.history.back();
+  await settle();
+  assertEqualLocal(document.getElementById('nav-toggle').getAttribute('aria-expanded'), 'false', 'Back must close the drawer');
+});
+
+await check('expanded history entries unwind through Back in LIFO order', async () => {
+  globalThis.fetch = makeFetch({ me: DOCTOR, conversations: CONVERSATIONS });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const list = document.getElementById('ai-history-list');
+  const summaries = list.querySelectorAll('.ai-history__summary');
+  await summaries[0].dispatch('click');
+  await summaries[1].dispatch('click');
+  assertEqualLocal(summaries[0].getAttribute('aria-expanded'), 'true', 'first entry must expand');
+  assertEqualLocal(summaries[1].getAttribute('aria-expanded'), 'true', 'second entry must expand');
+  assertEqualLocal(globalThis.history.length, 3, 'each expanded entry owns one history entry');
+
+  // Back collapses the most recently expanded entry first.
+  globalThis.history.back();
+  await settle();
+  assertEqualLocal(summaries[1].getAttribute('aria-expanded'), 'false', 'Back must collapse the newest expansion first');
+  assertEqualLocal(summaries[0].getAttribute('aria-expanded'), 'true', 'the older expansion must stay');
+
+  globalThis.history.back();
+  await settle();
+  assertEqualLocal(summaries[0].getAttribute('aria-expanded'), 'false', 'the second Back must collapse the older one');
+  assertEqualLocal(globalThis.history.length, 1, 'history entries must unwind cleanly');
+
+  // A UI collapse consumes its own entry.
+  await summaries[0].dispatch('click');
+  assertEqualLocal(globalThis.history.length, 2, 'expanding must push one entry');
+  await summaries[0].dispatch('click');
+  assertEqualLocal(globalThis.history.length, 1, 'collapsing must consume its entry');
+});
+
+/* -------------------------------------- pre-rendering + intent prefetch */
+
+await check('module warm-up registers modulepreload hints on idle', async () => {
+  bootDom([]);
+  const href = `assets/js/warm-${Date.now()}.js`;
+  prefetch.warmModules([href], { schedule: (fn) => fn() });
+  const links = document.querySelectorAll('link');
+  const match = links.filter(
+    (link) => link.getAttribute('rel') === 'modulepreload' && link.getAttribute('href') === href,
+  );
+  assertEqualLocal(match.length, 1, 'the idle warm-up must add a modulepreload hint');
+  // Idempotent: warming the same href twice adds one hint.
+  prefetch.warmModules([href], { schedule: (fn) => fn() });
+  assertEqualLocal(
+    document.querySelectorAll('link').filter((link) => link.getAttribute('href') === href).length,
+    1,
+    'module hints must be added once per href',
+  );
+});
+
+await check('hover intent prefetch warms patient-detail data and stays permission-gated', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: DOCTOR,
+    patients: { items: [PATIENT], total: 1, limit: 20, offset: 0 },
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const card = document.getElementById('patients-region').querySelector('a');
+  assert(card, 'the patient card must render');
+  assertEqualLocal(card.getAttribute('data-prefetch-patient'), 'p1', 'cards must carry the prefetch hook');
+
+  await card.dispatch('pointerenter', {});
+  await settle(400); // past the ~150ms intent debounce
+  const detailCalls = calls.filter((call) => call.url.includes('/api/v1/patients/p1'));
+  assert(detailCalls.length >= 1, 'hover intent must warm the patient-detail data');
+  assert(cache.peek(cache.keyFor('/patients/p1')) !== null, 'the warm-up must land in the in-memory cache');
+
+  // Permission gate: without patient:read nothing may be prefetched.
+  const before = calls.length;
+  prefetch.warmPatientRecord('p2', NO_PATIENT_READ);
+  await settle(300);
+  assertEqualLocal(calls.length, before, 'no prefetch may run beyond the user permissions');
+});
+
+/* ------------------------------------------- idempotency key (frontend) */
+
+await check('AI asks carry an Idempotency-Key with a fresh value per request', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: AI_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-submit').dispatch('click');
+  await settle();
+
+  input.value = 'And the potassium?';
+  await input.dispatch('input');
+  await document.getElementById('ai-submit').dispatch('click');
+  await settle();
+
+  const askCalls = calls.filter((call) => call.url.includes('/ai/ask'));
+  assertEqualLocal(askCalls.length, 2, 'two asks expected');
+  const keys = askCalls.map((call) => call.init.headers['Idempotency-Key']);
+  for (const key of keys) {
+    assert(typeof key === 'string' && key.length > 0, 'every mutating call must carry an Idempotency-Key');
+  }
+  assert(keys[0] !== keys[1], 'each NEW request must get a fresh key');
+  assert(!JSON.stringify(keys).includes('haemoglobin'), 'the key must never encode clinical data');
+});
 
 /* ------------------------------------------------------------------ report */
 

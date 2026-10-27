@@ -1070,3 +1070,31 @@ async def test_panel_acceptance_question_with_drilldown_stays_within_budget(
     summary_rows = await audit_rows(action="mcp.get_patient_summary", request_id=request_id)
     assert len(panel_rows) == 1 and len(summary_rows) == 1  # 2 tool calls total
     assert 2 <= general_mode_max_tool_calls()  # fits the general-mode budget
+
+
+# --- idempotency (docs/API.md "Idempotent mutations") -----------------------
+
+
+@pytest.mark.postgres
+async def test_ask_replay_with_idempotency_key_does_not_call_the_llm_again(
+    auth_client, make_user, monkeypatch
+) -> None:
+    """A replayed POST /ai/ask returns the recorded answer without a second LLM call."""
+    account = await make_user(roles=("doctor",))
+    scripted = ScriptedLLMProvider(text_result("First scripted answer."), text_result("Never used."))
+    use_provider(monkeypatch, scripted)
+
+    client = await auth_client(account)
+    headers = {**csrf_headers(client), "Idempotency-Key": f"ask-{uuid.uuid4().hex}"}
+    body = {"question": "Which synthetic patients are on metformin?"}
+
+    first = await client.post(ASK_PATH, json=body, headers=headers)
+    assert first.status_code == 200
+    assert first.headers.get("Idempotency-Replayed") is None
+    assert len(scripted.calls) == 1
+
+    second = await client.post(ASK_PATH, json=body, headers=headers)
+    assert second.status_code == 200
+    assert second.headers.get("Idempotency-Replayed") == "true"
+    assert second.json() == first.json()
+    assert len(scripted.calls) == 1, "the replay must not reach the provider"

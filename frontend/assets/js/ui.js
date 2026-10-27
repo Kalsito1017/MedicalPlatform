@@ -1,8 +1,13 @@
 // ---------------------------------------------------------------------------
-// ui.js — shared design-system and DOM helpers. No imports, no side effects at
-// module load, so it stays testable outside the browser.
+// ui.js — shared design-system and DOM helpers. No side effects at module
+// load, so it stays testable outside the browser. It imports only leaf
+// helpers (overlay-history.js, sheet.js, prefetch.js) — never a page module.
 // Never logs data: nothing in this module (or the app) writes to the console.
 // ---------------------------------------------------------------------------
+
+import * as overlayHistory from './overlay-history.js';
+import * as prefetch from './prefetch.js';
+import * as sheet from './sheet.js';
 
 /* ------------------------------------------------------------------ utils */
 
@@ -222,6 +227,145 @@ export function shortcutHint(...children) {
   return el('p', { class: 'ai-keyboard-hint' }, children.flat());
 }
 
+/* ---------------------------------------------------- motion + transitions */
+
+/**
+ * True when the user asked for reduced motion. Used to skip view transitions
+ * (everything else is handled by the CSS prefers-reduced-motion rules).
+ */
+export function prefersReducedMotion() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Small wrapper around `document.startViewTransition` for section/panel swaps
+ * (patient tabs, history expand/collapse, command menu open/close, dialogs).
+ * Feature-detected with a graceful fallback: without support — or under
+ * prefers-reduced-motion — `update` runs immediately and the returned object
+ * mimics the ViewTransition shape (finished/ready/updateCallbackDone promises,
+ * a no-op skipTransition). Update functions are synchronous DOM swaps, exactly
+ * what the API expects. Stable `view-transition-name`s live in styles.css on
+ * the main content regions (unique per visible element).
+ */
+export function withViewTransition(update) {
+  const run = typeof update === 'function' ? update : () => undefined;
+  const start =
+    typeof document !== 'undefined' && typeof document.startViewTransition === 'function'
+      ? document.startViewTransition.bind(document)
+      : null;
+  if (start === null || prefersReducedMotion()) {
+    const result = run();
+    return {
+      updateCallbackDone: Promise.resolve(result),
+      ready: Promise.resolve(result),
+      finished: Promise.resolve(result),
+      skipTransition() {},
+    };
+  }
+  return start(run);
+}
+
+/* ------------------------------------------------- blur placeholders */
+
+/**
+ * Soft blurred/low-detail placeholder for HERO-ish async regions (patient
+ * header card, AI answer turn, dashboard welcome) — deliberately distinct from
+ * the shimmer skeletons used for tables/lists. Blurred gradient blocks
+ * approximate the content layout (see styles.css `.blur-placeholder`); when
+ * the content arrives, `markBlurReady` toggles the `is-ready` class and the
+ * real content fades/sharpens in (pure CSS transition/animation on the class —
+ * no style writes). prefers-reduced-motion swaps instantly (global rule).
+ */
+export function blurPlaceholderNode({ label = 'Loading', variant = 'hero' } = {}) {
+  const blocks = [];
+  const add = (name) => blocks.push(el('div', { class: `blur-block blur-block--${name}`, 'aria-hidden': 'true' }));
+  if (variant === 'answer') {
+    add('lg');
+    add('lg');
+    add('md');
+    add('sm');
+  } else if (variant === 'welcome') {
+    add('title');
+    add('lg');
+    add('md');
+  } else {
+    add('circle');
+    add('lg');
+    add('md');
+    add('sm');
+  }
+
+  return el('div', {
+    class: `blur-placeholder blur-placeholder--${variant}`,
+    role: 'status',
+    'aria-live': 'polite',
+  },
+    el('p', { class: 'visually-hidden', text: `${label}\u2026` }),
+    el('div', { class: 'blur-blocks' }, blocks),
+  );
+}
+
+export function renderBlurPlaceholder(container, options = {}) {
+  if (!container || !container.classList) return null;
+  clear(container);
+  container.classList.add('blur-region');
+  container.classList.remove('is-ready');
+  container.classList.add('is-loading');
+  const holder = blurPlaceholderNode(options);
+  container.append(holder);
+  return holder;
+}
+
+/**
+ * Mark a blur region ready: the placeholder is replaced by the caller's real
+ * content (render it first), and the `is-ready` class triggers the blur-in
+ * transition. Safe to call repeatedly (class toggling is re-targetable).
+ */
+export function markBlurReady(container) {
+  if (!container || !container.classList) return;
+  container.classList.remove('is-loading');
+  container.classList.add('is-ready');
+}
+
+/* ------------------------------------------------- command shortcut label */
+
+function detectPlatform() {
+  const nav = typeof navigator === 'undefined' ? null : navigator;
+  if (!nav) return '';
+  const data = nav.userAgentData && nav.userAgentData.platform;
+  if (typeof data === 'string' && data.trim() !== '') return data;
+  if (typeof nav.platform === 'string' && nav.platform.trim() !== '') return nav.platform;
+  if (typeof nav.userAgent === 'string' && nav.userAgent.trim() !== '') return nav.userAgent;
+  return '';
+}
+
+/**
+ * Platform-neutral ⌘K chip label: "⌘K" on Apple platforms, "Ctrl K"
+ * elsewhere, "Ctrl/⌘ K" when the platform cannot be determined. Pass a
+ * platform string to test the mapping.
+ */
+export function commandShortcutLabel(platform = null) {
+  const value = platform == null ? detectPlatform() : String(platform);
+  if (/mac|iphone|ipad|ipod/i.test(value)) return '\u2318K';
+  if (value.trim() === '') return 'Ctrl/\u2318 K';
+  return 'Ctrl K';
+}
+
+/** Rewrite every `data-command-shortcut` chip for the current platform. */
+export function applyCommandShortcutLabels(root) {
+  const scope = root || (typeof document !== 'undefined' ? document : null);
+  if (!scope) return;
+  const label = commandShortcutLabel();
+  for (const node of scope.querySelectorAll('[data-command-shortcut]')) {
+    node.textContent = label;
+  }
+}
+
 /* ---------------------------------------------------------- patient cards */
 
 function firstValueOf(source, keys) {
@@ -294,6 +438,9 @@ export function renderPatientCard(patient) {
   return el('a', {
     class: 'patient-card card',
     href: `patient.html?id=${encodeURIComponent(id)}`,
+    // Hover/focus intent prefetch target (prefetch.js): hovering or tabbing
+    // onto the card warms the patient-detail data through cache.js.
+    'data-prefetch-patient': String(id),
   }, inner);
 }
 
@@ -565,8 +712,14 @@ export function showGlobalBanner({ tone = 'danger', message, actionLabel, onActi
 function ensureDialogHost() {
   let dialog = document.getElementById('app-dialog');
   if (dialog) return dialog;
+
+  // The grab handle doubles as the swipe-to-dismiss surface on sheet widths
+  // (≤620px): the sheet follows the finger and dismisses past a threshold with
+  // cancel semantics — exactly like Esc, it never confirms (sheet.js).
+  const grabber = el('div', { class: 'sheet-grabber', 'aria-hidden': 'true' });
   dialog = el('dialog', { id: 'app-dialog', class: 'dialog' },
     el('form', { class: 'dialog__inner', method: 'dialog' },
+      grabber,
       el('div', { class: 'dialog__head' },
         el('span', {
           class: 'dialog__icon',
@@ -581,7 +734,26 @@ function ensureDialogHost() {
     ),
   );
   document.body.append(dialog);
+  sheet.attachSwipeToDismiss(dialog, {
+    close: () => closeDialog(dialog),
+    handle: grabber,
+  });
   return dialog;
+}
+
+/**
+ * One history entry per open dialog (predictive back, overlay-history.js):
+ * Back dismisses the dialog first with its exit transition instead of leaving
+ * the page. Released however the dialog closes (Esc, buttons, swipe-dismiss).
+ */
+function bindDialogOverlay(dialog) {
+  sheet.resetSheetState(dialog);
+  const overlay = overlayHistory.pushOverlay(() => closeDialog(dialog));
+  const done = () => {
+    dialog.removeEventListener('close', done);
+    overlayHistory.releaseOverlay(overlay);
+  };
+  dialog.addEventListener('close', done);
 }
 
 /** Sets the dialog head icon tone (default informational shield). */
@@ -593,8 +765,12 @@ function setDialogIcon(dialog, { danger = false, glyph = 'shield' } = {}) {
 }
 
 function closeDialog(dialog, value) {
-  if (typeof dialog.close === 'function' && dialog.open) dialog.close(value);
-  else dialog.removeAttribute('open');
+  // The close is wrapped in a view transition so overlays dismiss with the
+  // shared exit transition where the browser supports it (instant fallback).
+  withViewTransition(() => {
+    if (typeof dialog.close === 'function' && dialog.open) dialog.close(value);
+    else dialog.removeAttribute('open');
+  });
 }
 
 /**
@@ -662,6 +838,7 @@ export function confirmDialog({
     dialog.addEventListener('close', onClose);
     if (typeof dialog.showModal === 'function') {
       dialog.showModal();
+      bindDialogOverlay(dialog);
       const cancel = actions.querySelector('button');
       if (cancel) cancel.focus();
     } else if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
@@ -719,6 +896,7 @@ export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClo
 
   if (typeof dialog.showModal === 'function') {
     dialog.showModal();
+    bindDialogOverlay(dialog);
     const first = actions.querySelector('button');
     if (first) first.focus();
   }
@@ -745,8 +923,10 @@ export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
     onClick: () => closeDialog(dialog),
   }, 'Close'));
 
-  if (typeof dialog.showModal === 'function') dialog.showModal();
-  else if (typeof window !== 'undefined' && typeof window.alert === 'function') {
+  if (typeof dialog.showModal === 'function') {
+    dialog.showModal();
+    bindDialogOverlay(dialog);
+  } else if (typeof window !== 'undefined' && typeof window.alert === 'function') {
     window.alert(title);
   }
 }
@@ -850,10 +1030,28 @@ function wireNavToggle() {
   const toggle = document.getElementById('nav-toggle');
   const nav = document.getElementById('site-nav');
   if (!toggle || !nav) return;
+  let overlay = null;
+  const setOpen = (open) => {
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    nav.classList.toggle('is-open', open);
+  };
   toggle.addEventListener('click', () => {
     const expanded = toggle.getAttribute('aria-expanded') === 'true';
-    toggle.setAttribute('aria-expanded', expanded ? 'false' : 'true');
-    nav.classList.toggle('is-open', !expanded);
+    if (expanded) {
+      // UI close: consume the drawer's history entry (predictive back).
+      if (overlay) {
+        overlayHistory.releaseOverlay(overlay);
+        overlay = null;
+      }
+      setOpen(false);
+    } else {
+      setOpen(true);
+      // Back closes the drawer first instead of leaving the page (LIFO).
+      overlay = overlayHistory.pushOverlay(() => {
+        overlay = null;
+        setOpen(false);
+      });
+    }
   });
 }
 
@@ -866,10 +1064,16 @@ export function initChrome({ user = null, active = null, navItems = [], onLogout
   if (typeof document === 'undefined') return;
   wireNavToggle();
   wireFooterDialogs();
+  applyCommandShortcutLabels();
 
   const navNode = document.getElementById('site-nav');
   if (navNode) renderNav(navNode, navItems, active);
 
   const userArea = document.getElementById('user-area');
   if (userArea) renderUserArea(userArea, user, onLogout);
+
+  // Hover/focus intent prefetch (prefetch.js): patient links/cards that exist
+  // at chrome-init time warm the patient-detail data on intent; permission
+  // gated (patient:read) and in-memory only.
+  prefetch.wirePatientIntent(document, user);
 }
