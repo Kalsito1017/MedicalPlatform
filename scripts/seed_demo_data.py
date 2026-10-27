@@ -17,13 +17,36 @@ prescription_history, field-level diffs in prescription_change). The 17-entry
 lab test catalog, its reference ranges, and the 8 permission keys are seeded as
 reference data.
 
+Every encounter is attributed to a seeded demo clinician
+(encounter.practitioner_id): the demo doctor for the majority of visits, the
+demo nurse for roughly a quarter (a realistic mixed panel). Rows seeded before
+the column existed are backfilled in place when practitioner_id is NULL — safe
+because the column is staff attribution metadata (nullable, ON DELETE SET
+NULL; see app.models.patient) and rows that already carry an attribution are
+never touched, so the backfill cannot overwrite anyone's data.
+
 Idempotent: rows are created only when missing, keyed by natural keys (role
 key, staff email, patient MRN, medication code) or deterministic demo UUIDs.
-Running the script twice creates no duplicates and prints the same counts. All
-timestamps derive from the fixed ANCHOR_DAY below (never the wall clock), so
-the dataset is fully deterministic and re-runs never churn values. New-entity
-draws use a second deterministic RNG stream (CLINICAL_RNG_SEED) so the legacy
-dataset's values are byte-identical to earlier seeds.
+Running the script twice creates no duplicates and prints the same counts.
+Timestamps derive from the SEED RUN DAY (the UTC date of the run, see
+run_day_utc below) plus deterministic day-offsets drawn from the seeded RNG
+streams — never the wall clock's time of day — so a fresh database is always
+"recent" when it is seeded: each patient's newest visit lands in a recency
+band (FRESH_/RECENT_ specs) that keeps the practitioner panel's 7- and 30-day
+windows populated while older visits still span ~18 months for trend lookups.
+The same run day plus the same specs produces byte-identical output.
+
+Accepted trade-off: re-seeding the SAME database days later still creates 0
+rows and never rewrites existing rows' dates (the natural keys decide
+creation), so those rows keep their original dates and eventually go stale.
+The freshness guarantee therefore applies to a FRESH database, which is the
+documented demo-reset path: docker compose down -v && up && migrate && seed.
+
+New-entity draws use a second deterministic RNG stream (CLINICAL_RNG_SEED),
+and every draw keeps the exact shape and order of earlier seed versions, so
+natural keys and pre-existing values never shift: re-seeding an existing
+database creates nothing, rewrites nothing (its rows keep their original
+dates — the trade-off above), and only fills practitioner columns left NULL.
 
 Usage:
     cd backend && uv run python ../scripts/seed_demo_data.py
@@ -76,14 +99,9 @@ from app.models import (
 DEMO_NAMESPACE = uuid.UUID("2f1b6d1e-0a3c-4c6a-9a4f-8d5b3e7c2a10")
 RNG_SEED = 20261026
 # Second deterministic stream for the clinical data layer (vitals, diagnoses,
-# notes, assignments, orders, prescription audit trail). Kept separate so the
-# legacy draws above stay a byte-identical sequence.
+# notes, assignments, orders, prescription audit trail, practitioner
+# attribution). Kept separate so the legacy draw sequence stays its own group.
 CLINICAL_RNG_SEED = 20261027
-
-# Fixed anchor for every seeded timestamp (the "today" of the demo dataset).
-# Derived dates are deterministic offsets from this anchor, never wall-clock
-# time, so re-seeding produces byte-identical dates and cannot churn rows.
-ANCHOR_DAY = date(2026, 10, 26)
 
 ROLE_DESCRIPTIONS = {
     "doctor": "Clinical user: views synthetic patient records and clinical data.",
@@ -204,6 +222,45 @@ TRIGGER_ENCOUNTER_SUMMARIES = {
     ),
 }
 
+# Recency bands for each patient's NEWEST encounter relative to the seed run
+# day (run_day_utc). Keyed by MRN so every fresh seed has a populated
+# practitioner-panel window: the "last 7 days" and "last 30 days" roundups of
+# get_my_recent_patients always have rows. The listed patients deliberately
+# span the demo's clinical profiles (diabetes, renal/high-K, anemia, healthy)
+# so the panel roundup is clinically varied. Patients not listed get their
+# newest visit in the wider spread below; older visits of every patient step
+# back on the legacy 85-day grid so trends keep working (see
+# seed_patient_details). Each band draw is one unconditional RNG draw.
+FRESH_ENCOUNTER_MRNS: tuple[str, ...] = (
+    "DEMO-0002",  # diabetes + dyslipidemia
+    "DEMO-0003",  # healthy
+    "DEMO-0004",  # hyperkalemia + hypertension
+    "DEMO-0007",  # anemia
+)
+RECENT_ENCOUNTER_MRNS: tuple[str, ...] = (
+    "DEMO-0008",  # diabetes
+    "DEMO-0012",  # hyperkalemia + renal
+    "DEMO-0018",  # renal + anemia
+    "DEMO-0025",  # anemia + low vitamin D
+    "DEMO-0045",  # healthy
+)
+
+# Day-offset bands (inclusive) for the newest visit. 1-6 days is always
+# inside the panel's inclusive [now - 7 days, now] window whatever hour the
+# demo runs (day 0 is excluded so a visit can never be stamped later than
+# "now"); 7-29 days is always inside [now - 30 days, now]. The spread band
+# starts past 30 days so the window counts stay the band counts.
+FRESH_DAYS_RANGE: tuple[int, int] = (1, 6)
+RECENT_DAYS_RANGE: tuple[int, int] = (7, 29)
+SPREAD_DAYS_RANGE: tuple[int, int] = (35, 200)
+
+# Practitioner attribution: one unconditional clinical_rng roll per encounter;
+# the visit is nurse-led when the roll falls below this chance. The value is
+# tuned to the frozen roll stream (deterministic draws cannot be re-rolled to
+# the mean) so the realized mix of the permanent dataset is ~25% demo nurse /
+# ~75% demo doctor — the doctor still appears on the majority of visits.
+NURSE_ATTRIBUTION_CHANCE = 0.33
+
 
 @dataclass(frozen=True)
 class LabTestSpec:
@@ -281,11 +338,11 @@ PRESCRIPTION_STATUSES = ("active", "completed", "stopped", "cancelled")
 
 @dataclass(frozen=True)
 class MedPlan:
-    """A prescription course: which medication, status, and timing vs ANCHOR_DAY."""
+    """A prescription course: which medication, status, and timing vs the run day."""
 
     code: str
     status: str
-    started_ago: tuple[int, int]  # days before ANCHOR_DAY (min, max)
+    started_ago: tuple[int, int]  # days before the run day (min, max)
     duration_days: int | None  # None = open-ended (no end_date)
 
 
@@ -580,6 +637,7 @@ BMI_RANGE_DEFAULT = (19.5, 31.0)
 class Summary:
     created: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     existing: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    backfilled: dict[str, int] = field(default_factory=lambda: defaultdict(int))
     generated_passwords: dict[str, str] = field(default_factory=dict)
 
     def bump(self, entity: str, *, created: bool) -> None:
@@ -587,6 +645,16 @@ class Summary:
             self.created[entity] += 1
         else:
             self.existing[entity] += 1
+
+
+def run_day_utc() -> date:
+    """The UTC date of this seed run — the dataset's "today".
+
+    Every seeded timestamp is this date minus a deterministic day-offset
+    drawn from the seeded RNG streams, so a fresh database is always recent
+    while output stays a pure function of (run day, specs, seeds).
+    """
+    return datetime.now(timezone.utc).date()
 
 
 def demo_id(*parts: str) -> uuid.UUID:
@@ -753,6 +821,24 @@ def _synthetic_encounter_summary(rng: random.Random, encounter_type: str) -> str
     return f"Synthetic demo {encounter_type}: {rng.choice(ENCOUNTER_TOPICS)}. Fictional data, not for clinical use."
 
 
+def _newest_encounter_days_ago(mrn: str, rng: random.Random) -> int:
+    """Day offset of the patient's newest visit before run_day (one draw).
+
+    The draw is the legacy `rng.randint(5, 80)` shape so the RNG stream stays
+    byte-identical to earlier seeds (encounter counts and every downstream
+    value stay put, letting a re-seed backfill old databases cleanly); its
+    value is mapped into the patient's recency band (FRESH_/RECENT_ specs).
+    """
+    raw = rng.randint(5, 80)
+    if mrn in FRESH_ENCOUNTER_MRNS:
+        low, high = FRESH_DAYS_RANGE
+    elif mrn in RECENT_ENCOUNTER_MRNS:
+        low, high = RECENT_DAYS_RANGE
+    else:
+        low, high = SPREAD_DAYS_RANGE
+    return low + raw % (high - low + 1)
+
+
 def _abnormal_range(code: str, profiles: tuple[str, ...]) -> tuple[float, float] | None:
     """Value range for `code` from the first patient profile that shapes it."""
     for name in profiles:
@@ -810,6 +896,7 @@ async def seed_patient_details(
     summary: Summary,
     patient: Patient,
     profiles: tuple[str, ...],
+    run_day: date,
     rng: random.Random,
     clinical_rng: random.Random,
     med_ids: dict[str, uuid.UUID],
@@ -823,11 +910,18 @@ async def seed_patient_details(
     # second deterministic stream (clinical_rng) so the legacy stream stays
     # byte-identical to earlier seeds.
 
-    # --- encounters: 2-6 per patient, spread over ~18 months before the anchor
+    # --- encounters: 2-6 per patient. The newest visit sits in the patient's
+    # recency band before run_day (the FRESH_/RECENT_ specs keep the panel's
+    # 7- and 30-day windows populated); older visits step back on the legacy
+    # 85-day grid so every patient spans ~18 months and trend pairs work.
     encounter_count = rng.randint(2, 6)
     encounter_plan: list[tuple[uuid.UUID, date, int, str, str]] = []
     for index in range(encounter_count):
-        occurred_day = ANCHOR_DAY - timedelta(days=85 * index + rng.randint(5, 80))
+        if index == 0:
+            days_ago = _newest_encounter_days_ago(patient.mrn, rng)
+        else:
+            days_ago = 85 * index + rng.randint(5, 80)
+        occurred_day = run_day - timedelta(days=days_ago)
         occurred_hour = rng.randint(8, 16)
         encounter_type = rng.choice(ENCOUNTER_TYPES)
         summary_text = _synthetic_encounter_summary(rng, encounter_type)
@@ -925,7 +1019,7 @@ async def seed_patient_details(
         med_spec = MEDICATION_BY_CODE[med_plan.code]
         dose_amount = Decimal(rng.choice(med_spec.dose_options))
         frequency = rng.choice(med_spec.frequency_options)
-        start_day = ANCHOR_DAY - timedelta(days=rng.randint(*med_plan.started_ago))
+        start_day = run_day - timedelta(days=rng.randint(*med_plan.started_ago))
         end_day = (
             start_day + timedelta(days=med_plan.duration_days)
             if med_plan.duration_days is not None
@@ -1118,7 +1212,7 @@ async def seed_patient_details(
             time(hour=15, tzinfo=timezone.utc),
         )
         dose_changed_at = datetime.combine(
-            min(start_day + timedelta(days=dose_event_offset), ANCHOR_DAY),
+            min(start_day + timedelta(days=dose_event_offset), run_day),
             time(hour=11, tzinfo=timezone.utc),
         )
         if status != "active":
@@ -1170,7 +1264,25 @@ async def seed_patient_details(
                     )
                 )
 
+    # encounter practitioner attribution: the demo doctor for the majority of
+    # visits, the demo nurse for ~25% (a realistic mixed panel). One
+    # unconditional roll per encounter, drawn LAST so every earlier stream
+    # draw stays byte-identical to earlier seeds (a re-seed of an existing
+    # database then differs only in attribution and NULL backfills). Applied
+    # on insert and backfilled into NULL columns of rows seeded before
+    # practitioner_id existed (see the insert loop and the module docstring).
+    practitioner_plan: list[tuple[uuid.UUID, uuid.UUID]] = []
+    for encounter_id, _, _, _, _ in encounter_plan:
+        practitioner_roll = clinical_rng.random()
+        practitioner_plan.append(
+            (
+                encounter_id,
+                staff_ids["nurse"] if practitioner_roll < NURSE_ATTRIBUTION_CHANCE else staff_ids["doctor"],
+            ),
+        )
+
     # --- insert planned rows only when their natural key is missing
+    practitioner_by_encounter = dict(practitioner_plan)
     for encounter_id, occurred_day, occurred_hour, encounter_type, summary_text in encounter_plan:
         encounter = await session.get(Encounter, encounter_id)
         if encounter is None:
@@ -1180,11 +1292,22 @@ async def seed_patient_details(
                 occurred_at=datetime.combine(occurred_day, time(hour=occurred_hour, tzinfo=timezone.utc)),
                 encounter_type=encounter_type,
                 summary=summary_text,
+                practitioner_id=practitioner_by_encounter[encounter_id],
             )
             session.add(encounter)
             summary.bump("encounters", created=True)
         else:
             summary.bump("encounters", created=False)
+            # Backfill (update-in-place) for rows seeded before practitioner_id
+            # existed: only NULL columns are written, never an existing
+            # attribution. Safe because the column is staff attribution
+            # metadata (nullable, ON DELETE SET NULL — see app.models.patient)
+            # and the deterministic per-encounter roll reproduces the same
+            # value every run, so the backfill is idempotent and cannot
+            # overwrite anyone's attribution.
+            if encounter.practitioner_id is None:
+                encounter.practitioner_id = practitioner_by_encounter[encounter_id]
+                summary.backfilled["encounter.practitioner_id"] += 1
 
     for lab_id, encounter_id, lab_test, value_num, status, collected_at, resulted_at in lab_plan:
         if await session.get(LabResult, lab_id) is not None:
@@ -1394,6 +1517,7 @@ async def seed_patients(
     med_ids: dict[str, uuid.UUID],
     prescriber_ids: list[uuid.UUID],
     staff_ids: dict[str, uuid.UUID],
+    run_day: date,
 ) -> None:
     rng = random.Random(RNG_SEED)
     clinical_rng = random.Random(CLINICAL_RNG_SEED)
@@ -1416,7 +1540,7 @@ async def seed_patients(
         else:
             summary.bump("patients", created=False)
         await seed_patient_details(
-            session, summary, patient, profiles, rng, clinical_rng, med_ids, prescriber_ids, staff_ids
+            session, summary, patient, profiles, run_day, rng, clinical_rng, med_ids, prescriber_ids, staff_ids
         )
 
 
@@ -1434,7 +1558,7 @@ async def run_seed() -> Summary:
             await seed_test_catalog(session, summary)
             await seed_reference_ranges(session, summary)
             prescriber_ids = [staff_ids["doctor"]]
-            await seed_patients(session, summary, med_ids, prescriber_ids, staff_ids)
+            await seed_patients(session, summary, med_ids, prescriber_ids, staff_ids, run_day_utc())
             await session.commit()
     finally:
         await engine.dispose()
@@ -1458,6 +1582,11 @@ def main() -> int:
     print("Seed summary (synthetic demo data only):")
     for entity in sorted(set(summary.created) | set(summary.existing)):
         print(f"  {entity}: {summary.created.get(entity, 0)} created, {summary.existing.get(entity, 0)} already present")
+
+    if summary.backfilled:
+        print("Backfilled NULL columns on existing rows (values already set are never touched):")
+        for entity in sorted(summary.backfilled):
+            print(f"  {entity}: {summary.backfilled[entity]} backfilled")
 
     if summary.generated_passwords:
         print()

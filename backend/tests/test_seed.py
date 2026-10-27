@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -55,6 +56,11 @@ MEDICATION_COUNT = len(SEED_SPEC.MEDICATION_CATALOG)
 TEST_CATALOG_COUNT = len(SEED_SPEC.LAB_TESTS)
 PERMISSION_COUNT = len(SEED_SPEC.PERMISSION_SPECS)
 REFERENCE_RANGE_COUNT = TEST_CATALOG_COUNT + len(SEED_SPEC.SEX_REFERENCE_RANGE_SPECS)
+
+
+def _staff_email(role_key: str) -> str:
+    """The seeded demo staff email for a role (tests use the default specs)."""
+    return next(spec.default_email for spec in SEED_SPEC.STAFF_SPECS if spec.role_key == role_key)
 
 DEMO_PASSWORDS = {
     "DEMO_ADMIN_PASSWORD": "test-only-admin-pw",
@@ -479,7 +485,12 @@ async def test_seed_new_text_is_utf8_safe(db_engine) -> None:
 
 @pytest.mark.postgres
 async def test_seed_rerun_does_not_churn_values(db_engine) -> None:
-    """A re-run must create nothing AND rewrite nothing (deterministic values)."""
+    """A re-run must create nothing AND rewrite nothing (deterministic values).
+
+    Dates and practitioner attribution of existing rows are part of the deal:
+    re-seeding days later keeps the original rows byte-for-byte (the
+    freshness/idempotency trade-off documented in the seed script).
+    """
     await _clear_all(db_engine)
     _ensure_seeded()
 
@@ -490,7 +501,14 @@ async def test_seed_rerun_does_not_churn_values(db_engine) -> None:
             ).all()
             vitals = (
                 await session.execute(
-                    sa.select(Encounter.id, Encounter.weight_kg, Encounter.height_cm).order_by(Encounter.id)
+                    sa.select(
+                        Encounter.id,
+                        Encounter.occurred_at,
+                        Encounter.encounter_type,
+                        Encounter.practitioner_id,
+                        Encounter.weight_kg,
+                        Encounter.height_cm,
+                    ).order_by(Encounter.id)
                 )
             ).all()
             diagnoses = (
@@ -511,3 +529,129 @@ async def test_seed_rerun_does_not_churn_values(db_engine) -> None:
     assert "0 created" in result.stdout
     after = await snapshot()
     assert before == after
+
+
+def test_seed_recency_spec_is_coherent() -> None:
+    """Recency bands are disjoint MRN lists of seeded patients; no fixed anchor.
+
+    No test depends on absolute dates: every date expectation is computed at
+    test time (see the window-freshness test) and the seed's fixed calendar
+    anchor is gone in favor of the run day.
+    """
+    patient_mrns = {spec[0] for spec in SEED_SPEC.PATIENT_SPECS}
+    fresh = set(SEED_SPEC.FRESH_ENCOUNTER_MRNS)
+    recent = set(SEED_SPEC.RECENT_ENCOUNTER_MRNS)
+    assert fresh and recent
+    assert fresh.isdisjoint(recent)
+    assert (fresh | recent) <= patient_mrns
+    # The bands tile the panel windows without overlap: 0-6 days inside
+    # [now - 7 days, now], 7-30 days inside [now - 30 days, now], and the
+    # rest past 30 days.
+    assert 0 <= SEED_SPEC.FRESH_DAYS_RANGE[0] <= SEED_SPEC.FRESH_DAYS_RANGE[1] <= 6
+    assert 7 <= SEED_SPEC.RECENT_DAYS_RANGE[0] <= SEED_SPEC.RECENT_DAYS_RANGE[1] <= 29
+    assert SEED_SPEC.SPREAD_DAYS_RANGE[0] > 30
+    assert not hasattr(SEED_SPEC, "ANCHOR_DAY"), "the fixed calendar anchor must be gone"
+    assert callable(SEED_SPEC.run_day_utc)
+
+
+@pytest.mark.postgres
+async def test_seed_encounter_practitioner_attribution(db_engine) -> None:
+    """Every encounter names a seeded demo clinician: doctor majority, nurse some."""
+    await _clear_all(db_engine)
+    _ensure_seeded()
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        counts = dict(
+            (
+                await session.execute(
+                    sa.select(Encounter.practitioner_id, sa.func.count()).group_by(Encounter.practitioner_id)
+                )
+            ).all()
+        )
+        total = sum(counts.values())
+        assert total > 0
+        assert None not in counts, "encounters with NULL practitioner_id"
+
+        staff_ids = set((await session.execute(sa.select(StaffUser.id))).scalars().all())
+        assert set(counts) <= staff_ids, "practitioner_id must reference a seeded staff user"
+        doctor_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("doctor")))
+        nurse_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("nurse")))
+        assert doctor_id is not None and nurse_id is not None
+
+        doctor = counts.get(doctor_id, 0)
+        nurse = counts.get(nurse_id, 0)
+        assert doctor + nurse == total
+        assert doctor > nurse, "the demo doctor must appear on the majority of visits"
+        assert doctor >= 0.6 * total
+        assert 0.20 * total <= nurse <= 0.30 * total, "the demo nurse keeps a ~25% mix"
+
+
+@pytest.mark.postgres
+async def test_seed_window_freshness(db_engine) -> None:
+    """Run-day-derived dates keep the practitioner panel windows populated.
+
+    Windows follow the get_my_recent_patients semantics ([now - days, now]
+    UTC, inclusive both ends) and are computed at test time against the
+    seeded rows — never from absolute dates.
+    """
+    await _clear_all(db_engine)
+    _ensure_seeded()
+    now = datetime.now(timezone.utc)
+
+    def in_window(days: int):
+        return sa.and_(Encounter.occurred_at <= now, Encounter.occurred_at >= now - timedelta(days=days))
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+
+        async def window_count(*conditions) -> int:
+            stmt = sa.select(sa.func.count()).select_from(Encounter).where(*conditions)
+            return (await session.execute(stmt)).scalar_one()
+
+        week = await window_count(in_window(7))
+        month = await window_count(in_window(30))
+        assert week >= 2, "the 7-day panel window must not be empty"
+        assert month >= 4, "the 30-day panel window must not be empty"
+        assert month >= week
+
+        # The "went through me" practitioner-match branch must find someone:
+        # the demo doctor (the role the acceptance run plays) has in-window
+        # encounters in both windows.
+        doctor_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("doctor")))
+        assert doctor_id is not None
+        assert await window_count(in_window(7), Encounter.practitioner_id == doctor_id) >= 1
+        assert await window_count(in_window(30), Encounter.practitioner_id == doctor_id) >= 2
+
+        # Older visits still span well over a year so trend lookups work.
+        oldest = await session.scalar(sa.select(sa.func.min(Encounter.occurred_at)))
+        assert oldest is not None and oldest <= now - timedelta(days=180)
+
+
+@pytest.mark.postgres
+async def test_seed_backfills_missing_practitioner_only(db_engine) -> None:
+    """Re-seeding backfills NULL practitioners and never overwrites set ones."""
+    await _clear_all(db_engine)
+    _ensure_seeded()
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        encounters = (await session.scalars(sa.select(Encounter).order_by(Encounter.id).limit(2))).all()
+        assert len(encounters) == 2
+        admin_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("clinical_admin")))
+        assert admin_id is not None
+        backfill_id, keep_id = encounters[0].id, encounters[1].id
+        encounters[0].practitioner_id = None
+        encounters[1].practitioner_id = admin_id
+        await session.commit()
+
+    result = run_seed(extra_env=DEMO_PASSWORDS)
+    assert result.returncode == 0, f"seed failed:\n{result.stdout}\n{result.stderr}"
+    assert "0 created" in result.stdout
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        doctor_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("doctor")))
+        nurse_id = await session.scalar(sa.select(StaffUser.id).where(StaffUser.email == _staff_email("nurse")))
+        backfilled = await session.get(Encounter, backfill_id)
+        kept = await session.get(Encounter, keep_id)
+        assert backfilled is not None and backfilled.practitioner_id in (doctor_id, nurse_id), (
+            "a NULL practitioner must be backfilled from the seeded demo clinicians"
+        )
+        assert kept is not None and kept.practitioner_id == admin_id, (
+            "an existing practitioner attribution must never be overwritten"
+        )
