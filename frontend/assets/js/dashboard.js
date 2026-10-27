@@ -7,6 +7,8 @@
 
 import * as api from './api.js';
 import * as auth from './auth.js';
+import * as cache from './cache.js';
+import * as commandMenu from './command-menu.js';
 import * as ui from './ui.js';
 
 const RECENT_PATIENTS = 8;
@@ -110,10 +112,10 @@ function renderRecentPatients(user) {
     grid,
   );
 
-  ui.renderLoading(grid, { label: 'Loading recent patients', rows: 3 });
-  api
-    .get('/patients', { limit: RECENT_PATIENTS, offset: 0 })
-    .then((page) => {
+  ui.renderLoading(grid, { label: 'Loading recent patients', rows: 3, variant: 'cards' });
+  const key = cache.keyFor('/patients', { limit: RECENT_PATIENTS, offset: 0 });
+  cache.swr(key, () => api.get('/patients', { limit: RECENT_PATIENTS, offset: 0 }), {
+    onData: (page) => {
       const items = Array.isArray(page.items) ? page.items : [];
       ui.clear(grid);
       if (items.length === 0) {
@@ -125,14 +127,16 @@ function renderRecentPatients(user) {
         return;
       }
       for (const patient of items) grid.append(ui.renderPatientCard(patient));
-    })
-    .catch((error) => {
+    },
+    onError: (error) => {
       ui.renderErrorState(grid, error, {
         describe: api.describeApiError,
         onRetry: () => window.location.reload(),
         headingTag: 'h3',
       });
-    });
+    },
+    onRevalidating: (on) => ui.setSyncIndicator(grid, on),
+  });
 
   return section;
 }
@@ -180,6 +184,7 @@ ui.onReady(async () => {
   try {
     const user = await auth.initAuthChrome({ active: 'dashboard' });
     if (!user) return;
+    commandMenu.initCommandMenu({ user });
     render(user);
   } catch (error) {
     ui.renderErrorState(document.getElementById('page-body'), error, {

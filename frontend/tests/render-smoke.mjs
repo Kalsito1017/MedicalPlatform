@@ -19,7 +19,12 @@
  * flows with confirm dialogs and 403/409 rendering, one-time generated
  * password display, AI assistant panel states: answer labelling, 503
  * unavailable, 429 rate limit, 2000-char limit, loading/cancel, permission
- * gating).
+ * gating), plus the wave UI patterns: shimmer skeletons replaced atomically by
+ * content, stale-while-revalidate (cache hit renders instantly, background
+ * refetch updates the DOM only on change), the ⌘K command menu (open, filter,
+ * run, Esc + focus restore, bounded patient entries, real shortcut list),
+ * optimistic staff mutations with rollback and error toasts, and undo toasts
+ * whose Undo action runs the inverse API call.
  * What this does NOT verify: real browser DOM, layout/CSS, focus behaviour,
  * screen-reader output, and live backend integration.
  * ------------------------------------------------------------------------- */
@@ -30,6 +35,10 @@ const JS = new URL('../assets/js/', import.meta.url).href;
 // Shared module for date expectations: Intl output varies slightly across ICU
 // versions (e.g. "Sept" vs "Sep"), so assertions compare against ui.formatDate.
 const ui = await import(JS + 'ui.js');
+// The in-memory response cache survives across module instances; every scenario
+// boots a fresh document (= a fresh page load), so it starts cold exactly like
+// a real navigation. The SWR scenario loads twice within one scenario.
+const cache = await import(JS + 'cache.js');
 let scenarioId = 0;
 const results = [];
 
@@ -409,6 +418,7 @@ async function freshPage(moduleName) {
 }
 
 function bootDom(ids) {
+  cache.clearCache();
   const document = installDom();
   fixture(document, ids);
   globalThis.location.pathname = '/page.html';
@@ -1695,6 +1705,348 @@ await check('anonymous access to an authenticated page redirects to sign-in', as
   await freshPage('dashboard.js');
   await settle();
   assertEqualLocal(globalThis.location.redirectedTo, 'index.html', 'no redirect on anonymous');
+});
+
+/* ============================================ wave UI patterns (render) ==== */
+
+/* ------------------------------------------------------- skeleton loaders */
+
+await check('skeleton loaders show on first load and are replaced by real content', async () => {
+  let releasePatients = null;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/auth/me')) return json(200, DOCTOR);
+    if (url.includes('/patients')) {
+      return new Promise((resolve) => {
+        releasePatients = () => resolve(json(200, { items: [PATIENT], total: 1, limit: 20, offset: 0 }));
+      });
+    }
+    throw new Error(`unstubbed request: ${url}`);
+  };
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const region = document.getElementById('patients-region');
+  assert(region.querySelector('.skeleton-block'), 'first load must show the shimmer skeleton');
+  assert(region.querySelector('.skeleton-card'), 'the patient skeleton must approximate the card shape');
+  assertContains(textOf(region), 'Loading synthetic patients', 'the skeleton must announce its label');
+
+  releasePatients();
+  await settle();
+  assertContains(textOf(region), 'Ann Test', 'content must replace the skeleton');
+  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'the skeleton must be gone once data arrives');
+});
+
+/* --------------------------------------------- stale-while-revalidate (SWR) */
+
+await check('stale-while-revalidate renders cached data instantly then refreshes in the background', async () => {
+  let patientCallCount = 0;
+  let releaseSecond = null;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/auth/me')) return json(200, DOCTOR);
+    if (url.includes('/patients')) {
+      patientCallCount += 1;
+      if (patientCallCount === 1) {
+        return json(200, { items: [PATIENT], total: 1, limit: 20, offset: 0 });
+      }
+      return new Promise((resolve) => {
+        releaseSecond = () => resolve(json(200, {
+          items: [
+            PATIENT,
+            { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', provenance: 'synthetic' },
+          ],
+          total: 2,
+          limit: 20,
+          offset: 0,
+        }));
+      });
+    }
+    throw new Error(`unstubbed request: ${url}`);
+  };
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const region = document.getElementById('patients-region');
+  assertContains(textOf(region), 'Ann Test', 'first load must render the data');
+
+  // A second load of the same URL must serve the cache immediately and
+  // revalidate in the background (no skeleton, no flicker).
+  const input = document.getElementById('patient-search');
+  input.value = '';
+  await input.dispatch('input');
+  await settle(400); // search debounce
+
+  assertEqualLocal(patientCallCount, 2, 'the second load must still revalidate against the API');
+  assertContains(textOf(region), 'Ann Test', 'cached data must render instantly on the second load');
+  assert(!textOf(region).includes('Bob Test'), 'nothing may change until the revalidation lands');
+  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'a cache hit must not show a skeleton');
+  assertContains(textOf(document.getElementById('patients-status')), '1 synthetic patient found', 'cached status must render instantly');
+  assert(region.querySelector('.sync-chip'), 'a tiny updating indicator must mark the background refresh');
+
+  releaseSecond();
+  await settle();
+  assertContains(textOf(region), 'Bob Test', 'the revalidated payload must update the DOM');
+  assertEqualLocal(region.querySelector('.sync-chip'), null, 'the updating indicator must clear');
+  assertContains(textOf(document.getElementById('patients-status')), '2 synthetic patients found', 'status must follow the refresh');
+});
+
+/* -------------------------------------------------------- command menu (⌘K) */
+
+await check('command menu opens with the keyboard shortcut, filters, and runs a command', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: DOCTOR,
+    patients: { items: [PATIENT], total: 1, limit: 50, offset: 0 },
+  });
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const opener = document.getElementById('patient-search');
+  opener.focus();
+
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  const dialog = document.getElementById('command-menu');
+  assert(dialog && dialog.open, 'Cmd+K must open the command palette');
+  assertEqualLocal(document.activeElement, document.getElementById('command-menu-input'), 'the palette input must take focus');
+
+  const input = document.getElementById('command-menu-input');
+  input.value = 'pat';
+  await input.dispatch('input');
+  const filtered = textOf(document.getElementById('command-menu-list'));
+  assertContains(filtered, 'Go to Patients', 'the navigation command must match');
+  assertContains(filtered, 'Go to patient Ann Test', 'the patient command must match');
+
+  input.value = 'zzzzz';
+  await input.dispatch('input');
+  assertContains(textOf(document.getElementById('command-menu-list')), 'No matches', 'the empty state is missing');
+
+  input.value = 'go to patients';
+  await input.dispatch('input');
+  const enter = {
+    key: 'Enter',
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+  await input.dispatch('keydown', enter);
+  assert(enter.prevented, 'Enter must be intercepted by the palette');
+  assertEqualLocal(globalThis.location.redirectedTo, 'patients.html', 'running the command must navigate');
+  assertEqualLocal(dialog.open, false, 'the palette must close after running a command');
+});
+
+await check('command menu lists bounded patient entries, closes on Esc, and shows real shortcuts', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    me: DOCTOR,
+    patients: { items: [PATIENT], total: 130, limit: 50, offset: 0 },
+  });
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const opener = document.getElementById('patient-search');
+  opener.focus();
+  await document.dispatch('keydown', { key: 'k', ctrlKey: true, preventDefault() {} });
+  await settle(); // the bounded patient fetch lands lazily on open
+
+  const listText = textOf(document.getElementById('command-menu-list'));
+  assertContains(listText, 'Go to patient Ann Test', 'patient entries are missing');
+  assertContains(listText, 'of 130 synthetic patients', 'the bounded patient note is missing');
+  const paletteFetch = calls.find((call) => call.url.includes('/api/v1/patients') && call.url.includes('limit=50'));
+  assert(paletteFetch, 'the palette must fetch a bounded patient list');
+
+  // Esc closes the palette and restores focus to the opener.
+  const input = document.getElementById('command-menu-input');
+  const esc = {
+    key: 'Escape',
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+  await input.dispatch('keydown', esc);
+  assert(esc.prevented, 'Esc must be intercepted by the palette');
+  assertEqualLocal(document.getElementById('command-menu').open, false, 'Esc must close the palette');
+  assertEqualLocal(document.activeElement, opener, 'focus must return to the opener');
+
+  // The "Keyboard shortcuts" command lists only real keybindings.
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  const inputAgain = document.getElementById('command-menu-input');
+  inputAgain.value = 'keyboard';
+  await inputAgain.dispatch('input');
+  await inputAgain.dispatch('keydown', { key: 'Enter', preventDefault() {} });
+  await settle();
+  const shortcuts = textOf(document.getElementById('app-dialog-body'));
+  assertContains(shortcuts, 'Command menu', 'shortcut list must cover the palette');
+  assertContains(shortcuts, 'Shift', 'shortcut list must cover Shift+Enter');
+  assertContains(shortcuts, 'Enter', 'shortcut list must cover Enter');
+  assertContains(shortcuts, 'Esc', 'shortcut list must cover Esc');
+});
+
+/* -------------------------------------------- optimistic updates + undo toast */
+
+await check('optimistic grant shows the new role before the server answers', async () => {
+  const calls = [];
+  const base = staffUser({ id: 'u-3', display_name: 'Nina Nurse', email: 'nina@example.com', roles: ['nurse'] });
+  const baseFetch = makeFetch({
+    calls,
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    audit: { items: [AUDIT_EVENT], total: 1, limit: 10, offset: 0 },
+  });
+  let releaseRole = null;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/roles') && (init.method || 'GET') === 'POST') {
+      calls.push({ url, init });
+      return new Promise((resolve) => {
+        releaseRole = () => resolve(json(200, { ...base, roles: ['nurse', 'doctor'] }));
+      });
+    }
+    return baseFetch(url, init);
+  };
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  const row = firstRow(document.getElementById('staff-region'));
+  const select = row.querySelector('select');
+  select.value = 'doctor';
+  await select.dispatch('change');
+  await buttonByText(row, 'Grant role').dispatch('click');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Grant role');
+  await settle();
+
+  assert(releaseRole, 'the role request must be in flight');
+  assert(
+    badgeTexts(firstRow(document.getElementById('staff-region'))).includes('Doctor'),
+    'the row must show the new role while the request is still pending',
+  );
+
+  releaseRole();
+  await settle();
+  assertContains(textOf(document.getElementById('staff-status')), 'Role granted', 'the outcome must be announced');
+});
+
+await check('failed optimistic revoke rolls the row back and explains it in a toast', async () => {
+  const base = staffUser({ id: 'u-9', display_name: 'Cal Admin', email: 'admin@example.com', roles: ['clinical_admin'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    audit: { items: [AUDIT_EVENT], total: 1, limit: 10, offset: 0 },
+    routes: [{
+      method: 'DELETE',
+      match: /\/staff\/u-9\/roles\/[^/]+$/,
+      response: { status: 409, code: 'conflict', message: 'At least one active account with the Admin role must remain.' },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  await clickButton(firstRow(document.getElementById('staff-region')), 'Revoke Admin');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Revoke role');
+  await settle();
+
+  assert(
+    badgeTexts(firstRow(document.getElementById('staff-region'))).includes('Admin'),
+    'the refused revoke must roll the row back to the server truth',
+  );
+  const toasts = textOf(document.getElementById('toast-region'));
+  assertContains(toasts, 'Action not allowed right now', 'the error toast must explain the failure');
+  assertContains(textOf(document.getElementById('staff-status')), 'Action not allowed right now', 'the status region must announce it too');
+});
+
+await check('deactivation shows an undo toast and Undo re-activates the account', async () => {
+  const patches = [];
+  const base = staffUser({ id: 'u-5', display_name: 'Eva Example', email: 'eva@example.com', roles: ['nurse'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    audit: { items: [AUDIT_EVENT], total: 1, limit: 10, offset: 0 },
+    routes: [{
+      method: 'PATCH',
+      match: /\/staff\/u-5$/,
+      response: ({ body }) => {
+        patches.push(body);
+        return { ...base, is_active: body.is_active };
+      },
+    }],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  await clickButton(firstRow(document.getElementById('staff-region')), 'Deactivate');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Deactivate');
+  await settle();
+
+  assertEqualLocal(patches.length, 1, 'the deactivation PATCH is missing');
+  const toastHost = document.getElementById('toast-region');
+  assertContains(textOf(toastHost), 'Account deactivated', 'the undo toast is missing');
+  const undo = buttonByText(toastHost, 'Undo');
+  assert(undo, 'the toast must carry a working Undo action');
+  await undo.dispatch('click');
+  await settle();
+
+  assertEqualLocal(patches.length, 2, 'Undo must send the inverse PATCH');
+  assertEqualLocal(patches[1].is_active, true, 'Undo must reactivate the account');
+  assertContains(textOf(document.getElementById('toast-region')), 'Restored', 'restoration must be confirmed');
+  assert(
+    badgeTexts(firstRow(document.getElementById('staff-region'))).includes('Active'),
+    'the row must show the restored state',
+  );
+});
+
+await check('role revoke shows an undo toast and Undo re-grants the role', async () => {
+  const roleCalls = [];
+  const base = staffUser({ id: 'u-4', display_name: 'Ned Nurse', email: 'ned@example.com', roles: ['nurse', 'doctor'] });
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    staff: { items: [base], total: 1, limit: 20, offset: 0 },
+    audit: { items: [AUDIT_EVENT], total: 1, limit: 10, offset: 0 },
+    routes: [
+      {
+        method: 'DELETE',
+        match: /\/staff\/u-4\/roles\/[^/]+$/,
+        response: () => ({ ...base, roles: ['nurse'] }),
+      },
+      {
+        method: 'POST',
+        match: /\/staff\/u-4\/roles$/,
+        response: ({ body }) => {
+          roleCalls.push(body);
+          return { ...base, roles: ['nurse', 'doctor'] };
+        },
+      },
+    ],
+  });
+  const document = bootDom([...CHROME_IDS, ...ADMIN_IDS]);
+  await freshPage('admin.js');
+  await settle();
+
+  await clickButton(firstRow(document.getElementById('staff-region')), 'Revoke Doctor');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Revoke role');
+  await settle();
+
+  const toastHost = document.getElementById('toast-region');
+  assertContains(textOf(toastHost), 'Role removed', 'the undo toast is missing');
+  const undo = buttonByText(toastHost, 'Undo');
+  assert(undo, 'the toast must carry a working Undo action');
+  await undo.dispatch('click');
+  await settle();
+
+  assertEqualLocal(roleCalls.length, 1, 'Undo must re-grant through the API');
+  assertEqualLocal(roleCalls[0].role, 'doctor', 'the re-grant must carry the revoked role');
+  assertContains(textOf(document.getElementById('toast-region')), 'Restored', 'restoration must be confirmed');
+  assert(
+    badgeTexts(firstRow(document.getElementById('staff-region'))).includes('Doctor'),
+    'the row must show the restored role',
+  );
 });
 
 function assertEqualLocal(actual, expected, message) {

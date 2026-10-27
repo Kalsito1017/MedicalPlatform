@@ -24,6 +24,8 @@
 import * as api from './api.js';
 import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
+import * as cache from './cache.js';
+import * as commandMenu from './command-menu.js';
 import * as ui from './ui.js';
 
 const QUESTION_MAX = 2000;
@@ -79,7 +81,7 @@ function renderSuggestedQuestions() {
   ui.clear(host);
   for (const question of SUGGESTED_QUESTIONS) {
     host.append(ui.el('button', {
-      class: 'chip chip--action',
+      class: 'chip chip--action hit-slop',
       type: 'button',
       text: question,
       onClick: () => {
@@ -321,12 +323,18 @@ async function initHistory() {
   }
   const list = document.getElementById('ai-history-list');
   if (!list) return;
-  try {
-    const page = await aiHistory.fetchHistory();
+  const key = cache.keyFor('/ai/conversations', { limit: 20, offset: 0 });
+  const renderItems = (page) => {
     aiHistory.renderHistoryList(list, page && Array.isArray(page.items) ? page.items : []);
-  } catch (error) {
-    aiHistory.renderHistoryFailure(list, error);
+  };
+  if (!cache.peek(key)) {
+    ui.renderLoading(list, { label: 'Loading conversation history', rows: 2, wrapperTag: 'li' });
   }
+  await cache.swr(key, () => aiHistory.fetchHistory(), {
+    onData: renderItems,
+    onError: (error) => aiHistory.renderHistoryFailure(list, error),
+    onRevalidating: (on) => ui.setSyncIndicator(list, on),
+  });
 }
 
 async function clearHistoryFlow() {
@@ -341,6 +349,7 @@ async function clearHistoryFlow() {
   if (!confirmed) return;
   try {
     await aiHistory.clearHistory();
+    cache.invalidate('/ai/conversations');
     aiHistory.renderHistoryList(list, []);
     setAiStatus('Your question history was cleared.');
   } catch (error) {
@@ -351,6 +360,7 @@ async function clearHistoryFlow() {
 
 /** The just-finished exchange joins the history list without a reload. */
 function recordHistoryEntry(question, payload) {
+  cache.invalidate('/ai/conversations');
   aiHistory.appendHistoryEntry(document.getElementById('ai-history-list'), {
     question,
     answer: payload && typeof payload.answer === 'string' ? payload.answer : '',
@@ -458,5 +468,26 @@ ui.onReady(async () => {
     });
     return;
   }
+
+  // The command menu exposes the page's suggestion chips as commands that
+  // fill the composer (the user reviews and sends, exactly like the chips).
+  const suggestionCommands = auth.hasPermission(user, 'patient:read')
+    ? SUGGESTED_QUESTIONS.map((question) => ({
+      id: `suggest-${question}`,
+      title: question,
+      hint: 'Fill the question box (you review before sending)',
+      keywords: 'ai assistant question suggestion',
+      group: 'Actions',
+      run: () => {
+        const input = document.getElementById('ai-question');
+        if (!input) return;
+        input.value = question;
+        syncQuestionCounter();
+        if (typeof input.focus === 'function') input.focus();
+      },
+    }))
+    : [];
+  commandMenu.initCommandMenu({ user, commands: suggestionCommands });
+
   initAiPage(user);
 });

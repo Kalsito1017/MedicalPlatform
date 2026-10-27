@@ -156,6 +156,7 @@ const entryModules = {
 };
 const DYNAMIC_IDS = new Set(['app-dialog']);
 const CHROME_IDS = ['global-status', 'site-nav', 'user-area', 'nav-toggle'];
+const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html'];
 
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
@@ -213,11 +214,71 @@ await check('no inline style attributes anywhere (CSP style-src self)', async ()
     const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
     assert(!/\bstyle\s*[:=]\s*['"`]/.test(source), `assets/js/${file} sets inline styles`);
     assert(!/setAttribute\(\s*['"]style['"]/.test(source), `assets/js/${file} sets a style attribute`);
-    assert(!/\.style\.\w+\s*=/.test(source), `assets/js/${file} mutates element styles directly`);
+    assert(!/\.style\b/.test(source), `assets/js/${file} touches element styles directly`);
+    assert(!/setProperty\s*\(/.test(source), `assets/js/${file} mutates CSS custom properties`);
+    assert(!/cssText/.test(source), `assets/js/${file} mutates element styles directly`);
   }
 });
 
-const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html'];
+/* --------------------------------------------- 1d. wave UI pattern hygiene */
+
+await check('styles.css defines the wave UI pattern utilities', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const marker of [
+    '.kbd',
+    '.hit-slop',
+    '.tabular-nums',
+    'text-wrap: balance',
+    'corner-shape: squircle',
+    'env(safe-area-inset',
+    'skeleton-shimmer',
+    '.command-menu',
+    '.toast-region',
+    '.sync-chip',
+  ]) {
+    assert(css.includes(marker), `styles.css missing ${marker}`);
+  }
+  assert(css.includes('skeleton-bar--circle'), 'card-shaped skeleton variant missing');
+});
+
+await check('forms carry correct autofill semantics', async () => {
+  const index = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  assert(/autocomplete="email"/.test(index), 'login email must carry autocomplete="email"');
+  assert(/autocomplete="current-password"/.test(index), 'login password must carry autocomplete="current-password"');
+  const admin = await readFile(path.join(frontendRoot, 'admin.html'), 'utf8');
+  assert(/id="create-email"[^>]*autocomplete="email"/.test(admin), 'staff email must carry autocomplete="email"');
+  assert(/id="create-name"[^>]*autocomplete="name"/.test(admin), 'staff display name must carry autocomplete="name"');
+  assert(/id="create-password"[^>]*autocomplete="new-password"/.test(admin), 'staff password must carry autocomplete="new-password"');
+  // The app has no OTP surface: a one-time-code token would be a lie.
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(!source.includes('one-time-code'), `${file} claims an OTP autofill surface that does not exist`);
+  }
+});
+
+await check('kbd shortcut chips render on every app-shell page', async () => {
+  for (const file of SHELL_PAGES) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('class="kbd"'), `${file} missing kbd shortcut chips`);
+    assert(source.includes('id="command-menu-button"'), `${file} missing the command-menu affordance`);
+  }
+});
+
+await check('every shell page module wires the command menu', async () => {
+  for (const file of SHELL_PAGES) {
+    const entry = entryModules[file];
+    const source = stripComments(await readFile(path.join(jsDir, entry), 'utf8'));
+    assert(source.includes('initCommandMenu'), `${entry} must open the command menu (⌘K)`);
+  }
+});
+
+await check('command-menu.js only advertises real keybindings', async () => {
+  const source = await readFile(path.join(jsDir, 'command-menu.js'), 'utf8');
+  for (const marker of ['Keyboard shortcuts', 'Shift', 'Enter', 'Escape', 'ArrowDown']) {
+    assert(source.includes(marker), `command-menu.js missing ${marker} in its shortcut handling`);
+  }
+});
+
 for (const file of SHELL_PAGES) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: app shell design structure present`, () => {

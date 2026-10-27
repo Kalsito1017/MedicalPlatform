@@ -49,6 +49,11 @@
 
     <div class="app-column">
       <header class="topbar">
+        <button class="btn btn-secondary btn-sm command-trigger" type="button" id="command-menu-button">
+          <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/></svg>
+          Search &amp; commands
+          <kbd class="kbd">&#8984;K</kbd>
+        </button>
         <div class="user-area" id="user-area"></div>
       </header>
 
@@ -189,14 +194,14 @@
                       <textarea id="ai-question" rows="2"
                                 aria-describedby="ai-question-hint ai-keyboard-hint ai-char-count"
                                 placeholder="Ask a question about this patient..."></textarea>
-                      <button class="ai-send" type="button" id="ai-submit" aria-label="Send question" title="Send question">
+                      <button class="ai-send hit-slop" type="button" id="ai-submit" aria-label="Send question" title="Send question">
                         <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>
                       </button>
                     </div>
                     <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are stored in
                       this account&rsquo;s server-side history &mdash; never in this browser &mdash; and can be cleared
                       from the AI Assistant page.</p>
-                    <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint">Enter to send &middot; Shift+Enter for a new line.</p>
+                    <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint"><kbd class="kbd">Enter</kbd> to send &middot; <kbd class="kbd">Shift</kbd>+<kbd class="kbd">Enter</kbd> for a new line.</p>
                     <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
                     <p class="field-error" id="ai-question-error" hidden></p>
                   </div>

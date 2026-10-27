@@ -216,3 +216,140 @@ Rules when editing any page:
   stack). Verified down to 360px by code review of the grid/flex rules —
   pixel-level fidelity to the mockups is reviewed against the PNGs, not
   screenshot-tested (no browser in the build environment).
+
+## 6. UI/UX pattern library (owner list items 1–20)
+
+Everything below lives in the same buildless system: `styles.css` classes and
+small ES modules (`ui.js`, `cache.js`, `toast.js`, `command-menu.js`). No
+inline `style` attributes, no `el.style.*` or `setProperty()` writes — dynamic
+appearance always goes through predefined classes/attributes (enforced by
+`tests/smoke.mjs`).
+
+### 1. Skeleton loaders
+One shimmer component (`.skeleton-block`, `.skeleton-row`, `.skeleton-card`,
+`.skeleton-bar--lg/md/sm/circle`) plus `ui.renderLoading(container,
+{ label, rows, variant, wrapperTag })`. `variant: 'rows'` approximates table
+rows; `variant: 'cards'` approximates patient cards (avatar circle + name/meta
+bars). Under `prefers-reduced-motion` the shimmer sweep is dropped and static
+grey blocks remain. The skeleton is announced (`role="status"`) and replaced
+atomically by the real renderer. Covered async regions: patient list cards,
+patient detail sections (demographics/summary/labs/prescriptions/encounters),
+AI conversation history (both the page and the patient rail), the staff table,
+the audit table, and dashboard recent patients. There is no analytics surface
+in the demo (no endpoint exists), so there is no analytics placeholder to cover.
+
+### 2. Optimistic updates (admin staff table)
+`admin.js` mutation flow: confirm dialog → **optimistic row update** (grant /
+revoke / activate-deactivate apply to the row instantly) → API call →
+reconcile with the fresh `StaffUserOut`, or **roll the row back to the last
+server truth** and show an error toast built from `api.describeApiError`
+(plus the existing `#staff-status` announcement and focus move). Mutations
+`cache.invalidate('/staff')` so list pages revalidate.
+
+### 3. Command menu (⌘K / Ctrl+K)
+`command-menu.js` + `.command-menu` dialog (native `<dialog>`: focus trap for
+free). Sources: permission-derived navigation (`auth.navItemsFor`), bounded
+"Go to patient …" entries (first 50 records from `GET /patients?limit=50`, a
+note points to the Patients page when there are more; lazily fetched on first
+open, only with `patient:read`), contextual page actions (patient page:
+"Summarize this patient", "Ask AI about this patient", the rail suggestion
+chips; AI page: the suggestion chips fill the composer), and a real
+"Keyboard shortcuts" entry. Fuzzy-ish filtering (subsequence scoring), typed
+filter, ↑/↓ + Enter + Esc, `aria-activedescendant` listbox semantics, empty
+state "No matches", focus restored to the opener on close. At mobile widths
+(≤620px) the palette becomes a full-width sheet.
+
+### 4. Shortcut hints (kbd chips)
+`.kbd` chips render **real** keybindings only: the ⌘K chip in the topbar
+"Search & commands" trigger (every app-shell page), the ⌘K/Ctrl+K note in the
+Patients search hint, and the composer hints (`Enter` / `Shift+Enter`) on the
+AI page and the patient rail. The command-menu footer shows the compact
+"↑↓ navigate · ↵ open · esc close" hint; the "Keyboard shortcuts" command
+lists every keybinding in the demo (nothing invented).
+
+### 5. Undo toasts
+`toast.js` + `.toast-region` (bottom-right, polite `aria-live`, auto-dismiss
+6s, working action button + close button). Applied to the reversible
+high-impact admin actions: **deactivate account** → toast "Account deactivated"
+with **Undo** (= PATCH `is_active: true`, optimistic, "Restored" on success /
+error toast on failure) and **revoke role** → toast "Role removed" with
+**Undo** (= re-grant via `POST /roles`, same contract).
+**Undo vs confirm (documented decision):** the pre-action `confirmDialog` is
+kept for *all three* mutations (grant role, revoke role, deactivate) as belt
+and braces on top of the undo toast — the confirm carries the consequence
+copy (session revocation, self-escalation) and the existing behaviour
+contracts assert it; the undo toast is the second, post-action safety net.
+"Clear history" keeps its confirm dialog and deliberately has **no fake
+Undo** — it is not reversible.
+
+### 6. Stale-while-revalidate
+`cache.js` — in-memory only (Map), keyed by request URL (path + query), 30s
+TTL, **per-tab/per-page-view lifetime** (never web storage; `auth.logout()`
+clears it and every page load starts cold). Within a page view, repeat loads
+(paging back, re-running a search, revisiting a section) render the cached
+payload **instantly** and revalidate in the background; the DOM re-renders
+only when the fresh payload differs, with a tiny `.sync-chip` "Updating…"
+indicator in the meantime. A failed background revalidation never replaces
+working content with an error state. First visits are unchanged (skeleton →
+data, or the existing error/empty states). Applied to: patients list, patient
+detail sections, staff list, audit list, and both AI history lists. Note:
+because the app is multi-page (full loads), the cache cannot survive a real
+cross-page navigation — the win is within-page re-visits; a cross-page cache
+would require web storage, which is banned for clinical data.
+
+### 13. Hit slop
+`.hit-slop` (documented shared class): an invisible `::after` pseudo-element
+extends the effective touch target of small/icon buttons to at least 44×44px
+**without changing their visual size**. Applied to: the AI send plane
+(`.ai-send`), pagination arrows, Copy MRN / Copy password, dialog action
+buttons (confirm/close), admin row actions (Grant/Revoke/Activate/Deactivate),
+banner Dismiss, toast Undo/Close, and chip action buttons. The app has no
+chip-close (×) affordance — chips are plain labels or whole buttons — so there
+was nothing to cover there; suggestion chips get the class anyway.
+
+### 14. Safe-area insets
+`padding: max(<base>, env(safe-area-inset-*))` on the topbar (top/left/right),
+the sidebar foot and mobile nav list (bottom), the AI composer (bottom), the
+site footer and the toast region (bottom) so nothing sits under notches or
+home indicators.
+
+### 15. Autofill semantics (no OTP surface)
+Item 15 = **autofill correctness**. Tokens: sign-in email
+`autocomplete="email"` + password `current-password`; staff-create form `email`
+(→ `#create-email`), `name` (→ `#create-name`), `new-password`
+(→ `#create-password`); search inputs and the role `<select>` keep
+`autocomplete="off"` (they are filters, not identity fields). **The app has no
+OTP / one-time-code surface**, so the `one-time-code` token is deliberately
+unused anywhere (and `tests/smoke.mjs` fails if any page claims it).
+
+### 16. Tabular numbers
+`.tabular-nums` utility + `font-variant-numeric: tabular-nums` applied to
+`.table` (labs, prescriptions, staff, audit), `.pagination__summary`
+("Showing X–Y of Z"), `.char-counter`, and `.state-panel__meta` (request IDs).
+The demo has no stat-card surface (no metrics endpoint), so there are no
+stat-like numbers beyond these.
+
+### 17. Balanced headlines
+`text-wrap: balance` on `h1`, `h2`, card/panel/state titles and quick-link
+titles. Unsupported browsers wrap normally (pure progressive enhancement).
+
+### 18. Continuous corners
+`corner-shape: squircle` on cards, panels, dialogs, the command menu, buttons,
+badges, form controls, state panels, toasts and tiles. Browsers without
+support keep the existing `border-radius` values unchanged (no regression).
+
+### 20. Safe triangle (edge-swipe zone)
+Interpretation: on touch-width layouts (≤960px) the left screen edge is
+reserved as the back-swipe/edge-gesture zone — content keeps a ≥22px left
+gutter (`.container`, `.topbar`) so no interactive control's hit area
+(including `.hit-slop` pseudo-elements) overlaps the edge and fires
+accidentally during an edge swipe. The sidebar "Menu" nav toggle is the
+deliberate edge control and is exempt.
+
+## 7. Wave UI: what the browser must still verify
+
+The build environment has no browser; layout, focus rings, screen-reader
+output, dark-mode contrast of the new components, `corner-shape` rendering in
+a supporting browser, and real notch behaviour (safe-area insets) are
+code-reviewed and test-covered for behaviour only — see the final report's
+browser checklist.

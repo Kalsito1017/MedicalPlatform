@@ -49,6 +49,11 @@
 
     <div class="app-column">
       <header class="topbar">
+        <button class="btn btn-secondary btn-sm command-trigger" type="button" id="command-menu-button">
+          <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/></svg>
+          Search &amp; commands
+          <kbd class="kbd">&#8984;K</kbd>
+        </button>
         <div class="user-area" id="user-area"></div>
       </header>
 
@@ -76,12 +81,12 @@
               <form id="create-staff-form" novalidate>
                 <div class="field">
                   <label for="create-email">Email address</label>
-                  <input type="email" id="create-email" name="email" autocomplete="off" aria-describedby="create-email-error">
+                  <input type="email" id="create-email" name="email" autocomplete="email" aria-describedby="create-email-error">
                   <p class="field-error" id="create-email-error" hidden></p>
                 </div>
                 <div class="field">
                   <label for="create-name">Display name</label>
-                  <input type="text" id="create-name" name="display-name" autocomplete="off" aria-describedby="create-name-error">
+                  <input type="text" id="create-name" name="display-name" autocomplete="name" aria-describedby="create-name-error">
                   <p class="field-error" id="create-name-error" hidden></p>
                 </div>
                 <div class="field">
@@ -92,7 +97,7 @@
                 </div>
                 <div class="field">
                   <label for="create-role">Role (optional)</label>
-                  <select id="create-role" name="role" aria-describedby="create-role-hint">
+                  <select id="create-role" name="role" autocomplete="off" aria-describedby="create-role-hint">
                     <option value="">No role yet — one can be assigned afterwards</option>
                     <option value="doctor">Doctor</option>
                     <option value="nurse">Nurse</option>

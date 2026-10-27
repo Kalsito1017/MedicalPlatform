@@ -205,10 +205,21 @@ export class ShimDocument {
   addEventListener(type, handler) {
     (this.listeners[type] = this.listeners[type] || []).push(handler);
   }
+  removeEventListener(type, handler) {
+    const list = this.listeners[type] || [];
+    const index = list.indexOf(handler);
+    if (index >= 0) list.splice(index, 1);
+  }
+  /* Dispatch to document-level listeners (e.g. the ⌘K shortcut handler). */
+  async dispatch(type, event = {}) {
+    event.preventDefault = event.preventDefault || (() => {});
+    for (const handler of [...(this.listeners[type] || [])]) await handler(event);
+  }
 }
 
 export function installDom() {
   const document = new ShimDocument();
+  ShimDocument.activeElement = null;
   globalThis.document = document;
   globalThis.window = globalThis;
   globalThis.location = {

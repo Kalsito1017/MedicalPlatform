@@ -16,6 +16,8 @@
 import * as api from './api.js';
 import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
+import * as cache from './cache.js';
+import * as commandMenu from './command-menu.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 20;
@@ -135,23 +137,28 @@ function listItemLabel(entry) {
 /* ------------------------------------------------------------- sections */
 
 // Runs one section load: skeleton -> data -> renderer, or a friendly error
-// panel with retry. Renderers own their empty states.
-function loadSection(container, fetcher, render, { loadingLabel = 'Loading', onError = null } = {}) {
+// panel with retry. Renderers own their empty states. GET responses are
+// cached in memory (cache.js): revisiting a section renders the cached copy
+// instantly and revalidates in the background, re-rendering only on change.
+function loadSection(container, key, fetcher, render, { loadingLabel = 'Loading', onError = null } = {}) {
   const attempt = () => {
-    ui.renderLoading(container, { label: loadingLabel, rows: 3 });
-    Promise.resolve()
-      .then(fetcher)
-      .then((data) => {
+    if (!cache.peek(key)) {
+      ui.renderLoading(container, { label: loadingLabel, rows: 3 });
+    }
+    cache.swr(key, fetcher, {
+      onData: (data) => {
         render(data);
-      })
-      .catch((error) => {
+      },
+      onError: (error) => {
         ui.renderErrorState(container, error, {
           describe: api.describeApiError,
           onRetry: attempt,
           headingTag: 'h3',
         });
         if (typeof onError === 'function') onError(error);
-      });
+      },
+      onRevalidating: (on) => ui.setSyncIndicator(container, on),
+    });
   };
   attempt();
 }
@@ -165,7 +172,7 @@ function copyValueButton(value, label, feedbackText) {
     text: '',
   });
   const button = ui.el('button', {
-    class: 'btn btn-secondary btn-sm',
+    class: 'btn btn-secondary btn-sm hit-slop',
     type: 'button',
     onClick: async () => {
       const nav = typeof navigator !== 'undefined' ? navigator : null;
@@ -319,7 +326,7 @@ function renderLabs(page) {
   }
 
   ui.clear(region);
-  const table = ui.el('table', { class: 'table table-stack' },
+  const table = ui.el('table', { class: 'table table-stack tabular-nums' },
     ui.el('thead', {},
       ui.el('tr', {},
         ui.el('th', { scope: 'col', text: 'Test' }),
@@ -383,7 +390,7 @@ function renderPrescriptions(page) {
   }
 
   ui.clear(region);
-  const table = ui.el('table', { class: 'table table-stack' },
+  const table = ui.el('table', { class: 'table table-stack tabular-nums' },
     ui.el('thead', {},
       ui.el('tr', {},
         ui.el('th', { scope: 'col', text: 'Medication' }),
@@ -435,24 +442,22 @@ function renderPrescriptions(page) {
 /* ------------------------------------------------------------ data loads */
 
 function loadLabs() {
+  const query = { limit: PAGE_SIZE, offset: state.labsOffset };
   loadSection(
     document.getElementById('labs-region'),
-    () => api.get(`/patients/${encodeURIComponent(state.patientId)}/labs`, {
-      limit: PAGE_SIZE,
-      offset: state.labsOffset,
-    }),
+    cache.keyFor(`/patients/${encodeURIComponent(state.patientId)}/labs`, query),
+    () => api.get(`/patients/${encodeURIComponent(state.patientId)}/labs`, query),
     renderLabs,
     { loadingLabel: 'Loading lab results' },
   );
 }
 
 function loadPrescriptions() {
+  const query = { limit: PAGE_SIZE, offset: state.prescriptionsOffset };
   loadSection(
     document.getElementById('prescriptions-region'),
-    () => api.get(`/patients/${encodeURIComponent(state.patientId)}/prescriptions`, {
-      limit: PAGE_SIZE,
-      offset: state.prescriptionsOffset,
-    }),
+    cache.keyFor(`/patients/${encodeURIComponent(state.patientId)}/prescriptions`, query),
+    () => api.get(`/patients/${encodeURIComponent(state.patientId)}/prescriptions`, query),
     renderPrescriptions,
     { loadingLabel: 'Loading prescriptions' },
   );
@@ -460,9 +465,12 @@ function loadPrescriptions() {
 
 function loadSummary() {
   const encountersRegion = document.getElementById('encounters-region');
-  if (encountersRegion) ui.renderLoading(encountersRegion, { label: 'Loading encounters', rows: 2 });
+  if (encountersRegion && !cache.peek(summaryCacheKey())) {
+    ui.renderLoading(encountersRegion, { label: 'Loading encounters', rows: 2 });
+  }
   loadSection(
     document.getElementById('summary-region'),
+    summaryCacheKey(),
     () => api.get(`/patients/${encodeURIComponent(state.patientId)}/summary`),
     renderSummary,
     {
@@ -484,10 +492,16 @@ function loadSummary() {
   );
 }
 
+function summaryCacheKey() {
+  return cache.keyFor(`/patients/${encodeURIComponent(state.patientId)}/summary`);
+}
+
 function loadDemographics() {
+  const path = `/patients/${encodeURIComponent(state.patientId)}`;
   loadSection(
     document.getElementById('demographics-region'),
-    () => api.get(`/patients/${encodeURIComponent(state.patientId)}`),
+    cache.keyFor(path),
+    () => api.get(path),
     renderDemographics,
     { loadingLabel: 'Loading patient demographics' },
   );
@@ -532,6 +546,44 @@ ui.onReady(async () => {
     });
     return;
   }
+
+  // Contextual command-menu actions for this record (AI surfaces follow the
+  // same permission gate as the rail itself).
+  const aiCommands = auth.hasPermission(user, 'patient:read')
+    ? [
+      {
+        id: 'summarize-patient',
+        title: 'Summarize this patient',
+        hint: 'Ask the assistant for problems, labs, medications, and plan',
+        keywords: 'ai assistant summary summarize patient',
+        group: 'Actions',
+        run: () => {
+          fillComposer(SUMMARY_QUESTION);
+          askAssistant();
+        },
+      },
+      {
+        id: 'ask-ai-patient',
+        title: 'Ask AI about this patient',
+        hint: 'Focus the question box in the assistant panel',
+        keywords: 'ai assistant ask question patient',
+        group: 'Actions',
+        run: () => {
+          const input = document.getElementById('ai-question');
+          if (input && typeof input.focus === 'function') input.focus();
+        },
+      },
+      ...RAIL_SUGGESTIONS.map((question) => ({
+        id: `ask-${question}`,
+        title: question,
+        hint: 'Fill the question box (you review before sending)',
+        keywords: 'ai assistant question suggestion',
+        group: 'Actions',
+        run: () => fillComposer(question),
+      })),
+    ]
+    : [];
+  commandMenu.initCommandMenu({ user, commands: aiCommands });
 
   loadDemographics();
   loadSummary();
@@ -731,7 +783,7 @@ function renderQuickActions() {
   );
   for (const question of RAIL_SUGGESTIONS) {
     host.append(ui.el('button', {
-      class: 'chip chip--action',
+      class: 'chip chip--action hit-slop',
       type: 'button',
       text: question,
       onClick: () => fillComposer(question),
@@ -742,19 +794,34 @@ function renderQuickActions() {
 async function initAiHistory() {
   const list = document.getElementById('ai-history-list');
   if (!list) return;
-  try {
-    const page = await aiHistory.fetchHistory({ patientId: state.patientId });
+  const key = cache.keyFor('/ai/conversations', {
+    limit: 20,
+    offset: 0,
+    patient_id: state.patientId,
+  });
+  const renderItems = (page) => {
     aiHistory.renderHistoryList(list, page && Array.isArray(page.items) ? page.items : [], {
       compact: true,
       emptyText: 'No questions about this patient yet.',
     });
-  } catch (error) {
-    aiHistory.renderHistoryFailure(list, error);
+  };
+  if (!cache.peek(key)) {
+    ui.renderLoading(list, {
+      label: 'Loading questions about this patient',
+      rows: 2,
+      wrapperTag: 'li',
+    });
   }
+  await cache.swr(key, () => aiHistory.fetchHistory({ patientId: state.patientId }), {
+    onData: renderItems,
+    onError: (error) => aiHistory.renderHistoryFailure(list, error),
+    onRevalidating: (on) => ui.setSyncIndicator(list, on),
+  });
 }
 
 /** The just-finished exchange joins this patient's history without a reload. */
 function recordHistoryEntry(question, payload) {
+  cache.invalidate('/ai/conversations');
   aiHistory.appendHistoryEntry(document.getElementById('ai-history-list'), {
     question,
     answer: payload && typeof payload.answer === 'string' ? payload.answer : '',

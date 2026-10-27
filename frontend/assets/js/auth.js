@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as cache from './cache.js';
 import * as ui from './ui.js';
 
 /** GET /api/v1/auth/me — current user payload or null when anonymous. */
@@ -65,6 +66,8 @@ export async function logout() {
   } catch (error) {
     if (!(error instanceof api.ApiError && error.status === 401)) throw error;
   }
+  // Per-tab response cache must never survive a user switch (or a sign-out).
+  cache.clearCache();
   window.location.assign('index.html');
 }
 

@@ -8,6 +8,8 @@
 
 import * as api from './api.js';
 import * as auth from './auth.js';
+import * as cache from './cache.js';
+import * as commandMenu from './command-menu.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 20;
@@ -87,23 +89,30 @@ function renderResults(page) {
 function load() {
   const region = document.getElementById('patients-region');
   const status = document.getElementById('patients-status');
-  if (status) status.textContent = 'Loading synthetic patients.';
+  const key = cache.keyFor('/patients', { q: state.query, limit: PAGE_SIZE, offset: state.offset });
 
-  ui.renderLoading(region, { label: 'Loading synthetic patients', rows: 6 });
+  // Stale-while-revalidate: a cached page renders instantly and refreshes in
+  // the background; a cold cache keeps the original skeleton -> data flow.
+  const cached = cache.peek(key);
+  if (!cached) {
+    if (status) status.textContent = 'Loading synthetic patients.';
+    ui.renderLoading(region, { label: 'Loading synthetic patients', rows: 6, variant: 'cards' });
+  }
 
-  api
-    .get('/patients', { q: state.query, limit: PAGE_SIZE, offset: state.offset })
-    .then((page) => {
+  cache.swr(key, () => api.get('/patients', { q: state.query, limit: PAGE_SIZE, offset: state.offset }), {
+    onData: (page) => {
       ui.hideGlobalBanner();
       renderResults(page);
-    })
-    .catch((error) => {
+    },
+    onError: (error) => {
       if (status) status.textContent = 'Loading failed.';
       ui.renderErrorState(region, error, {
         describe: api.describeApiError,
         onRetry: load,
       });
-    });
+    },
+    onRevalidating: (on) => ui.setSyncIndicator(region, on),
+  });
 }
 
 function initSearchForm() {
@@ -152,6 +161,20 @@ ui.onReady(async () => {
   try {
     const user = await auth.initAuthChrome({ active: 'patients' });
     if (!user) return;
+    commandMenu.initCommandMenu({
+      user,
+      commands: [{
+        id: 'search-patients',
+        title: 'Search synthetic patients',
+        hint: 'Focus the patient search box on this page',
+        keywords: 'find filter search patients mrn',
+        group: 'Actions',
+        run: () => {
+          const input = document.getElementById('patient-search');
+          if (input && typeof input.focus === 'function') input.focus();
+        },
+      }],
+    });
   } catch (error) {
     ui.renderErrorState(document.getElementById('patients-region'), error, {
       describe: api.describeApiError,

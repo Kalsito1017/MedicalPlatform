@@ -12,12 +12,18 @@
 // dedicated role endpoint. Never rendered here: password hashes, tokens,
 // sessions, or secret configuration — the API never returns them.
 // High-impact actions (role grant, role revoke, deactivate) always confirm via
-// ui.confirmDialog() with an explicit consequence sentence. The backend is the
-// authority: its 403/409 messages are rendered verbatim and cleanly.
+// ui.confirmDialog() with an explicit consequence sentence, then apply
+// OPTIMISTICALLY: the row updates immediately and the API call runs behind it.
+// On failure the row rolls back to the last server truth and an explanatory
+// error toast appears (api.describeApiError). Reversible actions additionally
+// get an undo toast (revoke role, deactivate account); see DESIGN.md.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
 import * as auth from './auth.js';
+import * as cache from './cache.js';
+import * as commandMenu from './command-menu.js';
+import * as toast from './toast.js';
 import * as ui from './ui.js';
 
 const ADMIN_PERMISSIONS = ['staff:read', 'staff:manage', 'role:assign'];
@@ -119,7 +125,7 @@ function renderRowActions(user) {
     );
     let grantButton = null;
     grantButton = ui.el('button', {
-      class: 'btn btn-secondary btn-sm',
+      class: 'btn btn-secondary btn-sm hit-slop',
       type: 'button',
       onClick: () => {
         grantRole(user, select.value, grantButton);
@@ -134,7 +140,7 @@ function renderRowActions(user) {
     for (const role of roles) {
       let revokeButton = null;
       revokeButton = ui.el('button', {
-        class: 'btn btn-ghost btn-sm',
+        class: 'btn btn-ghost btn-sm hit-slop',
         type: 'button',
         'aria-label': `Revoke ${ui.roleLabel(role)} from ${user.display_name}`,
         onClick: () => {
@@ -151,7 +157,7 @@ function renderRowActions(user) {
   if (canManage()) {
     let toggleButton = null;
     toggleButton = ui.el('button', {
-      class: user.is_active ? 'btn btn-danger btn-sm' : 'btn btn-secondary btn-sm',
+      class: user.is_active ? 'btn btn-danger btn-sm hit-slop' : 'btn btn-secondary btn-sm hit-slop',
       type: 'button',
       onClick: () => {
         toggleActive(user, toggleButton);
@@ -204,7 +210,7 @@ function renderStaffTable() {
   const columns = ['Staff member', 'Roles', 'Status', 'Created'];
   if (canManage() || canAssign()) columns.push('Actions');
 
-  const table = ui.el('table', { class: 'table table-stack' },
+  const table = ui.el('table', { class: 'table table-stack tabular-nums' },
     ui.el('thead', {},
       ui.el('tr', {}, columns.map((label) => ui.el('th', { scope: 'col', text: label }))),
     ),
@@ -236,10 +242,12 @@ function renderStaffTable() {
 
 function loadStaff() {
   const region = document.getElementById('staff-region');
-  ui.renderLoading(region, { label: 'Loading staff accounts', rows: 5 });
-  api
-    .get('/staff', { limit: PAGE_SIZE, offset: state.offset })
-    .then((page) => {
+  const key = cache.keyFor('/staff', { limit: PAGE_SIZE, offset: state.offset });
+  if (!cache.peek(key)) {
+    ui.renderLoading(region, { label: 'Loading staff accounts', rows: 5 });
+  }
+  cache.swr(key, () => api.get('/staff', { limit: PAGE_SIZE, offset: state.offset }), {
+    onData: (page) => {
       const items = Array.isArray(page.items) ? page.items : [];
       state.users = items;
       state.total = Number.isFinite(page.total) ? page.total : items.length;
@@ -250,13 +258,15 @@ function loadStaff() {
           ? '1 staff account found.'
           : `${state.total} staff accounts found.`;
       }
-    })
-    .catch((error) => {
+    },
+    onError: (error) => {
       ui.renderErrorState(region, error, {
         describe: api.describeApiError,
         onRetry: loadStaff,
       });
-    });
+    },
+    onRevalidating: (on) => ui.setSyncIndicator(region, on),
+  });
 }
 
 // Re-renders the table from state.users after a successful mutation so the
@@ -265,6 +275,23 @@ function replaceUser(updated) {
   const index = state.users.findIndex((user) => user.id === updated.id);
   if (index >= 0) state.users[index] = updated;
   renderStaffTable();
+}
+
+/** Current row state for a user id (used by optimistic rollback/undo). */
+function userById(userId) {
+  return state.users.find((user) => user.id === userId) || null;
+}
+
+// Optimistic apply: swap the row instantly, then reconcile with the server.
+// On failure the row returns to the last server truth and the caller explains.
+function applyOptimistic(updated) {
+  replaceUser(updated);
+  cache.invalidate('/staff');
+}
+
+function rollbackOptimistic(previous) {
+  cache.invalidate('/staff');
+  replaceUser(previous);
 }
 
 /* ---------------------------------------------------------- role changes */
@@ -291,18 +318,25 @@ async function grantRole(user, role, button) {
   });
   if (!confirmed) return;
 
+  // Optimistic: the row shows the new role immediately.
+  const previous = user;
+  const roles = Array.isArray(user.roles) ? user.roles : [];
+  applyOptimistic({ ...user, roles: roles.includes(role) ? roles : [...roles, role] });
+
   ui.setBusy(button, true, 'Granting…');
   try {
     const updated = await api.post(
       `/staff/${encodeURIComponent(user.id)}/roles`,
       { role },
     );
+    cache.invalidate('/staff');
     if (updated && updated.id) replaceUser(updated);
     else loadStaff();
     announceStatus('staff-status', `Role granted: ${ui.roleLabel(role)} is now held by ${user.display_name}.`);
   } catch (error) {
-    ui.setBusy(button, false);
+    rollbackOptimistic(previous);
     announceError('staff-status', error);
+    toast.showErrorToast(error);
   }
 }
 
@@ -321,19 +355,51 @@ async function revokeRole(user, role, button) {
   });
   if (!confirmed) return;
 
+  // Optimistic: the role disappears from the row immediately.
+  const previous = user;
+  const roles = Array.isArray(user.roles) ? user.roles : [];
+  applyOptimistic({ ...user, roles: roles.filter((held) => held !== role) });
+
   ui.setBusy(button, true, 'Revoking…');
   try {
     await api.del(
       `/staff/${encodeURIComponent(user.id)}/roles/${encodeURIComponent(role)}`,
     );
-    replaceUser({
-      ...user,
-      roles: (Array.isArray(user.roles) ? user.roles : []).filter((held) => held !== role),
-    });
+    cache.invalidate('/staff');
     announceStatus('staff-status', `Role revoked: ${ui.roleLabel(role)} was removed from ${user.display_name}.`);
+    toast.showToast({
+      message: `Role removed: ${ui.roleLabel(role)} was revoked from ${user.display_name}.`,
+      actionLabel: 'Undo',
+      onAction: () => restoreRole(user, role),
+    });
   } catch (error) {
-    ui.setBusy(button, false);
+    rollbackOptimistic(previous);
     announceError('staff-status', error);
+    toast.showErrorToast(error);
+  }
+}
+
+/** Undo of a role revoke: re-grant optimistically and reflect the result. */
+async function restoreRole(user, role) {
+  const current = userById(user.id) || user;
+  const previous = current;
+  const roles = Array.isArray(current.roles) ? current.roles : [];
+  if (!roles.includes(role)) {
+    applyOptimistic({ ...current, roles: [...roles, role] });
+  }
+  try {
+    const updated = await api.post(
+      `/staff/${encodeURIComponent(user.id)}/roles`,
+      { role },
+    );
+    cache.invalidate('/staff');
+    if (updated && updated.id) replaceUser(updated);
+    announceStatus('staff-status', `Restored: ${ui.roleLabel(role)} is held by ${user.display_name} again.`);
+    toast.showToast({ message: 'Restored.' });
+  } catch (error) {
+    rollbackOptimistic(previous);
+    announceError('staff-status', error);
+    toast.showErrorToast(error);
   }
 }
 
@@ -357,12 +423,17 @@ async function toggleActive(user, button) {
   });
   if (!confirmed) return;
 
+  // Optimistic: the status badge flips immediately.
+  const previous = user;
+  applyOptimistic({ ...user, is_active: activating });
+
   ui.setBusy(button, true, activating ? 'Activating…' : 'Deactivating…');
   try {
     const updated = await api.patch(
       `/staff/${encodeURIComponent(user.id)}`,
       { is_active: activating },
     );
+    cache.invalidate('/staff');
     if (updated && updated.id) replaceUser(updated);
     else loadStaff();
     announceStatus(
@@ -371,9 +442,38 @@ async function toggleActive(user, button) {
         ? `${user.display_name} can sign in again.`
         : `${user.display_name} is deactivated and their sessions have ended.`,
     );
+    if (!activating) {
+      toast.showToast({
+        message: `Account deactivated: ${user.display_name} cannot sign in until this account is reactivated.`,
+        actionLabel: 'Undo',
+        onAction: () => restoreActive(user),
+      });
+    }
   } catch (error) {
-    ui.setBusy(button, false);
+    rollbackOptimistic(previous);
     announceError('staff-status', error);
+    toast.showErrorToast(error);
+  }
+}
+
+/** Undo of a deactivation: reactivate optimistically and reflect the result. */
+async function restoreActive(user) {
+  const current = userById(user.id) || user;
+  const previous = current;
+  applyOptimistic({ ...current, is_active: true });
+  try {
+    const updated = await api.patch(
+      `/staff/${encodeURIComponent(user.id)}`,
+      { is_active: true },
+    );
+    cache.invalidate('/staff');
+    if (updated && updated.id) replaceUser(updated);
+    announceStatus('staff-status', `${user.display_name} can sign in again.`);
+    toast.showToast({ message: 'Restored.' });
+  } catch (error) {
+    rollbackOptimistic(previous);
+    announceError('staff-status', error);
+    toast.showErrorToast(error);
   }
 }
 
@@ -388,7 +488,7 @@ function showOneTimePassword(user, password) {
   });
 
   const copyButton = ui.el('button', {
-    class: 'btn btn-secondary btn-sm',
+    class: 'btn btn-secondary btn-sm hit-slop',
     type: 'button',
     onClick: async () => {
       const nav = typeof navigator !== 'undefined' ? navigator : null;
@@ -408,7 +508,7 @@ function showOneTimePassword(user, password) {
 
   const modal = { close: null };
   const closeButton = ui.el('button', {
-    class: 'btn btn-primary',
+    class: 'btn btn-primary hit-slop',
     type: 'button',
     onClick: () => {
       if (modal.close) modal.close();
@@ -534,6 +634,7 @@ function initCreateForm() {
       nameInput.value = '';
       passwordInput.value = '';
       roleSelect.value = '';
+      cache.invalidate('/staff');
       loadStaff();
 
       const name = user ? user.display_name : displayName;
@@ -613,7 +714,7 @@ function renderAudit(page) {
   }
 
   ui.clear(region);
-  const table = ui.el('table', { class: 'table table-stack' },
+  const table = ui.el('table', { class: 'table table-stack tabular-nums' },
     ui.el('thead', {},
       ui.el('tr', {},
         ui.el('th', { scope: 'col', text: 'When' }),
@@ -677,17 +778,21 @@ function renderAudit(page) {
 
 function loadAudit() {
   const region = document.getElementById('audit-region');
-  ui.renderLoading(region, { label: 'Loading audit events', rows: 4 });
-  api
-    .get('/audit', { limit: AUDIT_PAGE_SIZE, offset: state.auditOffset })
-    .then(renderAudit)
-    .catch((error) => {
+  const key = cache.keyFor('/audit', { limit: AUDIT_PAGE_SIZE, offset: state.auditOffset });
+  if (!cache.peek(key)) {
+    ui.renderLoading(region, { label: 'Loading audit events', rows: 4 });
+  }
+  cache.swr(key, () => api.get('/audit', { limit: AUDIT_PAGE_SIZE, offset: state.auditOffset }), {
+    onData: (page) => renderAudit(page),
+    onError: (error) => {
       ui.renderErrorState(region, error, {
         describe: api.describeApiError,
         onRetry: loadAudit,
         headingTag: 'h3',
       });
-    });
+    },
+    onRevalidating: (on) => ui.setSyncIndicator(region, on),
+  });
 }
 
 /* ---------------------------------------------------------------- page */
@@ -713,6 +818,7 @@ ui.onReady(async () => {
   try {
     const user = await auth.initAuthChrome({ active: 'admin' });
     if (!user) return;
+    commandMenu.initCommandMenu({ user });
 
     if (!auth.hasAnyPermission(user, ADMIN_PERMISSIONS)) {
       renderPermissionDenied();

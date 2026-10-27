@@ -206,6 +206,22 @@ export function avatar(name, { size = '', label = '' } = {}) {
   });
 }
 
+/* ---------------------------------------------------------- keyboard chips */
+
+/**
+ * A <kbd> chip for a real keyboard shortcut (e.g. "⌘K", "Enter"). Used in
+ * search/command affordances, the AI composer hints, and the command menu
+ * footer. `keys` accepts one label or an array rendered as "Shift+Enter".
+ */
+export function kbdChip(...keys) {
+  return el('kbd', { class: 'kbd', text: keys.flat().filter(Boolean).join('+') });
+}
+
+/** A shortcut hint line: kbdChip('Enter') + ' to send' entries as children. */
+export function shortcutHint(...children) {
+  return el('p', { class: 'ai-keyboard-hint' }, children.flat());
+}
+
 /* ---------------------------------------------------------- patient cards */
 
 function firstValueOf(source, keys) {
@@ -283,19 +299,57 @@ export function renderPatientCard(patient) {
 
 /* --------------------------------------------------------------- loading */
 
-export function renderLoading(container, { label = 'Loading', rows = 5 } = {}) {
+/**
+ * Shimmer skeleton placeholder shaped like the content it replaces, so the
+ * region's height and rhythm are close to the real data (no layout jump when
+ * the content arrives). Variants:
+ *   'rows'  (default) — three-bar rows: tables, lists, text sections;
+ *   'cards' — avatar circle + name/meta bars: patient card grids.
+ * The shimmer is a moving gradient over a solid grey block; under
+ * prefers-reduced-motion the CSS drops the shimmer and the static grey blocks
+ * remain. The skeleton is always replaced atomically by the real renderer.
+ */
+export function renderLoading(container, { label = 'Loading', rows = 5, variant = 'rows', wrapperTag = 'div' } = {}) {
   clear(container);
-  const wrapper = el('div', { class: 'skeleton-block', role: 'status', 'aria-live': 'polite' },
-    el('p', { class: 'visually-hidden', text: `${label}…` }),
+  const wrapper = el(wrapperTag, { class: 'skeleton-block', role: 'status', 'aria-live': 'polite' },
+    el('p', { class: 'visually-hidden', text: `${label}\u2026` }),
   );
   for (let i = 0; i < rows; i += 1) {
-    wrapper.append(el('div', { class: 'skeleton-row' },
-      el('div', { class: 'skeleton-bar skeleton-bar--lg', 'aria-hidden': 'true' }),
-      el('div', { class: 'skeleton-bar skeleton-bar--md', 'aria-hidden': 'true' }),
-      el('div', { class: 'skeleton-bar skeleton-bar--sm', 'aria-hidden': 'true' }),
-    ));
+    if (variant === 'cards') {
+      wrapper.append(el('div', { class: 'skeleton-card' },
+        el('div', { class: 'skeleton-bar skeleton-bar--circle', 'aria-hidden': 'true' }),
+        el('div', { class: 'skeleton-card__body' },
+          el('div', { class: 'skeleton-bar skeleton-bar--lg', 'aria-hidden': 'true' }),
+          el('div', { class: 'skeleton-bar skeleton-bar--md', 'aria-hidden': 'true' }),
+        ),
+      ));
+    } else {
+      wrapper.append(el('div', { class: 'skeleton-row' },
+        el('div', { class: 'skeleton-bar skeleton-bar--lg', 'aria-hidden': 'true' }),
+        el('div', { class: 'skeleton-bar skeleton-bar--md', 'aria-hidden': 'true' }),
+        el('div', { class: 'skeleton-bar skeleton-bar--sm', 'aria-hidden': 'true' }),
+      ));
+    }
   }
   container.append(wrapper);
+}
+
+/**
+ * Tiny "Updating…" indicator for stale-while-revalidate background refreshes.
+ * The cached content stays on screen; the chip only signals that a refresh is
+ * running. Safe to call with on=true/false repeatedly.
+ */
+export function setSyncIndicator(container, on) {
+  if (!container) return;
+  const existing = container.querySelector('.sync-chip');
+  if (on) {
+    if (!existing) {
+      const tag = String(container.tagName || '').toUpperCase() === 'UL' ? 'li' : 'p';
+      container.append(el(tag, { class: 'sync-chip', role: 'status', text: 'Updating\u2026' }));
+    }
+  } else if (existing && typeof container.removeChild === 'function') {
+    container.removeChild(existing);
+  }
 }
 
 /* ------------------------------------------------------------ empty/error */
@@ -408,7 +462,7 @@ export function renderPagination(container, { total, limit, offset, onChange, it
 
   const prev = el('li', {},
     el('button', {
-      class: 'btn btn-secondary btn-sm btn-icon',
+      class: 'btn btn-secondary btn-sm btn-icon hit-slop',
       type: 'button',
       disabled: currentPage <= 1 ? true : null,
       'aria-label': 'Previous page',
@@ -439,7 +493,7 @@ export function renderPagination(container, { total, limit, offset, onChange, it
 
   list.append(el('li', {},
     el('button', {
-      class: 'btn btn-secondary btn-sm btn-icon',
+      class: 'btn btn-secondary btn-sm btn-icon hit-slop',
       type: 'button',
       disabled: currentPage >= pageCount ? true : null,
       'aria-label': 'Next page',
@@ -497,7 +551,7 @@ export function showGlobalBanner({ tone = 'danger', message, actionLabel, onActi
   }
   if (dismissible) {
     actions.append(el('button', {
-      class: 'btn btn-ghost btn-sm',
+      class: 'btn btn-ghost btn-sm hit-slop',
       type: 'button',
       'aria-label': 'Dismiss message',
       onClick: hideGlobalBanner,
@@ -593,13 +647,13 @@ export function confirmDialog({
 
     actions.append(
       el('button', {
-        class: 'btn btn-secondary',
+        class: 'btn btn-secondary hit-slop',
         type: 'button',
         autofocus: true,
         onClick: () => settle(false),
       }, cancelLabel),
       el('button', {
-        class: danger ? 'btn btn-danger' : 'btn btn-primary',
+        class: danger ? 'btn btn-danger hit-slop' : 'btn btn-primary hit-slop',
         type: 'button',
         onClick: () => settle(true),
       }, confirmLabel),
@@ -685,7 +739,7 @@ export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
 
   const actions = clear(dialog.querySelector('#app-dialog-actions'));
   actions.append(el('button', {
-    class: 'btn btn-primary',
+    class: 'btn btn-primary hit-slop',
     type: 'button',
     autofocus: true,
     onClick: () => closeDialog(dialog),

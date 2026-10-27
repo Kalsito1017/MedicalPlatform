@@ -1412,6 +1412,12 @@ a.patient-card:hover {
   color: var(--color-text-muted);
 }
 
+/* Skeleton shimmer loaders — shape-matched placeholders for async regions.
+   A moving light gradient sweeps over solid grey blocks; under
+   prefers-reduced-motion the sweep is dropped and static grey blocks remain
+   (see the motion-safe section). The real content replaces the whole block
+   atomically when it arrives. */
+
 .skeleton-block {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -1431,23 +1437,92 @@ a.patient-card:hover {
   border-bottom: 0;
 }
 
+/* Card-shaped skeleton row: avatar circle + name/meta bars. */
+.skeleton-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px dashed var(--color-border);
+}
+
+.skeleton-card:last-child {
+  border-bottom: 0;
+}
+
+.skeleton-card__body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
 .skeleton-bar {
+  position: relative;
+  overflow: hidden;
   height: 0.9rem;
   border-radius: var(--radius-sm);
   background: var(--color-canvas-alt);
-  animation: skeleton-pulse 1.2s ease-in-out infinite alternate;
+}
+
+.skeleton-bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 100%
+  );
+  animation: skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
 .skeleton-bar--lg {
   flex: 2 1 12rem;
+  width: 100%;
 }
 
 .skeleton-bar--md {
   flex: 1 1 8rem;
+  width: 70%;
 }
 
 .skeleton-bar--sm {
   flex: 1 1 5rem;
+  width: 45%;
+}
+
+.skeleton-bar--circle {
+  flex: 0 0 auto;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-full);
+}
+
+/* Inside the card-shaped row the bars stack vertically: width matters, the
+   row flex-basis rules above must not stretch their height. */
+.skeleton-card__body .skeleton-bar {
+  flex: 0 0 auto;
+  height: 0.85rem;
+}
+
+.skeleton-card__body .skeleton-bar--lg {
+  width: 60%;
+}
+
+.skeleton-card__body .skeleton-bar--md {
+  width: 40%;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
 }
 
 @keyframes skeleton-pulse {
@@ -2412,5 +2487,367 @@ a.patient-card:hover {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
+  }
+
+  /* Skeleton shimmer: keep the static grey blocks, drop the sweep entirely. */
+  .skeleton-bar::after {
+    content: none;
+  }
+}
+
+/* ===================================================== wave UI patterns ===
+   Skeleton shimmer (above), optimistic/undo toasts, command menu, shortcut
+   kbd chips, hit slop, safe-area insets, edge-swipe safe zone, tabular
+   numerals, balanced headlines, continuous (squircle) corners.
+   Everything degrades gracefully: no support for a property means the
+   existing look simply stays (progressive enhancement only).
+   ========================================================================= */
+
+/* ------------------------------------------------------------- kbd chips */
+
+.kbd {
+  display: inline-block;
+  min-width: 1.5rem;
+  padding: 0.1rem 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1.5;
+  text-align: center;
+  color: var(--color-text-body);
+  background: var(--color-canvas-alt);
+  border: 1px solid var(--color-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ------------------------------------------------------ command trigger */
+
+.command-trigger {
+  gap: var(--space-2);
+}
+
+.command-trigger .kbd {
+  margin-left: var(--space-1);
+}
+
+/* --------------------------------------------------------- command menu */
+
+.command-menu {
+  width: min(38rem, calc(100vw - 2rem));
+  max-width: none;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--shadow-3);
+  overflow: hidden;
+}
+
+.command-menu::backdrop {
+  background: var(--color-overlay);
+}
+
+.command-menu__inner {
+  display: flex;
+  flex-direction: column;
+  max-height: min(70vh, 34rem);
+}
+
+.command-menu__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.command-menu__search .icon {
+  color: var(--color-text-muted);
+}
+
+.command-menu__input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-2) 0;
+  font: inherit;
+  font-size: var(--text-lg);
+  color: var(--color-text);
+  background: transparent;
+  border: 0;
+}
+
+.command-menu__input:focus-visible {
+  outline: none;
+}
+
+.command-menu__input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.command-menu__list {
+  margin: 0;
+  padding: var(--space-2);
+  list-style: none;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+
+.command-menu__group {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.command-menu__option {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.command-menu__option.is-active {
+  background: var(--color-primary-soft);
+  outline: 1px solid var(--color-primary-soft-border);
+}
+
+.command-menu__option-title {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.command-menu__option-hint {
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: right;
+}
+
+.command-menu__empty,
+.command-menu__note {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.command-menu__footer {
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-canvas-alt);
+}
+
+.command-menu__hints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.command-menu__hint {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.shortcut-list {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+
+.shortcut-list li {
+  margin-bottom: var(--space-2);
+}
+
+/* Mobile: the palette becomes a full-width sheet. */
+@media (max-width: 620px) {
+  .command-menu {
+    width: 100vw;
+    height: 100%;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    border: 0;
+  }
+
+  .command-menu__inner {
+    max-height: 100%;
+    height: 100%;
+  }
+}
+
+/* ---------------------------------------------------------------- toasts */
+
+.toast-region {
+  position: fixed;
+  right: max(var(--space-4), env(safe-area-inset-right));
+  bottom: max(var(--space-4), env(safe-area-inset-bottom));
+  left: max(var(--space-4), env(safe-area-inset-left));
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  width: min(26rem, 100%);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border-strong);
+  border-left: 4px solid var(--color-primary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  pointer-events: auto;
+}
+
+.toast--error {
+  border-left-color: var(--color-danger);
+}
+
+.toast__text {
+  flex: 1 1 12rem;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.toast__actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+/* --------------------------------------------- stale-while-revalidate chip */
+
+.sync-chip {
+  display: inline-block;
+  margin: var(--space-2) 0 0;
+  padding: 0.1rem 0.55rem;
+  font-size: var(--text-xs);
+  font-weight: 650;
+  color: var(--color-text-muted);
+  background: var(--color-canvas-alt);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  list-style: none;
+}
+
+/* ---------------------------------------------------------------- hit slop */
+
+/* Expands the effective touch target of small/icon buttons to at least 44px
+   WITHOUT changing their visual size: an invisible pseudo-element extends the
+   clickable area. Overlap with neighbours is kept small on purpose (the areas
+   are centred on the control). */
+.hit-slop {
+  position: relative;
+}
+
+.hit-slop::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/* ---------------------------------------------------------- tabular nums */
+
+.tabular-nums,
+.table,
+.pagination__summary,
+.char-counter,
+.state-panel__meta {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ------------------------------------------------------ balanced headlines */
+
+h1,
+h2,
+.card__title,
+.panel__title,
+.state-panel__title,
+.quick-link__title {
+  /* Browsers without text-wrap support simply wrap normally. */
+  text-wrap: balance;
+}
+
+/* ----------------------------------------------- continuous (squircle) corners */
+
+.card,
+.panel,
+.dialog,
+.command-menu,
+.btn,
+.badge,
+.field input,
+.field select,
+.field textarea,
+.state-panel,
+.toast,
+.help-card,
+.quick-link {
+  /* Progressive enhancement: browsers without corner-shape keep border-radius. */
+  corner-shape: squircle;
+}
+
+/* ------------------------------------------------------ safe-area insets */
+
+.topbar {
+  padding-top: max(var(--space-3), env(safe-area-inset-top));
+  padding-left: max(var(--space-5), env(safe-area-inset-left));
+  padding-right: max(var(--space-5), env(safe-area-inset-right));
+}
+
+.sidebar__foot {
+  padding-bottom: max(var(--space-4), env(safe-area-inset-bottom));
+}
+
+.site-nav {
+  padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
+}
+
+.site-footer {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.ai-composer {
+  padding-bottom: max(var(--space-2), env(safe-area-inset-bottom));
+}
+
+.toast-region {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ------------------------------------------- safe triangle (edge-swipe zone) */
+
+/* On touch-width layouts the left screen edge is reserved as a back-swipe /
+   edge-gesture zone: page content keeps a >=20px left gutter so no interactive
+   control's hit area (including .hit-slop pseudo-elements) overlaps the edge.
+   The sidebar "Menu" nav toggle is the deliberate edge control and stays where
+   it is. */
+@media (max-width: 960px) {
+  .container {
+    padding-left: max(var(--space-5), 22px);
+  }
+
+  .topbar {
+    padding-left: max(var(--space-5), 22px);
   }
 }
