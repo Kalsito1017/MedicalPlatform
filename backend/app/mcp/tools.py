@@ -1,6 +1,6 @@
-"""The six read-only MCP tools (docs/API.md "MCP tool contract").
+"""The seven read-only MCP tools (docs/API.md "MCP tool contract").
 
-Exactly six tools exist; there is no `execute_sql`, shell, filesystem, or
+Exactly seven tools exist; there is no `execute_sql`, shell, filesystem, or
 general-purpose database tool and none may be added. Every tool:
 
   * takes its arguments as typed, bounded values and a server-injected
@@ -22,7 +22,10 @@ general-purpose database tool and none may be added. Every tool:
 
 The two lookup tools (`find_patients_by_lab`, `find_patients_by_medication`)
 return ONLY patient references (patient id, display name, MRN) plus a short
-`matched` reason string — never a full clinical payload.
+`matched` reason string - never a full clinical payload. The panel tool
+(`get_my_recent_patients`) returns one bounded compact row per patient for the
+caller's own recent patients ("went through me"; identity from the ToolContext,
+never an argument).
 
 Tool results are envelopes consumed by app/mcp/server.py: `ok`/`data`/`error`
 go back to the model, `citations` feed the API response, and `audit` names the
@@ -33,6 +36,7 @@ lookup rows for such patients are silently dropped (never listed).
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -54,33 +58,67 @@ from app.mcp.limits import (
     LOOKUP_MAX_SCAN,
     MEDICATION_NAME_MAX_LENGTH,
     PATIENT_ID_MAX_LENGTH,
+    PANEL_CANDIDATE_SCAN_LIMIT,
+    PANEL_DAYS_DEFAULT,
+    PANEL_DAYS_MAX,
+    PANEL_DAYS_MIN,
+    PANEL_DIAGNOSIS_MAX,
+    PANEL_ITEM_MAX_LENGTH,
+    PANEL_KEY_RESULTS_MAX,
+    PANEL_LIMIT_DEFAULT,
+    PANEL_LIMIT_MAX,
+    PANEL_LIMIT_MIN,
+    PANEL_ROW_TEXT_MAX_LENGTH,
+    PANEL_TREATMENT_MAX,
     SEARCH_LIMIT_DEFAULT,
     SEARCH_LIMIT_MAX,
     SEARCH_LIMIT_MIN,
     SEARCH_QUERY_MAX_LENGTH,
+    SUMMARY_DIAGNOSIS_MAX,
     SUMMARY_LIMIT_DEFAULT,
     SUMMARY_LIMIT_MAX,
     SUMMARY_LIMIT_MIN,
+    SUMMARY_PRESCRIPTION_ITEMS_MAX,
     TEST_CODE_MAX_LENGTH,
     TEXT_FIELD_MAX_LENGTH,
     TRUNCATION_MARKER,
 )
 from app.models.lab import LabResult
 from app.models.medication import Medication, Prescription
-from app.models.patient import Patient
+from app.models.patient import Diagnosis, Encounter, Patient
 from app.schemas.patient import (
+    DiagnosisOut,
     EncounterOut,
     LabResultOut,
     PatientOut,
     PrescriptionOut,
+    ProblemOut,
 )
 from app.services import labs as labs_service
 from app.services import patients as patients_service
 from app.services import prescriptions as prescriptions_service
 from app.services.access import check_patient_access
 
-PATIENT_FIELDS = {"id", "mrn", "display_name", "date_of_birth", "sex", "provenance"}
-ENCOUNTER_FIELDS = {"id", "patient_id", "occurred_at", "encounter_type", "summary", "provenance"}
+PATIENT_FIELDS = {
+    "id",
+    "mrn",
+    "display_name",
+    "date_of_birth",
+    "sex",
+    "blood_type",
+    "age_years",
+    "provenance",
+}
+ENCOUNTER_FIELDS = {
+    "id",
+    "patient_id",
+    "occurred_at",
+    "encounter_type",
+    "summary",
+    "weight_kg",
+    "height_cm",
+    "provenance",
+}
 LAB_FIELDS = {
     "id",
     "patient_id",
@@ -108,8 +146,11 @@ PRESCRIPTION_FIELDS = {
     "status",
     "start_date",
     "end_date",
+    "items",
     "provenance",
 }
+DIAGNOSIS_FIELDS = {"code", "name", "status", "onset_date", "provenance"}
+PROBLEM_FIELDS = {"code", "display_name", "status", "onset_date", "provenance"}
 
 
 def truncate_text(value: str, max_length: int = TEXT_FIELD_MAX_LENGTH) -> str:
@@ -119,11 +160,26 @@ def truncate_text(value: str, max_length: int = TEXT_FIELD_MAX_LENGTH) -> str:
     return value[: max_length - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
 
 
+def _truncate_strings(value: Any, max_length: int = TEXT_FIELD_MAX_LENGTH) -> Any:
+    """Bound every string in a serialized payload (recursively)."""
+    if isinstance(value, str):
+        return truncate_text(value, max_length)
+    if isinstance(value, dict):
+        return {key: _truncate_strings(item, max_length) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_truncate_strings(item, max_length) for item in value]
+    return value
+
+
 def _dump(schema: type[Any], row: Any, fields: set[str]) -> dict[str, Any]:
+    """Serialize one row to the bounded tool shape (all strings truncated)."""
     data = schema.model_validate(row).model_dump(mode="json", include=fields)
-    if "summary" in data and isinstance(data["summary"], str):
-        data["summary"] = truncate_text(data["summary"])
-    return data
+    return _truncate_strings(data)
+
+
+def _iso_utc(value: datetime) -> str:
+    """Contract timestamp: ISO-8601 UTC with a 'Z' suffix (docs/API.md)."""
+    return value.isoformat().replace("+00:00", "Z")
 
 
 def _citation(resource_type: str, resource_id: Any) -> dict[str, str]:
@@ -184,6 +240,63 @@ def _parse_patient_id(raw: str) -> uuid.UUID | None:
         return uuid.UUID(str(raw))
     except ValueError:
         return None
+
+
+# --- summary/panel row formatters -----------------------------------------
+#
+# Every string these produce is bounded (truncate_text) with an explicit
+# `[truncated]` marker; numeric values serialize as Decimal strings.
+
+
+def _problem_from_diagnosis(diagnosis: Diagnosis) -> ProblemOut:
+    """Map a diagnosis row onto the summary's active-problem shape."""
+    return ProblemOut(
+        code=diagnosis.code,
+        display_name=diagnosis.name,
+        status=diagnosis.status,
+        onset_date=diagnosis.onset_date,
+    )
+
+
+def _vitals_dict(encounters: list[Encounter]) -> dict[str, Any] | None:
+    """Latest per-visit vitals + previous weight from newest-first encounters."""
+    measured = [row for row in encounters if row.weight_kg is not None]
+    if not measured:
+        return None
+    latest = measured[0]
+    previous = measured[1] if len(measured) > 1 else None
+    return {
+        "weight_kg": str(latest.weight_kg),
+        "height_cm": str(latest.height_cm) if latest.height_cm is not None else None,
+        "measured_at": _iso_utc(latest.occurred_at),
+        "previous_weight_kg": str(previous.weight_kg) if previous is not None else None,
+        "previous_measured_at": _iso_utc(previous.occurred_at) if previous is not None else None,
+        "provenance": "synthetic",
+    }
+
+
+def _treatment_dict(rx: Prescription) -> dict[str, Any]:
+    """One active prescription rendered as prescribed treatment (bounded)."""
+    items = [
+        {
+            "sequence_no": item.sequence_no,
+            "medication": truncate_text(str(item.medication_name)),
+            "dose_amount": str(item.dose_amount),
+            "dose_unit": truncate_text(str(item.dose_unit)),
+            "provenance": "synthetic",
+        }
+        for item in (getattr(rx, "items", None) or [])[:SUMMARY_PRESCRIPTION_ITEMS_MAX]
+    ]
+    return {
+        "prescription_id": str(rx.id),
+        "medication": truncate_text(str(rx.medication_name)),
+        "dose_amount": str(rx.dose_amount) if rx.dose_amount is not None else None,
+        "dose_unit": truncate_text(str(rx.dose_unit)),
+        "route": truncate_text(str(rx.route)),
+        "frequency": truncate_text(str(rx.frequency)),
+        "items": items,
+        "provenance": "synthetic",
+    }
 
 
 async def _authorize_patient(
@@ -272,10 +385,14 @@ async def get_patient_summary(
 ) -> dict[str, Any]:
     """Get the SYNTHETIC summary for one patient the current user may read.
 
-    Includes demographics, recent encounters (summaries may be truncated),
-    latest lab results per test, and active prescriptions. Missing sections are
-    returned as empty lists - absence of data is real and must be reported as
-    absent, never invented.
+    Includes demographics (blood type, derived age), recent encounters with the
+    per-visit vitals snapshot (weight/height, previous weight for trend),
+    problem-list diagnoses (active first), the latest clinical note's symptoms /
+    assessment / proposed plan, prescribed treatment (active prescriptions with
+    their items), latest lab results per test, and active prescriptions.
+    Missing sections are returned as empty lists or null - absence of data is
+    real and must be reported as absent, never invented. Proposed treatment is
+    what the RECORD says was proposed - never advice.
     """
     name = "get_patient_summary"
     if not is_valid_context(tool_context):
@@ -298,8 +415,12 @@ async def get_patient_summary(
     encounters = await patients_service.list_encounters(ctx.db, pid, limit=limit)
     latest_labs = await patients_service.list_latest_labs(ctx.db, pid)
     active_prescriptions = await patients_service.list_active_prescriptions(ctx.db, pid)
+    diagnoses: list[Diagnosis] = list(getattr(patient, "diagnoses", []) or [])
+    latest_note = getattr(patient, "latest_note", None)
     citations = [_citation("patient", patient.id)]
     citations += [_citation("encounter", row.id) for row in encounters]
+    if latest_note is not None:
+        citations.append(_citation("clinical_note", latest_note.id))
     citations += [_citation("lab_result", row.id) for row in latest_labs]
     citations += [_citation("prescription", row.id) for row in active_prescriptions]
     return await _finish(
@@ -312,11 +433,26 @@ async def get_patient_summary(
         data={
             "patient": _dump(PatientOut, patient, PATIENT_FIELDS),
             "encounters": [_dump(EncounterOut, row, ENCOUNTER_FIELDS) for row in encounters],
-            "active_problems": [],
+            "vitals": _vitals_dict(encounters),
+            "diagnoses": [
+                _dump(DiagnosisOut, row, DIAGNOSIS_FIELDS) for row in diagnoses[:SUMMARY_DIAGNOSIS_MAX]
+            ],
+            "active_problems": [
+                _dump(ProblemOut, _problem_from_diagnosis(row), PROBLEM_FIELDS)
+                for row in diagnoses
+                if row.status == "active"
+            ],
+            "symptoms": truncate_text(latest_note.symptoms) if latest_note is not None else None,
+            "assessment": truncate_text(latest_note.assessment) if latest_note is not None else None,
+            "proposed_plan": truncate_text(latest_note.proposed_plan) if latest_note is not None else None,
+            "prescribed_treatment": [
+                _treatment_dict(row) for row in active_prescriptions
+            ],
             "latest_labs": [_dump(LabResultOut, row, LAB_FIELDS) for row in latest_labs],
             "active_prescriptions": [
                 _dump(PrescriptionOut, row, PRESCRIPTION_FIELDS) for row in active_prescriptions
             ],
+            "provenance": "synthetic",
         },
         citations=citations,
     )
@@ -387,6 +523,222 @@ async def get_recent_prescriptions(
             "total": total,
         },
         citations=[_citation("prescription", row.id) for row in rows],
+    )
+
+
+# --- practitioner panel tool (get_my_recent_patients) ----------------------
+#
+# The panel roundup ("which patients went through me in the last N days").
+# Decisions (docs/API.md "MCP tool contract"):
+#   * "me" is the verified principal in the injected ToolContext
+#     (`principal.user_uuid`) - NEVER a tool argument; the LLM-facing schema
+#     exposes only `days` and `limit`,
+#   * "went through me" = within the UTC window [now - days, now] (inclusive
+#     both ends, one freezeable clock: `app.services.patients.utc_now`) a
+#     patient had (a) PRIMARY - an encounter whose `practitioner_id` is the
+#     caller, or (b) UNION - an active `patient_assignment` to the caller
+#     (ended_at NULL) AND any encounter in the window. When both match, (a)
+#     wins: the patient is represented by their most recent encounter WITH the
+#     caller (that encounter is cited and stamped as `last_encounter_at`);
+#     assignment-only patients are represented by their most recent in-window
+#     encounter. Rows are ordered by that representing encounter, newest first.
+#   * row content answers "their results, symptoms, weight, blood category,
+#     age, proposed treatment, prescribed treatment": weight is the most
+#     recent recorded vitals snapshot, symptoms/proposed plan come from the
+#     most recent clinical note, key results are the most recent result per
+#     test code with abnormal ones first, prescribed treatment is the active
+#     prescriptions (what the RECORD says - never advice),
+#   * `limit` clamps 1..50 and `days` clamps 1..365 (schema-bounded; out of
+#     range is a controlled `invalid_arguments` at the registry, and direct
+#     invocation additionally clamps as defense in depth),
+#   * visibility: `patient:read` is checked once per call (deny -> empty result
+#     with a note, outcome `denied`), then the SAME `check_patient_access` seam
+#     as the REST API runs per candidate row; non-visible rows are dropped and
+#     paging continues past them within a bounded candidate scan, so concealed
+#     rows never crowd out visible ones. The "mine" filter only ever NARROWS
+#     visibility. `total` counts only rows the caller may see,
+#   * every string in a row is bounded with `[truncated]`; audit action
+#     `mcp.get_my_recent_patients`, resource_type `patient_panel`,
+#     resource_id None (never search terms or clinical payloads).
+
+
+def _key_result_line(lab: LabResult) -> str:
+    """One key-result string: "K 5.86 mmol/L high (2026-09-24)" (bounded)."""
+    if lab.value_num is not None:
+        value = _fmt_decimal(lab.value_num)
+    else:
+        value = truncate_text(str(lab.value_text or ""), PANEL_ITEM_MAX_LENGTH // 2)
+    unit = f" {lab.unit}" if lab.unit else ""
+    direction = ""
+    if lab.value_num is not None and lab.ref_high is not None and lab.value_num > lab.ref_high:
+        direction = " high"
+    elif lab.value_num is not None and lab.ref_low is not None and lab.value_num < lab.ref_low:
+        direction = " low"
+    when = lab.collected_at.date().isoformat() if lab.collected_at else "unknown date"
+    return truncate_text(f"{lab.test_code} {value}{unit}{direction} ({when})", PANEL_ITEM_MAX_LENGTH)
+
+
+def _treatment_line(rx: Prescription) -> str:
+    """One prescribed-treatment string: "Metformin 500 mg oral twice daily"."""
+    if rx.dose_amount is not None:
+        dose = f"{_fmt_decimal(rx.dose_amount)} {rx.dose_unit}"
+    else:
+        dose = str(rx.dose_unit or "")
+    return truncate_text(
+        f"{rx.medication_name} {dose} {rx.route} {rx.frequency}".strip(), PANEL_ITEM_MAX_LENGTH
+    )
+
+
+def _panel_row(patient: Patient, encounter: Encounter, details: dict[str, Any]) -> dict[str, Any]:
+    """One compact, fully bounded panel row (see the section comment)."""
+    note = details.get("latest_note")
+    vitals = details.get("last_vitals")
+    weight_kg = None
+    if vitals is not None and vitals.weight_kg is not None:
+        weight_kg = str(vitals.weight_kg)
+    return {
+        "patient_id": str(patient.id),
+        "display_name": truncate_text(str(patient.display_name)),
+        "mrn": truncate_text(str(patient.mrn)),
+        "age_years": patients_service.age_in_years(patient.date_of_birth),
+        "sex": str(patient.sex),
+        "blood_type": patient.blood_type,
+        "last_encounter_at": _iso_utc(encounter.occurred_at),
+        "weight_kg": weight_kg,
+        "symptoms": (
+            truncate_text(str(note.symptoms), PANEL_ROW_TEXT_MAX_LENGTH) if note is not None else None
+        ),
+        "diagnoses": [
+            truncate_text(str(row.name), PANEL_ITEM_MAX_LENGTH)
+            for row in details.get("diagnoses", [])[:PANEL_DIAGNOSIS_MAX]
+        ],
+        "key_results": [
+            _key_result_line(row) for row in details.get("key_labs", [])[:PANEL_KEY_RESULTS_MAX]
+        ],
+        "proposed_plan": (
+            truncate_text(str(note.proposed_plan), PANEL_ROW_TEXT_MAX_LENGTH)
+            if note is not None
+            else None
+        ),
+        "prescribed_treatment": [
+            _treatment_line(row)
+            for row in details.get("active_prescriptions", [])[:PANEL_TREATMENT_MAX]
+        ],
+    }
+
+
+async def get_my_recent_patients(
+    days: Annotated[int, Field(ge=PANEL_DAYS_MIN, le=PANEL_DAYS_MAX, description="Look-back window in days counted back from now, UTC, inclusive (1-365).")] = PANEL_DAYS_DEFAULT,
+    limit: Annotated[int, Field(ge=PANEL_LIMIT_MIN, le=PANEL_LIMIT_MAX, description="Maximum patient rows to return (1-50); `total` always reports the full visible count.")] = PANEL_LIMIT_DEFAULT,
+    tool_context: ToolContext | None = None,
+) -> dict[str, Any]:
+    """List the SYNTHETIC patients that went through YOU in the last N days.
+
+    "You" is the verified caller (never an argument). A patient is listed when,
+    within the window, they had an encounter with you (practitioner match - the
+    primary meaning) or you hold an active care assignment for them and they
+    had any encounter in the window. Returns one compact row per patient, most
+    recent first: demographics, age (derived), sex, blood type, weight, last
+    encounter time, symptoms, diagnosis names, key lab results (abnormal
+    first), proposed plan, and prescribed treatment - every string bounded.
+    Requires `patient:read`; patients you may not read are never listed. Absent
+    values are real absences and must be reported as absent, never invented.
+    """
+    name = "get_my_recent_patients"
+    if not is_valid_context(tool_context):
+        return await _finish(
+            name,
+            None,
+            outcome="denied",
+            resource_type="patient_panel",
+            ok=False,
+            error={
+                "code": "forbidden",
+                "message": "This tool requires a verified caller context; the call was denied.",
+            },
+        )
+    ctx = tool_context
+    if not has_permission(ctx.principal.roles, "patient:read"):
+        return await _finish(
+            name,
+            ctx,
+            outcome="denied",
+            resource_type="patient_panel",
+            ok=True,
+            data={
+                "patients": [],
+                "total": 0,
+                "note": "No patients are visible to your account.",
+            },
+        )
+    me = ctx.principal.user_uuid
+    if me is None:
+        return await _finish(
+            name,
+            ctx,
+            outcome="denied",
+            resource_type="patient_panel",
+            ok=False,
+            error={
+                "code": "forbidden",
+                "message": "This tool requires a verified caller context; the call was denied.",
+            },
+        )
+    bound_days = max(PANEL_DAYS_MIN, min(days, PANEL_DAYS_MAX))
+    bound = max(PANEL_LIMIT_MIN, min(limit, PANEL_LIMIT_MAX))
+    now = patients_service.utc_now()
+    since = now - timedelta(days=bound_days)
+
+    async def fetch_page(page_limit: int, offset: int) -> list[tuple[Encounter, Patient]]:
+        return await patients_service.list_panel_candidates(
+            ctx.db,
+            practitioner_id=me,
+            since=since,
+            until=now,
+            limit=page_limit,
+            offset=offset,
+        )
+
+    visible = await _visible_pairs(ctx, fetch_page, PANEL_CANDIDATE_SCAN_LIMIT)
+    total = len(visible)
+    page = visible[:bound]
+    details = await patients_service.load_panel_details(
+        ctx.db, [patient.id for _encounter, patient in page]
+    )
+    rows = [_panel_row(patient, encounter, details[patient.id]) for encounter, patient in page]
+    citations: list[dict[str, str]] = []
+    for encounter, patient in page:
+        bucket = details[patient.id]
+        citations.append(_citation("patient", patient.id))
+        citations.append(_citation("encounter", encounter.id))
+        note = bucket.get("latest_note")
+        if note is not None:
+            citations.append(_citation("clinical_note", note.id))
+        citations += [
+            _citation("lab_result", row.id) for row in bucket.get("key_labs", [])[:PANEL_KEY_RESULTS_MAX]
+        ]
+        citations += [
+            _citation("prescription", row.id)
+            for row in bucket.get("active_prescriptions", [])[:PANEL_TREATMENT_MAX]
+        ]
+    data: dict[str, Any] = {
+        "window_days": bound_days,
+        "window_start": _iso_utc(since),
+        "patients": rows,
+        "total": total,
+    }
+    if total == 0:
+        data["note"] = f"No synthetic patients went through you in the last {bound_days} days."
+    elif total > len(rows):
+        data["note"] = f"Showing {len(rows)} of {total} patients."
+    return await _finish(
+        name,
+        ctx,
+        outcome="success",
+        resource_type="patient_panel",
+        ok=True,
+        data=data,
+        citations=citations,
     )
 
 

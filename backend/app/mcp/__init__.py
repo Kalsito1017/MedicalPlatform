@@ -13,9 +13,10 @@ Public surface (see app/mcp/server.py for the design decision record):
   semantics, JSON-Schema-typed bounded arguments, safe errors, auditing).
 - `ToolContext`: the server-injected verified caller context (principal, db
   session, request id) - never a tool argument.
-- Exactly six read-only tools (`app.mcp.tools`): `search_authorized_patients`,
+- Exactly seven read-only tools (`app.mcp.tools`): `search_authorized_patients`,
   `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`,
-  `find_patients_by_lab`, `find_patients_by_medication`.
+  `find_patients_by_lab`, `find_patients_by_medication`,
+  `get_my_recent_patients`.
   No `execute_sql`, shell, filesystem, or general-purpose database tool exists
   or may be added (docs/API.md MCP tool contract).
 """

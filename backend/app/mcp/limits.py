@@ -23,6 +23,34 @@ LIST_LIMIT_DEFAULT = 20
 
 PATIENT_ID_MAX_LENGTH = 64
 
+# get_my_recent_patients (the practitioner panel roundup).
+# The LLM-facing schema exposes ONLY `days` and `limit`; the acting identity
+# comes from the injected ToolContext (never a tool argument).
+PANEL_DAYS_MIN = 1
+PANEL_DAYS_MAX = 365
+PANEL_DAYS_DEFAULT = 7
+PANEL_LIMIT_MIN = 1
+PANEL_LIMIT_MAX = 50
+PANEL_LIMIT_DEFAULT = 25
+# One compact row per patient; every string in it is bounded below.
+PANEL_ROW_TEXT_MAX_LENGTH = 200  # symptoms / proposed plan
+PANEL_ITEM_MAX_LENGTH = 100  # diagnosis names, key results, prescribed treatments
+PANEL_DIAGNOSIS_MAX = 3
+PANEL_KEY_RESULTS_MAX = 5
+PANEL_TREATMENT_MAX = 3
+# Per-patient fetch bounds for the row aggregates (key-result selection scans
+# at most this many latest-per-test results before picking the bounded few).
+PANEL_LABS_PER_PATIENT_MAX = 12
+PANEL_WEIGHT_LOOKBACK = 1  # most recent encounter carrying vitals
+# Visibility filtering runs the check_patient_access seam per candidate and
+# pages past non-visible rows within this bounded candidate scan, so concealed
+# rows never crowd out visible ones (same rule as the lookup tools).
+PANEL_CANDIDATE_SCAN_LIMIT = 200
+
+# get_patient_summary extension bounds (docs/API.md summary payload).
+SUMMARY_DIAGNOSIS_MAX = 10
+SUMMARY_PRESCRIPTION_ITEMS_MAX = 5
+
 # Cross-patient lookup tools (find_patients_by_lab / find_patients_by_medication).
 LOOKUP_LIMIT_MIN = 1
 LOOKUP_LIMIT_MAX = 50

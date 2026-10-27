@@ -1,6 +1,6 @@
 """MCP tool-layer tests (docs/API.md MCP tool contract, PLAN.md Phase 7).
 
-Covers: the fixed six-tool allowlist (no SQL/shell/filesystem tool), typed and
+Covers: the fixed seven-tool allowlist (no SQL/shell/filesystem tool), typed and
 bounded JSON-Schema arguments, identity/context never exposed as a tool
 argument, controlled safe errors for bad arguments and unknown tools, result
 limits and truncation markers, ToolContext denial, authorization re-executed
@@ -8,7 +8,10 @@ per call (argument tampering cannot escalate), audit events for every call,
 and hard tool timeouts — including the two cross-patient lookup tools
 (find_patients_by_lab / find_patients_by_medication): reference-range
 abnormality, active-only filtering, limit bounds, unknown-code handling,
-wildcard escaping, and the per-patient visibility seam.
+wildcard escaping, and the per-patient visibility seam — and the practitioner
+panel tool (get_my_recent_patients): window boundaries, practitioner scoping,
+assignment union, identity tampering, limit/total, concealed rows, and the
+row shape/values.
 
 Direct tool invocation is deliberately tested (PLAN.md: "Test direct tool
 invocation, malformed input, unauthorized access, and oversized result
@@ -19,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -31,13 +35,14 @@ MCP_DIR = Path(__file__).resolve().parents[1] / "app" / "mcp"
 EXPECTED_TOOLS = (
     "find_patients_by_lab",
     "find_patients_by_medication",
+    "get_my_recent_patients",
     "get_patient_lab_results",
     "get_patient_summary",
     "get_recent_prescriptions",
     "search_authorized_patients",
 )
 
-# Every LLM-facing argument across the six tools.
+# Every LLM-facing argument across the seven tools.
 ALLOWED_SCHEMA_ARGS = {
     "query",
     "limit",
@@ -46,6 +51,7 @@ ALLOWED_SCHEMA_ARGS = {
     "abnormal_only",
     "medication_name",
     "active_only",
+    "days",
 }
 
 FORBIDDEN_TOOL_MARKERS = (
@@ -154,6 +160,29 @@ def test_tool_schemas_are_typed_and_bounded() -> None:
     assert by_med["properties"]["limit"]["maximum"] == LOOKUP_LIMIT_MAX
     assert by_med["properties"]["limit"]["default"] == LOOKUP_LIMIT_DEFAULT
     assert "medication_name" in by_med.get("required", [])
+
+    # The panel tool: typed, bounded, and only `days`/`limit` (identity is
+    # server-injected and can never be a tool argument).
+    from app.mcp.limits import (
+        PANEL_DAYS_DEFAULT,
+        PANEL_DAYS_MAX,
+        PANEL_DAYS_MIN,
+        PANEL_LIMIT_DEFAULT,
+        PANEL_LIMIT_MAX,
+        PANEL_LIMIT_MIN,
+    )
+
+    panel = schemas["get_my_recent_patients"]
+    assert set(panel["properties"]) == {"days", "limit"}
+    assert panel["properties"]["days"]["type"] == "integer"
+    assert panel["properties"]["days"]["minimum"] == PANEL_DAYS_MIN
+    assert panel["properties"]["days"]["maximum"] == PANEL_DAYS_MAX
+    assert panel["properties"]["days"]["default"] == PANEL_DAYS_DEFAULT
+    assert panel["properties"]["limit"]["type"] == "integer"
+    assert panel["properties"]["limit"]["minimum"] == PANEL_LIMIT_MIN
+    assert panel["properties"]["limit"]["maximum"] == PANEL_LIMIT_MAX
+    assert panel["properties"]["limit"]["default"] == PANEL_LIMIT_DEFAULT
+    assert panel.get("required", []) == []
 
     for name, schema in schemas.items():
         description = schema.get("description") or json.dumps(schema)
@@ -1097,3 +1126,635 @@ async def test_lookup_matched_text_is_truncated_with_marker(
     matched = by_lab.model_payload["data"]["patients"][0]["matched"]
     assert matched.endswith(TRUNCATION_MARKER)
     assert len(matched) <= LOOKUP_MATCHED_MAX_LENGTH
+
+
+# --- practitioner panel tool (get_my_recent_patients) ----------------------
+#
+# Deterministic fixture around a FROZEN clock (PANEL_NOW): window filtering,
+# inclusive/exclusive boundaries, practitioner scoping, the assignment union,
+# identity tampering, bounds, authorization, concealment, and row shape are all
+# asserted against exact expected rows.
+
+
+PANEL_NOW = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+
+PANEL_ROW_KEYS = {
+    "patient_id",
+    "display_name",
+    "mrn",
+    "age_years",
+    "sex",
+    "blood_type",
+    "last_encounter_at",
+    "weight_kg",
+    "symptoms",
+    "diagnoses",
+    "key_results",
+    "proposed_plan",
+    "prescribed_treatment",
+}
+
+
+@pytest.fixture
+def freeze_panel_clock(monkeypatch):
+    """Freeze THE clock (app.services.patients.utc_now) at PANEL_NOW."""
+    from app.services import patients as patients_service
+
+    monkeypatch.setattr(patients_service, "utc_now", lambda: PANEL_NOW)
+
+
+async def _add_panel_data(db_engine, *, me_id, other_id, token):
+    """Synthetic panel fixture (see the section comment) around PANEL_NOW.
+
+    Patients (token-unique names/MRNs):
+      alpha   - encounters with ME at -3d (vitals 70.50/165.00) and -20d
+                (72.00/165.00); active + resolved diagnoses; one note; K high
+                and GLU normal labs; one active Metformin prescription + item.
+      beta    - encounter with ME at -20d only; note with 3000-char symptoms.
+      gamma   - encounter with OTHER at -2d; active assignment to ME (union).
+      delta   - encounter with OTHER at -1d; no assignment (never mine).
+      epsilon - active assignment to ME; only a -40d encounter (out of window).
+      zeta    - encounter with ME at exactly -7d (inclusive boundary).
+      eta     - encounter with ME at exactly -30d (inclusive boundary).
+      theta   - encounter with ME at +1d (future: outside every window).
+      gone    - soft-deleted patient with a -1d encounter with ME (concealed).
+    """
+    from datetime import date as date_type
+    from decimal import Decimal
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import (
+        ClinicalNote,
+        Diagnosis,
+        Encounter,
+        LabResult,
+        Patient,
+        PatientAssignment,
+        Prescription,
+        PrescriptionItem,
+    )
+
+    def day(offset_days: int, hour: int = 12) -> datetime:
+        return PANEL_NOW + timedelta(days=offset_days, hours=hour - 12)
+
+    ids = {
+        "alpha": uuid.uuid4(),
+        "beta": uuid.uuid4(),
+        "gamma": uuid.uuid4(),
+        "delta": uuid.uuid4(),
+        "epsilon": uuid.uuid4(),
+        "zeta": uuid.uuid4(),
+        "eta": uuid.uuid4(),
+        "theta": uuid.uuid4(),
+        "gone": uuid.uuid4(),
+    }
+    encounters = {
+        "alpha_recent": uuid.uuid4(),
+        "alpha_old": uuid.uuid4(),
+        "beta": uuid.uuid4(),
+        "gamma": uuid.uuid4(),
+        "delta": uuid.uuid4(),
+        "epsilon": uuid.uuid4(),
+        "zeta": uuid.uuid4(),
+        "eta": uuid.uuid4(),
+        "theta": uuid.uuid4(),
+        "gone": uuid.uuid4(),
+    }
+    extras = {
+        "note_alpha": uuid.uuid4(),
+        "note_beta": uuid.uuid4(),
+        "dx_alpha_active": uuid.uuid4(),
+        "dx_alpha_resolved": uuid.uuid4(),
+        "lab_k": uuid.uuid4(),
+        "lab_glu": uuid.uuid4(),
+        "rx_alpha": uuid.uuid4(),
+    }
+
+    def patient(key, display, sex, *, dob=None, blood=None, deleted=False):
+        return Patient(
+            id=ids[key],
+            mrn=f"DEMO-P{token}{key[:2].upper()}",
+            display_name=display,
+            given_name="Panel",
+            family_name=display,
+            date_of_birth=dob,
+            sex=sex,
+            blood_type=blood,
+            provenance="synthetic",
+            deleted_at=PANEL_NOW if deleted else None,
+        )
+
+    def encounter(key, patient_key, at, *, practitioner, weight=None, height=None):
+        return Encounter(
+            id=encounters[key],
+            patient_id=ids[patient_key],
+            occurred_at=at,
+            encounter_type="progress note",
+            summary=f"Synthetic panel encounter {token}.",
+            practitioner_id=practitioner,
+            weight_kg=Decimal(weight) if weight is not None else None,
+            height_cm=Decimal(height) if height is not None else None,
+        )
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        session.add_all(
+            [
+                patient("alpha", f"Panel Alpha {token}", "female", dob=date_type(1980, 1, 15), blood="A+"),
+                patient("beta", f"Panel Beta {token}", "male", dob=date_type(1992, 6, 30), blood="O-"),
+                patient("gamma", f"Panel Gamma {token}", "other", dob=date_type(2001, 2, 2), blood="B+"),
+                patient("delta", f"Panel Delta {token}", "male"),
+                patient("epsilon", f"Panel Epsilon {token}", "female"),
+                patient("zeta", f"Panel Zeta {token}", "male"),
+                patient("eta", f"Panel Eta {token}", "female"),
+                patient("theta", f"Panel Theta {token}", "male"),
+                patient("gone", f"Panel Gone {token}", "unknown", deleted=True),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                encounter("alpha_recent", "alpha", day(-3), practitioner=me_id, weight="70.50", height="165.00"),
+                encounter("alpha_old", "alpha", day(-20), practitioner=me_id, weight="72.00", height="165.00"),
+                encounter("beta", "beta", day(-20), practitioner=me_id),
+                encounter("gamma", "gamma", day(-2), practitioner=other_id, weight="75.25", height="170.00"),
+                encounter("delta", "delta", day(-1), practitioner=other_id),
+                encounter("epsilon", "epsilon", day(-40), practitioner=me_id),
+                encounter("zeta", "zeta", day(-7), practitioner=me_id, weight="81.00"),
+                encounter("eta", "eta", day(-30), practitioner=me_id),
+                encounter("theta", "theta", day(1), practitioner=me_id),
+                encounter("gone", "gone", day(-1), practitioner=me_id),
+            ]
+        )
+        await session.flush()
+        session.add_all(
+            [
+                ClinicalNote(
+                    id=extras["note_alpha"],
+                    patient_id=ids["alpha"],
+                    encounter_id=encounters["alpha_recent"],
+                    author_id=me_id,
+                    note_type="progress_note",
+                    symptoms="fatigue and cold intolerance",
+                    assessment="hypothyroidism",
+                    proposed_plan="start levothyroxine 50 mcg daily; recheck TSH in 6 weeks",
+                    body=f"Synthetic panel note {token}.",
+                    created_at=day(-3),
+                ),
+                ClinicalNote(
+                    id=extras["note_beta"],
+                    patient_id=ids["beta"],
+                    encounter_id=encounters["beta"],
+                    author_id=me_id,
+                    note_type="progress_note",
+                    symptoms="x" * 3000,
+                    assessment="stable",
+                    proposed_plan="observe",
+                    body=f"Synthetic panel note {token}.",
+                    created_at=day(-20),
+                ),
+                Diagnosis(
+                    id=extras["dx_alpha_active"],
+                    patient_id=ids["alpha"],
+                    encounter_id=encounters["alpha_recent"],
+                    code="E11.9",
+                    name="Type 2 diabetes mellitus",
+                    status="active",
+                    onset_date=date_type(2024, 5, 1),
+                    recorded_at=day(-20),
+                ),
+                Diagnosis(
+                    id=extras["dx_alpha_resolved"],
+                    patient_id=ids["alpha"],
+                    encounter_id=encounters["alpha_old"],
+                    code="D50.9",
+                    name="Iron deficiency anemia",
+                    status="resolved",
+                    onset_date=date_type(2023, 1, 1),
+                    recorded_at=day(-25),
+                ),
+                LabResult(
+                    id=extras["lab_k"],
+                    patient_id=ids["alpha"],
+                    encounter_id=encounters["alpha_recent"],
+                    test_code="K",
+                    test_name="Potassium",
+                    value_num=Decimal("5.860"),
+                    unit="mmol/L",
+                    ref_low=Decimal("3.500"),
+                    ref_high=Decimal("5.100"),
+                    status="final",
+                    collected_at=day(-3, 8),
+                ),
+                LabResult(
+                    id=extras["lab_glu"],
+                    patient_id=ids["alpha"],
+                    encounter_id=encounters["alpha_recent"],
+                    test_code="GLU",
+                    test_name="Glucose, fasting",
+                    value_num=Decimal("5.500"),
+                    unit="mg/dL",
+                    ref_low=Decimal("4.000"),
+                    ref_high=Decimal("6.000"),
+                    status="final",
+                    collected_at=day(-3, 8),
+                ),
+                Prescription(
+                    id=extras["rx_alpha"],
+                    patient_id=ids["alpha"],
+                    medication_name="Metformin",
+                    dose_amount=Decimal("500.000"),
+                    dose_unit="mg",
+                    route="oral",
+                    frequency="twice daily",
+                    status="active",
+                    start_date=date_type(2026, 1, 1),
+                ),
+                PatientAssignment(
+                    patient_id=ids["gamma"],
+                    staff_user_id=me_id,
+                    care_role="attending",
+                    assigned_at=day(-60),
+                ),
+                PatientAssignment(
+                    patient_id=ids["epsilon"],
+                    staff_user_id=me_id,
+                    care_role="attending",
+                    assigned_at=day(-60),
+                ),
+            ]
+        )
+        await session.flush()
+        session.add(
+            PrescriptionItem(
+                prescription_id=extras["rx_alpha"],
+                medication_name="Metformin",
+                dose_amount=Decimal("500.000"),
+                dose_unit="mg",
+                sequence_no=1,
+            )
+        )
+        await session.commit()
+    return {"patients": ids, "encounters": encounters, **extras}
+
+
+async def _panel_rows(result) -> list[dict]:
+    assert result.ok is True, result.model_payload
+    assert result.outcome == "success", result.model_payload
+    return result.model_payload["data"]["patients"]
+
+
+@pytest.mark.postgres
+async def test_panel_roundup_window_filtering_and_boundaries(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """7 vs 30 day windows; both boundaries INCLUSIVE; future rows excluded."""
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    patients = data["patients"]
+    ctx = await make_tool_context(me, request_id="test-request-panel-window")
+
+    week = await mcp_server.call_tool("get_my_recent_patients", {"days": 7, "limit": 25}, ctx)
+    rows = await _panel_rows(week)
+    # gamma (-2d, assignment union), alpha (-3d), zeta (exactly -7d).
+    assert [row["patient_id"] for row in rows] == [
+        str(patients["gamma"]),
+        str(patients["alpha"]),
+        str(patients["zeta"]),
+    ]
+    assert week.model_payload["data"]["total"] == 3
+    assert week.model_payload["data"]["window_days"] == 7
+    assert week.model_payload["data"]["window_start"] == "2026-10-20T12:00:00Z"
+
+    month = await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 25}, ctx)
+    rows = await _panel_rows(month)
+    assert [row["patient_id"] for row in rows] == [
+        str(patients["gamma"]),
+        str(patients["alpha"]),
+        str(patients["zeta"]),
+        str(patients["beta"]),
+        str(patients["eta"]),
+    ]
+    assert month.model_payload["data"]["total"] == 5
+
+    # Boundary decision (docs/API.md): the window [now - days, now] is
+    # INCLUSIVE at both ends - zeta (exactly -7d) and eta (exactly -30d) are
+    # inside; theta's future encounter (+1d) is outside every window.
+    listed = {row["patient_id"] for row in rows}
+    assert str(patients["zeta"]) in listed and str(patients["eta"]) in listed
+    assert str(patients["theta"]) not in listed
+    week_ids = {row["patient_id"] for row in await _panel_rows(week)}
+    assert str(patients["zeta"]) in week_ids  # exactly N days ago counts
+    assert str(patients["eta"]) not in week_ids  # but only in the 30-day window
+    assert str(patients["theta"]) not in week_ids
+
+
+@pytest.mark.postgres
+async def test_panel_practitioner_scoping_and_assignment_union(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """"Mine" only ever narrows: other practitioners' patients never appear."""
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    patients = data["patients"]
+    ctx = await make_tool_context(me, request_id="test-request-panel-mine")
+    other_ctx = await make_tool_context(other, request_id="test-request-panel-other")
+
+    mine = {
+        row["patient_id"]
+        for row in await _panel_rows(
+            await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 50}, ctx)
+        )
+    }
+    # delta: encounters belong to ANOTHER practitioner -> never mine.
+    assert str(patients["delta"]) not in mine
+    # epsilon: assigned to me but only OLD encounters -> outside the window.
+    assert str(patients["epsilon"]) not in mine
+    # gamma: encounter with another practitioner BUT active assignment to me
+    # and an encounter in the window -> included via the union branch.
+    assert str(patients["gamma"]) in mine
+
+    # A second doctor's session can never obtain my rows.
+    theirs = {
+        row["patient_id"]
+        for row in await _panel_rows(
+            await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 50}, other_ctx)
+        )
+    }
+    assert theirs == {str(patients["gamma"]), str(patients["delta"])}
+    for key in ("alpha", "beta", "zeta", "eta"):
+        assert str(patients[key]) not in theirs
+
+
+@pytest.mark.postgres
+async def test_panel_identity_tampering_is_ignored_and_bounds_are_enforced(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """Identity comes only from ToolContext; out-of-range bounds are controlled."""
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    ctx = await make_tool_context(me, request_id="test-request-panel-tamper")
+
+    clean = await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 50}, ctx)
+    tampered = await mcp_server.call_tool(
+        "get_my_recent_patients",
+        {
+            "days": 30,
+            "limit": 50,
+            "user_id": str(other.id),
+            "practitioner_id": str(other.id),
+            "acting_as": "admin",
+        },
+        ctx,
+    )
+    assert tampered.model_payload["data"] == clean.model_payload["data"]
+    listed = [row["patient_id"] for row in await _panel_rows(clean)]
+    assert str(data["patients"]["alpha"]) in listed
+    assert str(data["patients"]["delta"]) not in listed  # other's rows unreachable
+
+    # Registry bounds: days 0/366 and limit 0/51 are controlled errors that
+    # never echo the input.
+    for arguments in ({"days": 0}, {"days": 366}, {"limit": 0}, {"limit": 51}):
+        result = await mcp_server.call_tool("get_my_recent_patients", arguments, ctx)
+        assert result.ok is False, arguments
+        assert result.outcome == "error", arguments
+        assert result.model_payload["error"]["code"] == "invalid_arguments", arguments
+        assert "Traceback" not in json.dumps(result.model_payload)
+    rows = await audit_rows(action="mcp.get_my_recent_patients", outcome="error")
+    assert rows
+
+    # Direct invocation clamps as defense in depth (1..365 / 1..50).
+    from app.mcp.tools import get_my_recent_patients
+
+    tiny = await get_my_recent_patients(days=0, limit=0, tool_context=ctx)
+    assert tiny["ok"] is True
+    assert tiny["data"]["window_days"] == 1
+    assert len(tiny["data"]["patients"]) <= 1
+    huge = await get_my_recent_patients(days=9999, limit=9999, tool_context=ctx)
+    assert huge["ok"] is True
+    assert huge["data"]["window_days"] == 365
+    assert len(huge["data"]["patients"]) <= 50
+    # Inside 365 days: alpha, beta, zeta, eta (with me), gamma + epsilon
+    # (assignment union). delta is another practitioner's and theta is future.
+    assert huge["data"]["total"] == 6
+
+
+@pytest.mark.postgres
+async def test_panel_authorization_denial_and_missing_context(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """No patient:read -> empty + note, outcome denied, audited (never data)."""
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    restricted = await make_tool_context(
+        await make_user(roles=()), request_id="test-request-panel-denied"
+    )
+
+    denied = await mcp_server.call_tool("get_my_recent_patients", {"days": 30}, restricted)
+    assert denied.ok is True  # the call completed ...
+    assert denied.outcome == "denied"
+    assert denied.model_payload["data"]["patients"] == []  # ... but sees nothing
+    assert denied.model_payload["data"]["total"] == 0
+    assert "visible" in denied.model_payload["data"]["note"]
+    assert denied.citations == []
+    serialized = json.dumps(denied.model_payload)
+    assert f"Panel Alpha {data['patients']['alpha']}" not in serialized
+    rows = await audit_rows(
+        action="mcp.get_my_recent_patients", outcome="denied", request_id="test-request-panel-denied"
+    )
+    assert rows
+    assert rows[-1].resource_type == "patient_panel"
+    assert rows[-1].resource_id is None
+
+    # Without a valid ToolContext the call is denied and audited (actor None).
+    result = await mcp_server.call_tool("get_my_recent_patients", {"days": 30}, None)
+    assert result.ok is False
+    assert result.outcome == "denied"
+    assert result.model_payload["error"]["code"] == "forbidden"
+    rows = await audit_rows(action="mcp.get_my_recent_patients", outcome="denied")
+    assert rows[-1].actor_user_id is None
+
+    # Direct invocation (bypassing the registry) must deny too.
+    from app.mcp.tools import get_my_recent_patients
+
+    envelope = await get_my_recent_patients(tool_context=None)
+    assert envelope["ok"] is False
+    assert envelope["error"]["code"] == "forbidden"
+
+
+@pytest.mark.postgres
+async def test_panel_row_shape_values_truncation_and_totals(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """Exact row shape; age/blood/weight/values correct; truncation markers."""
+    from app.mcp.limits import PANEL_ROW_TEXT_MAX_LENGTH, TRUNCATION_MARKER
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    patients = data["patients"]
+    ctx = await make_tool_context(me, request_id="test-request-panel-rows")
+
+    result = await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 50}, ctx)
+    rows = {row["patient_id"]: row for row in await _panel_rows(result)}
+    alpha = rows[str(patients["alpha"])]
+    assert set(alpha) == PANEL_ROW_KEYS
+    assert alpha["display_name"].startswith("Panel Alpha ")
+    assert alpha["mrn"].startswith("DEMO-")
+    assert alpha["age_years"] == 46  # dob 1980-01-15 at the frozen 2026-10-27
+    assert alpha["sex"] == "female"
+    assert alpha["blood_type"] == "A+"
+    assert alpha["last_encounter_at"] == "2026-10-24T12:00:00Z"
+    assert alpha["weight_kg"] == "70.50"  # latest recorded vitals snapshot
+    assert alpha["symptoms"] == "fatigue and cold intolerance"
+    assert alpha["diagnoses"] == ["Type 2 diabetes mellitus", "Iron deficiency anemia"]
+    assert alpha["key_results"] == [
+        "K 5.86 mmol/L high (2026-10-24)",
+        "GLU 5.5 mg/dL (2026-10-24)",
+    ]
+    assert alpha["proposed_plan"] == "start levothyroxine 50 mcg daily; recheck TSH in 6 weeks"
+    assert alpha["prescribed_treatment"] == ["Metformin 500 mg oral twice daily"]
+
+    # beta: long note text is bounded with the explicit marker.
+    beta = rows[str(patients["beta"])]
+    assert beta["symptoms"].endswith(TRUNCATION_MARKER)
+    assert len(beta["symptoms"]) <= PANEL_ROW_TEXT_MAX_LENGTH
+
+    # limit bounds the rows; total counts every visible patient (so the model
+    # can say "showing 2 of 5"); concealed rows never occupy slots.
+    limited = await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 2}, ctx)
+    rows = await _panel_rows(limited)
+    assert [row["patient_id"] for row in rows] == [str(patients["gamma"]), str(patients["alpha"])]
+    assert limited.model_payload["data"]["total"] == 5
+    assert limited.model_payload["data"]["note"] == "Showing 2 of 5 patients."
+
+    single = await mcp_server.call_tool("get_my_recent_patients", {"days": 30, "limit": 1}, ctx)
+    rows = await _panel_rows(single)
+    # The concealed patient's -1d encounter is newer than gamma's, but it is
+    # soft-deleted: it must never appear nor take the only slot.
+    assert [row["patient_id"] for row in rows] == [str(patients["gamma"])]
+    assert single.model_payload["data"]["total"] == 5
+    assert f"Panel Gone {patients['gone']}" not in json.dumps(single.model_payload)
+
+    # Citations: the patient + representing encounter + the note/lab/prescription
+    # refs actually used in the rows.
+    citation_ids = {(c["type"], c["id"]) for c in result.citations}
+    assert ("patient", str(patients["alpha"])) in citation_ids
+    assert ("encounter", str(data["encounters"]["alpha_recent"])) in citation_ids
+    assert ("clinical_note", str(data["note_alpha"])) in citation_ids
+    assert ("lab_result", str(data["lab_k"])) in citation_ids
+    assert ("prescription", str(data["rx_alpha"])) in citation_ids
+
+    # Audit: patient_panel / resource_id None; no names or payloads ever.
+    rows_audit = await audit_rows(
+        action="mcp.get_my_recent_patients", outcome="success", request_id="test-request-panel-rows"
+    )
+    assert rows_audit
+    for row in rows_audit:
+        assert row.resource_type == "patient_panel"
+        assert row.resource_id is None
+        text = repr(row)
+        assert "Panel Alpha" not in text and "Metformin" not in text
+        assert str(patients["alpha"]) not in text
+
+
+@pytest.mark.postgres
+async def test_summary_extension_fields_are_typed_and_additive(
+    db_engine, make_user, make_tool_context, freeze_panel_clock
+) -> None:
+    """get_patient_summary: every pre-existing section kept, new fields typed."""
+    from app.mcp.server import mcp_server
+
+    me = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    data = await _add_panel_data(db_engine, me_id=me.id, other_id=other.id, token=uuid.uuid4().hex[:8])
+    ctx = await make_tool_context(me, request_id="test-request-panel-summary")
+    patient_id = str(data["patients"]["alpha"])
+
+    result = await mcp_server.call_tool("get_patient_summary", {"patient_id": patient_id}, ctx)
+    assert result.ok is True
+    payload = result.model_payload["data"]
+
+    # Existing sections are kept (additive-only extension).
+    assert {"patient", "encounters", "active_problems", "latest_labs", "active_prescriptions"} <= set(payload)
+    assert payload["patient"]["id"] == patient_id
+    assert payload["patient"]["provenance"] == "synthetic"
+    assert "created_at" not in payload["patient"]
+
+    # New fields: typed and correct against the fixture.
+    assert payload["patient"]["blood_type"] == "A+"
+    assert payload["patient"]["age_years"] == 46
+    assert payload["vitals"] == {
+        "weight_kg": "70.50",
+        "height_cm": "165.00",
+        "measured_at": "2026-10-24T12:00:00Z",
+        "previous_weight_kg": "72.00",
+        "previous_measured_at": "2026-10-07T12:00:00Z",
+        "provenance": "synthetic",
+    }
+    # Per-visit vitals also ride on the encounters (trend across visits).
+    by_id = {item["id"]: item for item in payload["encounters"]}
+    assert by_id[str(data["encounters"]["alpha_recent"])]["weight_kg"] == "70.50"
+    assert by_id[str(data["encounters"]["alpha_old"])]["weight_kg"] == "72.00"
+
+    assert [item["name"] for item in payload["diagnoses"]] == [
+        "Type 2 diabetes mellitus",
+        "Iron deficiency anemia",
+    ]
+    assert payload["diagnoses"][0] == {
+        "code": "E11.9",
+        "name": "Type 2 diabetes mellitus",
+        "status": "active",
+        "onset_date": "2024-05-01",
+        "provenance": "synthetic",
+    }
+    assert [item["display_name"] for item in payload["active_problems"]] == ["Type 2 diabetes mellitus"]
+
+    assert payload["symptoms"] == "fatigue and cold intolerance"
+    assert payload["assessment"] == "hypothyroidism"
+    assert payload["proposed_plan"] == "start levothyroxine 50 mcg daily; recheck TSH in 6 weeks"
+
+    treatment = payload["prescribed_treatment"]
+    assert len(treatment) == 1
+    assert treatment[0]["medication"] == "Metformin"
+    assert treatment[0]["dose_amount"] == "500.000"
+    assert treatment[0]["dose_unit"] == "mg"
+    assert treatment[0]["route"] == "oral"
+    assert treatment[0]["frequency"] == "twice daily"
+    assert treatment[0]["items"] == [
+        {
+            "sequence_no": 1,
+            "medication": "Metformin",
+            "dose_amount": "500.000",
+            "dose_unit": "mg",
+            "provenance": "synthetic",
+        }
+    ]
+    # Raw prescriptions keep their own items (what was actually prescribed).
+    assert payload["active_prescriptions"][0]["items"][0]["sequence_no"] == 1
+
+    # Absence is real: this patient has no vitals, note, or diagnoses.
+    empty = await mcp_server.call_tool(
+        "get_patient_summary", {"patient_id": str(data["patients"]["delta"])}, ctx
+    )
+    empty_payload = empty.model_payload["data"]
+    assert empty_payload["vitals"] is None
+    assert empty_payload["diagnoses"] == []
+    assert empty_payload["symptoms"] is None
+    assert empty_payload["prescribed_treatment"] == []
+
+    citation_ids = {(c["type"], c["id"]) for c in result.citations}
+    assert ("clinical_note", str(data["note_alpha"])) in citation_ids

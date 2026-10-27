@@ -196,7 +196,7 @@ async def test_tool_loop_answers_a_seeded_data_question(
     assert ("lab_result", str(clinical_data.lab_ids[1])) in citation_ids
     assert ("prescription", str(clinical_data.prescription_ids[0])) in citation_ids
 
-    # The model received the six-tool allowlist and retrieved DATA in a marked block.
+    # The model received the seven-tool allowlist and retrieved DATA in a marked block.
     first, second = scripted.calls[0], scripted.calls[1]
     tool_names = {t["function"]["name"] for t in first["tools"]}
     assert tool_names == {
@@ -206,6 +206,7 @@ async def test_tool_loop_answers_a_seeded_data_question(
         "get_recent_prescriptions",
         "find_patients_by_lab",
         "find_patients_by_medication",
+        "get_my_recent_patients",
     }
     tool_message = second["messages"][-1]
     assert tool_message["role"] == "tool"
@@ -534,7 +535,7 @@ async def test_general_mode_tool_loop_searches_then_reads(
     assert ("lab_result", str(clinical_data.lab_ids[1])) in citation_ids
     assert ("prescription", str(clinical_data.prescription_ids[0])) in citation_ids
 
-    # The model got the same six-tool allowlist and the general-mode prompt.
+    # The model got the same seven-tool allowlist and the general-mode prompt.
     first = scripted.calls[0]
     tool_names = {t["function"]["name"] for t in first["tools"]}
     assert tool_names == {
@@ -544,6 +545,7 @@ async def test_general_mode_tool_loop_searches_then_reads(
         "get_recent_prescriptions",
         "find_patients_by_lab",
         "find_patients_by_medication",
+        "get_my_recent_patients",
     }
     assert "MANY synthetic patients" in first["system"]
     assert "Always list the records consulted" in first["system"]
@@ -943,3 +945,128 @@ async def test_general_mode_multi_call_lookup_flow_succeeds_in_raised_budget(
         action="mcp.find_patients_by_lab", outcome="success", request_id=request_id
     )
     assert len(lookup_rows) == 2
+
+
+# --- panel roundup: the acceptance question resolves within the budget ------
+#
+# "Tell me all patients that went through me the last 7 days ..." must resolve
+# in 1-2 tool calls (get_my_recent_patients answers the roundup in one call),
+# well inside the general-mode budget of LLM_MAX_TOOL_CALLS_GENERAL (10).
+
+
+async def _attach_panel_assignment(db_engine, account_id, patient_id) -> None:
+    """Give the test account an active care assignment (the union branch)."""
+    from datetime import datetime, timezone
+
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import PatientAssignment
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        session.add(
+            PatientAssignment(
+                patient_id=patient_id,
+                staff_user_id=account_id,
+                care_role="attending",
+                assigned_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        )
+        await session.commit()
+
+
+@pytest.mark.postgres
+async def test_panel_acceptance_question_resolves_in_one_tool_call(
+    monkeypatch, db_engine, auth_client, make_user, clinical_data
+) -> None:
+    """The owner's roundup question needs exactly ONE tool call."""
+    from datetime import datetime, timezone
+
+    from app.services import patients as patients_service
+
+    # Freeze the panel clock so clinical_data's 2026-10-01 encounter is
+    # inside the 7-day window (the SQL window is derived from this clock).
+    fixed_now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(patients_service, "utc_now", lambda: fixed_now)
+
+    account = await make_user(roles=("doctor",))
+    await _attach_panel_assignment(db_engine, account.id, clinical_data.patient_id)
+
+    scripted = ScriptedLLMProvider(
+        tool_call_result("get_my_recent_patients", {"days": 7}),
+        text_result(
+            "In the last 7 days one synthetic patient went through you: "
+            + clinical_data.patient_name
+            + " (records consulted: patient + encounter)."
+        ),
+    )
+    use_provider(monkeypatch, scripted)
+
+    client = await auth_client(account)
+    response = await ask_general(
+        client,
+        "Tell me all patients that went through me the last 7 days: what are their "
+        "results, symptoms, how much they weight, blood category, age, proposed "
+        "treatment, prescribed treatment.",
+    )
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["used_tools"] == ["get_my_recent_patients"]
+    assert body["model"] == STUB_MODEL_NAME
+    citation_ids = {(c["type"], c["id"]) for c in body["citations"]}
+    assert ("patient", str(clinical_data.patient_id)) in citation_ids
+    assert ("encounter", str(clinical_data.encounter_id)) in citation_ids
+
+    request_id = response.headers["x-request-id"]
+    rows = await audit_rows(action="mcp.get_my_recent_patients", request_id=request_id)
+    assert len(rows) == 1  # exactly one tool call for the whole roundup
+    assert rows[0].outcome == "success"
+    assert rows[0].resource_type == "patient_panel"
+
+    # The tool data the model saw is the bounded panel row (via the tool block).
+    tool_message = scripted.calls[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert "window_days" in tool_message["content"]
+    assert clinical_data.patient_mrn in tool_message["content"]
+
+
+@pytest.mark.postgres
+async def test_panel_acceptance_question_with_drilldown_stays_within_budget(
+    monkeypatch, db_engine, auth_client, make_user, clinical_data
+) -> None:
+    """Roundup + one drill-down = 2 tool calls, well inside the 10-call budget."""
+    from datetime import datetime, timezone
+
+    from app.llm.loop import general_mode_max_tool_calls
+    from app.services import patients as patients_service
+
+    fixed_now = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(patients_service, "utc_now", lambda: fixed_now)
+
+    account = await make_user(roles=("doctor",))
+    await _attach_panel_assignment(db_engine, account.id, clinical_data.patient_id)
+
+    scripted = ScriptedLLMProvider(
+        tool_call_result("get_my_recent_patients", {"days": 30}),
+        tool_call_result("get_patient_summary", {"patient_id": str(clinical_data.patient_id)}),
+        text_result("Roundup plus one patient drill-down; records consulted below."),
+    )
+    use_provider(monkeypatch, scripted)
+
+    client = await auth_client(account)
+    response = await ask_general(
+        client,
+        "Tell me all patients that went through me the last 30 days: what are their "
+        "results, symptoms, how much they weight, blood category, age, proposed "
+        "treatment, prescribed treatment.",
+    )
+    assert response.status_code == 200, response.text
+
+    body = response.json()
+    assert body["used_tools"] == ["get_my_recent_patients", "get_patient_summary"]
+    request_id = response.headers["x-request-id"]
+    panel_rows = await audit_rows(action="mcp.get_my_recent_patients", request_id=request_id)
+    summary_rows = await audit_rows(action="mcp.get_patient_summary", request_id=request_id)
+    assert len(panel_rows) == 1 and len(summary_rows) == 1  # 2 tool calls total
+    assert 2 <= general_mode_max_tool_calls()  # fits the general-mode budget

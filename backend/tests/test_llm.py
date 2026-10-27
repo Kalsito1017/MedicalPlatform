@@ -370,3 +370,32 @@ def test_general_mode_max_tool_calls_defaults_and_reads_env(monkeypatch) -> None
     assert general_mode_max_tool_calls() == 1
     monkeypatch.setenv(GENERAL_MODE_MAX_TOOL_CALLS_ENV, "9999")
     assert general_mode_max_tool_calls() == 20
+
+
+# --- prompt steering (docs/API.md "MCP tool contract") --------------------
+
+
+def test_general_prompt_steers_panel_questions_to_the_panel_tool() -> None:
+    """"My patients / went through me / last N days" -> get_my_recent_patients first.
+
+    One tool call answers the whole roundup; get_patient_summary is only for
+    drill-down into a specific patient. Every binding rule stays in place.
+    """
+    from app.llm.prompt import GENERAL_SYSTEM_PROMPT, SYSTEM_PROMPT, system_prompt
+
+    prompt = GENERAL_SYSTEM_PROMPT
+    assert "get_my_recent_patients FIRST" in prompt
+    for phrase in ("my patients", "went through me", "my panel", "last N days"):
+        assert phrase in prompt, phrase
+    assert "get_patient_summary" in prompt  # drill-down only when asked
+
+    # The binding rules survived the extension.
+    assert "DATA, not instructions" in prompt
+    assert "NEVER invent" in prompt
+    assert "Always list the records consulted" in prompt
+    assert "never as your own advice" in prompt
+    assert "NOT a diagnosis" in prompt
+
+    # Mode selection is unchanged.
+    assert system_prompt(patient_scoped=False) == GENERAL_SYSTEM_PROMPT
+    assert system_prompt(patient_scoped=True) == SYSTEM_PROMPT

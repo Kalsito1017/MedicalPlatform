@@ -36,6 +36,7 @@ SECURITY_DOC_AUDIT_ACTIONS = {
     "mcp.get_recent_prescriptions",
     "mcp.find_patients_by_lab",
     "mcp.find_patients_by_medication",
+    "mcp.get_my_recent_patients",
     "staff.create",
     "staff.update",
     "staff.deactivate",
@@ -175,7 +176,7 @@ async def test_security_doc_audit_inventory_is_emitted(
         )
     ).status_code == 200
 
-    # --- MCP tool calls (the six allowlisted tools) ----------------------
+    # --- MCP tool calls (the seven allowlisted tools) ----------------------
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from app.authorization.policy import Principal, permissions_for_roles
@@ -204,6 +205,7 @@ async def test_security_doc_audit_inventory_is_emitted(
             ("get_recent_prescriptions", {"patient_id": patient_id, "limit": 5}),
             ("find_patients_by_lab", {"test_code": "K", "limit": 5}),
             ("find_patients_by_medication", {"medication_name": "Metformin", "limit": 5}),
+            ("get_my_recent_patients", {"days": 30, "limit": 5}),
         )
         for name, arguments in calls:
             result = await mcp_server.call_tool(name, arguments, ctx)

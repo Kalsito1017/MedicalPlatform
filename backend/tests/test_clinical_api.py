@@ -166,6 +166,15 @@ async def test_patient_summary_shape_is_bounded_and_typed(
         "latest_labs",
         "active_prescriptions",
         "provenance",
+        # additive summary extension (2026-10-27, docs/API.md summary payload)
+        "age_years",
+        "blood_type",
+        "vitals",
+        "diagnoses",
+        "symptoms",
+        "assessment",
+        "proposed_plan",
+        "prescribed_treatment",
     }
     assert body["patient"]["id"] == str(clinical_data.patient_id)
     assert body["provenance"] == "synthetic"
@@ -222,6 +231,121 @@ async def test_empty_patient_summary_and_empty_states(auth_client, make_user, cl
     )
     assert prescriptions.status_code == 200
     assert prescriptions.json() == {"items": [], "total": 0, "limit": 20, "offset": 0}
+
+
+@pytest.mark.postgres
+async def test_summary_extension_fields_are_additive_and_typed(
+    monkeypatch, auth_client, make_user, clinical_data, db_engine
+) -> None:
+    """The REST summary carries the roundup fields (same facts as the AI tool).
+
+    Patient detail stays demographics-only: the summary transport carriers are
+    never serialized, and no pre-existing key changed.
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    from app.models import ClinicalNote, Diagnosis, Encounter
+    from app.services import patients as patients_service
+
+    fixed_now = datetime(2026, 10, 27, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(patients_service, "utc_now", lambda: fixed_now)
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        patient = await session.get(Patient, clinical_data.patient_id)
+        patient.blood_type = "A+"
+        recent = await session.get(Encounter, clinical_data.encounter_id)
+        recent.weight_kg = Decimal("70.50")
+        recent.height_cm = Decimal("165.00")
+        older = await session.get(Encounter, clinical_data.old_encounter_id)
+        older.weight_kg = Decimal("72.00")
+        older.height_cm = Decimal("165.00")
+        session.add(
+            Diagnosis(
+                patient_id=clinical_data.patient_id,
+                encounter_id=clinical_data.encounter_id,
+                code="E11.9",
+                name="Type 2 diabetes mellitus",
+                status="active",
+            )
+        )
+        session.add(
+            ClinicalNote(
+                patient_id=clinical_data.patient_id,
+                encounter_id=clinical_data.encounter_id,
+                note_type="progress_note",
+                symptoms="fatigue and cold intolerance",
+                assessment="hypothyroidism",
+                proposed_plan="start levothyroxine; recheck TSH in 6 weeks",
+                body="Synthetic demo note.",
+            )
+        )
+        await session.commit()
+
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    response = await client.get(f"/api/v1/patients/{clinical_data.patient_id}/summary")
+    assert response.status_code == 200
+    body = response.json()
+
+    # Demographics additions (derived age; never stored).
+    assert body["patient"]["blood_type"] == "A+"
+    assert body["patient"]["age_years"] == 46  # dob 1980-01-15 at the frozen date
+    assert body["age_years"] == 46
+    assert body["blood_type"] == "A+"
+
+    # Vitals trend from the per-visit snapshots (newest first).
+    assert body["vitals"] == {
+        "weight_kg": "70.50",
+        "height_cm": "165.00",
+        "measured_at": "2026-10-01T09:30:00Z",
+        "previous_weight_kg": "72.00",
+        "previous_measured_at": "2026-09-01T14:00:00Z",
+        "provenance": "synthetic",
+    }
+    assert body["encounters"][0]["weight_kg"] == "70.50"
+    assert body["encounters"][1]["weight_kg"] == "72.00"
+
+    # Problem list: diagnoses active-first; active_problems is the active subset.
+    assert body["diagnoses"] == [
+        {
+            "code": "E11.9",
+            "name": "Type 2 diabetes mellitus",
+            "status": "active",
+            "onset_date": None,
+            "provenance": "synthetic",
+        }
+    ]
+    assert body["active_problems"] == [
+        {
+            "code": "E11.9",
+            "display_name": "Type 2 diabetes mellitus",
+            "status": "active",
+            "onset_date": None,
+            "provenance": "synthetic",
+        }
+    ]
+    assert body["problems"] == body["active_problems"]
+
+    # Latest note sections (record content, never advice).
+    assert body["symptoms"] == "fatigue and cold intolerance"
+    assert body["assessment"] == "hypothyroidism"
+    assert body["proposed_plan"] == "start levothyroxine; recheck TSH in 6 weeks"
+
+    # Prescribed treatment = active prescriptions (newest start date first).
+    assert [item["medication"] for item in body["prescribed_treatment"]] == [
+        "Lisinopril",
+        "Metformin",
+    ]
+    assert body["prescribed_treatment"][1]["dose_amount"] == "500.000"
+    assert body["prescribed_treatment"][1]["items"] == []
+
+    # Patient detail is demographics-only: transport carriers never serialize.
+    detail = await client.get(f"/api/v1/patients/{clinical_data.patient_id}")
+    assert detail.status_code == 200
+    item = detail.json()
+    assert "diagnoses" not in item and "latest_note" not in item
+    assert item["blood_type"] == "A+" and item["age_years"] == 46
 
 
 # --- labs and prescriptions ------------------------------------------------

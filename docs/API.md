@@ -77,7 +77,7 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 |---|---|---|---|
 | GET | `/api/v1/patients` | `patient:read` | Paginated. `?q=` filters synthetic name/MRN. |
 | GET | `/api/v1/patients/{patient_id}` | `patient:read` | Demographics + provenance label. |
-| GET | `/api/v1/patients/{patient_id}/summary` | `patient:read` | Synthetic summary: encounters, active problems, latest labs, active meds. |
+| GET | `/api/v1/patients/{patient_id}/summary` | `patient:read` | Synthetic summary: demographics, encounters, active problems, latest labs, active meds **plus the roundup fields below** (additive extension, 2026-10-27). |
 | GET | `/api/v1/patients/{patient_id}/labs` | `lab:read` | Paginated. `?limit=` bounded. |
 | GET | `/api/v1/patients/{patient_id}/prescriptions` | `prescription:read` | Paginated. |
 | GET | `/api/v1/encounters/{encounter_id}` | `patient:read` | Returns 404 (not 403) when concealed. |
@@ -85,6 +85,55 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 Every clinical payload includes `"provenance": "synthetic"`; the UI marks synthetic data
 via per-record provenance badges plus footer and "About this demo" dialog disclosures
 (the persistent header banner was removed at the owner's request, 2026-10-26).
+
+### Synthetic patient summary payload (`GET /patients/{patient_id}/summary`)
+
+**Change record:** additive extension, 2026-10-27 (wave W, doctor-panel tools).
+No existing key was removed or renamed; every list stays bounded by
+`app.services.patients` constants. The MCP `get_patient_summary` tool returns
+the **same keys** (its text strings additionally carry `[truncated]` markers at
+the tool bounds) so the UI and the AI report identical facts.
+
+```json
+{
+  "patient": { "id", "mrn", "display_name", "given_name", "family_name",
+               "date_of_birth", "sex", "blood_type", "age_years",
+               "provenance", "created_at", "updated_at" },
+  "encounters": [ { …, "weight_kg", "height_cm" } ],
+  "vitals": { "weight_kg", "height_cm", "measured_at",
+              "previous_weight_kg", "previous_measured_at", "provenance" },
+  "diagnoses": [ { "code", "name", "status", "onset_date", "provenance" } ],
+  "active_problems": [ { "code", "display_name", "status", "onset_date", "provenance" } ],
+  "problems": [ … same as active_problems … ],
+  "symptoms": "…", "assessment": "…", "proposed_plan": "…",
+  "prescribed_treatment": [ { "prescription_id", "medication", "dose_amount",
+                              "dose_unit", "route", "frequency",
+                              "items": [ { "sequence_no", "medication",
+                                           "dose_amount", "dose_unit" } ] } ],
+  "latest_labs": [ … ],
+  "active_prescriptions": [ { …, "items": [ … ] } ],
+  "provenance": "synthetic"
+}
+```
+
+Semantics of the added fields:
+
+- `blood_type`: closed ABO/Rh vocabulary (`A+` … `O-`, `unknown`); `null` = not
+  recorded. `age_years`: integer **derived from `date_of_birth` on every read**
+  (never stored); `null` when no date of birth is recorded.
+- `vitals`: the latest per-visit vitals snapshot (`weight_kg`/`height_cm` are
+  encounter-level, they may drift between visits) plus the previous weight so
+  a trend is visible; `null` when no visit recorded vitals. Per-visit values
+  also appear on each `encounters[]` entry.
+- `diagnoses`: the problem list, **active entries first**, then most recent;
+  `active_problems`/`problems` are the active subset. `symptoms`/`assessment`/
+  `proposed_plan` come from the **most recent clinical note** (`null` when the
+  patient has no note) — proposed treatment is what the record says was
+  proposed, never advice.
+- `prescribed_treatment`: the **active** prescriptions rendered as prescribed
+  treatment with their `items` (what was actually prescribed, e.g. taper
+  steps); `active_prescriptions` keeps the raw rows. Decimal values serialize
+  as JSON strings, timestamps as ISO-8601 UTC `Z`.
 
 ### Staff & roles (admin)
 
@@ -160,15 +209,20 @@ administration and therefore no admin panel); `clinical_admin` (Admin) holds
 
 ## MCP tool contract (internal, not a public HTTP API)
 
+**Change record:** `get_my_recent_patients` added 2026-10-27 (wave W, doctor
+panel tools); `get_patient_summary` extended the same day with the summary
+payload fields documented above. Nothing else changed.
+
 Tools: `search_authorized_patients(query, limit)`, `get_patient_summary(patient_id, limit)`,
 `get_patient_lab_results(patient_id, limit)`, `get_recent_prescriptions(patient_id, limit)`,
 `find_patients_by_lab(test_code, abnormal_only, limit)`,
-`find_patients_by_medication(medication_name, active_only, limit)`.
+`find_patients_by_medication(medication_name, active_only, limit)`,
+`get_my_recent_patients(days, limit)`.
 
-Signatures (typed, bounded; `limit` defaults are 10/10/20/20/25/25 and all
+Signatures (typed, bounded; `limit` defaults are 10/10/20/20/25/25/25 and all
 clamp to 1..25 or 1..50 — out-of-range `limit` is a controlled
-`invalid_arguments` error at the registry, and the lookup tools additionally
-clamp 1..50 internally):
+`invalid_arguments` error at the registry, and the lookup/panel tools
+additionally clamp 1..50 internally):
 
 - `search_authorized_patients(query: str (≤100), limit: int (1-25))`
 - `get_patient_summary(patient_id: uuid, limit: int (1-25))`
@@ -176,6 +230,7 @@ clamp 1..50 internally):
 - `get_recent_prescriptions(patient_id: uuid, limit: int (1-50))`
 - `find_patients_by_lab(test_code: str (≤32, exact known lab test code), abnormal_only: bool = true, limit: int (1-50))`
 - `find_patients_by_medication(medication_name: str (≤100), active_only: bool = true, limit: int (1-50))`
+- `get_my_recent_patients(days: int = 7 (1-365), limit: int = 25 (1-50))`
 
 The two lookup tools serve general (cross-patient) questions in 1-2 calls and
 return ONLY patient references — `[{patient_id, display_name, mrn, matched}]`,
@@ -206,10 +261,50 @@ one row per patient, most recent matching record first, strings truncated with
   crowd out visible ones. A caller without the
   permissions gets an empty result (audited outcome `denied`).
 
+`get_my_recent_patients(days, limit)` is the practitioner panel roundup ("which
+patients went through me in the last N days"):
+
+- **"Me" is the verified principal in the injected `ToolContext`
+  (`principal.user_uuid`) — never a tool argument.** The LLM-facing schema
+  exposes only `days` (int, 1..365, default 7) and `limit` (int, 1..50,
+  default 25); smuggled identity arguments are ignored, and out-of-range
+  values are a controlled `invalid_arguments` error at the registry (direct
+  invocation clamps 1..365 / 1..50 as defense in depth).
+- **"Went through me" definition (window = `[now − days, now]` UTC, inclusive
+  both ends, one freezeable clock):** a patient qualifies when in the window
+  they had (a) **primary** — an encounter whose `practitioner_id` is the
+  caller, **or** (b) **union** — an active `patient_assignment` to the caller
+  (`ended_at` NULL) **and** any encounter in the window (with anyone). When
+  both match, (a) wins: the patient is represented by their most recent
+  encounter *with* the caller (that encounter is cited and reported as
+  `last_encounter_at`); assignment-only patients are represented by their most
+  recent in-window encounter. Rows are ordered by the representing encounter,
+  most recent first. The "mine" filter only ever **narrows** visibility.
+- One compact row per patient, all strings bounded with `[truncated]`:
+  `{patient_id, display_name, mrn, age_years, sex, blood_type,
+  last_encounter_at, weight_kg, symptoms, diagnoses (names, active first,
+  ≤3), key_results (≤5 "K 5.86 mmol/L high (2026-09-24)" strings — the most
+  recent result per test code, abnormal first), proposed_plan,
+  prescribed_treatment (active, ≤3 "Metformin 500 mg oral twice daily"
+  strings)}`. `weight_kg` is the most recent recorded vitals snapshot;
+  symptoms/proposed plan come from the most recent clinical note; `age_years`
+  is derived (never stored). Data payload: `{window_days, window_start,
+  patients, total, note?}` — rows are bounded by `limit` while `total` counts
+  every **visible** patient (so the model can say "showing 10 of 23").
+- Authorization: `patient:read` required (deny → empty result + note, outcome
+  `denied`); the per-patient `check_patient_access` seam then runs on every
+  candidate row (non-visible rows are dropped and paging continues past them
+  within a bounded candidate scan), so concealed rows never occupy row slots.
+  `total` counts only rows the caller may see.
+- Audit: `mcp.get_my_recent_patients`, resource_type `patient_panel`,
+  resource_id `None` — never search terms or clinical payloads. Citations:
+  patient + representing encounter + the clinical_note/lab_result/prescription
+  refs actually used in the rows.
+
 General answers may report only what these tools returned (authorization is
 re-executed per call); every ask is audited with one `mcp.<tool>` event per
-tool call (`mcp.find_patients_by_lab` / `mcp.find_patients_by_medication`
-included) — never a search term or clinical payload.
+tool call (`mcp.find_patients_by_lab` / `mcp.find_patients_by_medication` /
+`mcp.get_my_recent_patients` included) — never a search term or clinical payload.
 
 - Read-only, typed arguments, bounded results, explicit timeouts.
 - Acting identity comes from the verified server-side session context — **never** a tool argument.

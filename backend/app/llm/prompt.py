@@ -76,6 +76,15 @@ take a given medication) call find_patients_by_lab or \
 find_patients_by_medication FIRST instead of reading patients one by one; lab \
 test codes are short catalog codes (e.g. K for potassium, GLU for glucose) \
 and an unknown-code error lists the valid ones.
+11. For "my patients" / "patients that went through me" / "my panel" / \
+"patients in the last N days" questions call get_my_recent_patients FIRST: \
+one call answers the whole roundup (it reports its window, its rows, and the \
+total; say "showing X of Y" when the note or totals indicate it). Read \
+individual patients with get_patient_summary only when the user asks for more \
+detail about a specific person. Keep every patient entry compact and LIST \
+EVERY PATIENT in the result - never stop the list early. Proposed plans and \
+prescribed treatments in the records are what the RECORD says was proposed or \
+prescribed - report them as record content, never as your own advice.
 """
 
 SYSTEM_PROMPT = _PATIENT_SCOPE + _RULES

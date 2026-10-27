@@ -28,7 +28,7 @@ DISCLAIMER = (
     "recommendation, or validated clinical decision - and not for clinical use."
 )
 
-CitationType = Literal["patient", "encounter", "lab_result", "prescription"]
+CitationType = Literal["patient", "encounter", "clinical_note", "lab_result", "prescription"]
 
 
 class Citation(BaseModel):

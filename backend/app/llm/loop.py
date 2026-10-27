@@ -2,7 +2,8 @@
 
 The model may only *suggest* tool calls; this loop is the gate:
 
-* only the six registered MCP tools can be reached (server-side allowlist in
+* only the registered MCP tools can be reached (the seven-tool server-side
+  allowlist in
   app/mcp/server.py); anything else is rejected and audited (`mcp.<name>`,
   outcome `error`) and the model is told the tool is unavailable,
 * every executed tool call re-authorizes against the verified session identity
@@ -40,7 +41,12 @@ from app.mcp.context import ToolContext
 from app.mcp.server import MCPServer
 
 TOTAL_BUDGET_MARGIN_SECONDS = 5.0
-MAX_ANSWER_TOKENS = 1024
+# Completion cap. Raised 1024 -> 3072 (2026-10-27, wave W): a panel roundup
+# ("all my patients in the last N days" with per-patient results/symptoms/
+# weight/blood/age/treatment) legitimately needs more than 1024 completion
+# tokens for 10+ patients, and hitting the cap silently cut answers mid-list.
+# Still a hard bound (plus the wall-clock budget below).
+MAX_ANSWER_TOKENS = 3072
 
 # General lookup mode (no patient_id) gets a slightly higher tool-call bound:
 # dataset-wide questions resolve in one or two lookup calls (find_patients_by_lab
