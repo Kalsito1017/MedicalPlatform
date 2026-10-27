@@ -925,6 +925,17 @@ Append one dated entry after every completed phase:
 - Security notes: behavior change recorded — Admins now hold clinical reads (explicitly tested); nurses lost `staff:read`; self-assignment strictly stronger (always 403). Earlier plan notes referencing `tech_admin` (Phase 5/6 log entries, the earlier lead-decision log) are historical and superseded by this entry. `production-requirements.txt` (the source requirements doc) still describes the original four-role plan — left untouched deliberately.
 - Blockers: none. Next phase: Wave S.
 
+### 2026-10-27 — Seed freshness + practitioner attribution
+- Status: DONE
+- Implemented: Seed dates now derive from the seed-RUN day with deterministic offsets (fixed `ANCHOR_DAY` deleted) — 4 encounters land in the 7-day window, 9 in the 30-day window, ~18 months of history preserved for trends; fresh dates apply to a fresh database (documented demo-reset path), re-seeds never churn existing rows. `encounter.practitioner_id` seeded (~74% demo doctor / ~26% demo nurse) with NULL-only idempotent backfill for existing rows (proven: manually-set rows survive). Recent encounters flow through the unchanged generator (vitals, SOAP notes, labs, orders, specimens all coherent).
+- Files changed: scripts/seed_demo_data.py, backend/tests/test_seed.py
+- Commands run: seed ×2 + backfill simulation (0 created on re-run; 166 NULL backfilled; set values untouched); full suite **395 passed, 1 skipped** on isolated and default DBs; `ruff check` clean. Window evidence computed live (7d: 4 encounters incl. 2 doctor-attributed; 30d: 9 incl. 5 doctor-attributed).
+- Tests: 4 new (recency-spec coherence, practitioner attribution mix, window freshness computed at test time, backfill-only-NULL) — no-churn test now snapshots dates/encounter_type/practitioner.
+- Acceptance criteria: PASS — the `get_my_recent_patients` 7-day panel is non-empty on any fresh seed; determinism within a run preserved; idempotency preserved.
+- Security notes: none beyond standing rules (synthetic only). Concurrency incidents during parallel test runs (two suites sharing a DB) were transient and resolved — runs are serialized per the standing rule.
+- Blockers: none. Demo DB reset + the live 7-day acceptance re-run happen after Wave V's live checks (it is using the stack).
+- Next phase: Wave V (doctor AI workspace) still running → then UI-A/UI-B (the 20 UX patterns) → Wave U (admin analytics).
+
 ## Final instruction to the coding agent
 
 Start with **Phase 0 only**. Inspect the repository, establish the baseline, and update this file with findings. Then proceed phase by phase. Do not attempt the public deployment before the core application, authorization, synthetic data, tests, and Docker workflow are functioning. Never use real patient data for the public demo, and never claim deployment succeeded without checking the actual public URL.
