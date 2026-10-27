@@ -85,15 +85,22 @@
             <form class="ai-composer" id="ai-question-form" novalidate>
               <div class="field">
                 <label for="ai-question">Your question</label>
-                <textarea id="ai-question" rows="3"
-                          aria-describedby="ai-question-hint ai-char-count"
-                          placeholder="Ask about the synthetic records..."></textarea>
-                <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are not stored in your browser.</p>
+                <div class="ai-composer__box">
+                  <textarea id="ai-question" rows="3"
+                            aria-describedby="ai-question-hint ai-keyboard-hint ai-char-count"
+                            placeholder="Ask about the synthetic records..."></textarea>
+                  <button class="ai-send" type="button" id="ai-submit" aria-label="Send question" title="Send question">
+                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>
+                  </button>
+                </div>
+                <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are stored in this
+                  account&rsquo;s server-side history &mdash; never in this browser &mdash; and you can remove them any
+                  time with &ldquo;Clear history&rdquo; below.</p>
+                <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint">Enter to send &middot; Shift+Enter for a new line.</p>
                 <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
                 <p class="field-error" id="ai-question-error" hidden></p>
               </div>
               <div class="form-actions">
-                <button class="btn btn-primary" type="submit" id="ai-submit">Ask the assistant</button>
                 <button class="btn btn-secondary" type="button" id="ai-cancel" hidden>Cancel request</button>
                 <a class="btn btn-secondary" id="ai-patient-link" href="patients.html">Ask about a patient</a>
               </div>
@@ -104,6 +111,19 @@
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
               Always use clinical judgment. This AI assistant does not replace professional medical advice.
             </p>
+          </section>
+
+          <section class="card ai-history-card" id="ai-history" aria-labelledby="ai-history-heading">
+            <div class="ai-history__head">
+              <h2 id="ai-history-heading">Conversation history</h2>
+              <button class="btn btn-secondary btn-sm" type="button" id="ai-history-clear">Clear history</button>
+            </div>
+            <p class="ai-history__note">
+              Your saved questions and answers for this account, newest first &mdash; patient and general lookups.
+              Select an entry to read the full answer with the records it consulted. History is stored server-side in
+              your account (never in this browser); &ldquo;Clear history&rdquo; permanently removes all of it.
+            </p>
+            <ul class="ai-history" id="ai-history-list"></ul>
           </section>
         </div>
       </main>

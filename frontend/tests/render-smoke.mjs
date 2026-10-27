@@ -197,6 +197,37 @@ const AI_GENERAL_ANSWER = {
   disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
+/* Conversation history fixtures (docs/API.md "AI assistant" history). */
+const minutesAgo = (n) => new Date(Date.now() - n * 60 * 1000).toISOString();
+const CONVERSATIONS = {
+  items: [
+    {
+      id: 'c1',
+      patient_id: 'p1',
+      question: 'What is the latest haemoglobin?',
+      answer: 'The latest synthetic haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
+      used_tools: ['get_patient_lab_results'],
+      citations: [{ type: 'patient', id: 'p1' }, { type: 'lab_result', id: 'DEMO-LAB-0001' }],
+      model: 'demo-model-1',
+      created_at: minutesAgo(5),
+    },
+    {
+      id: 'c2',
+      patient_id: null,
+      question: 'Which patients are on metformin?',
+      answer: 'One synthetic patient is on metformin.',
+      used_tools: ['find_patients_by_medication'],
+      citations: [],
+      model: 'demo-model-1',
+      created_at: minutesAgo(90),
+    },
+  ],
+  total: 2,
+  limit: 20,
+  offset: 0,
+};
+const EMPTY_CONVERSATIONS = { items: [], total: 0, limit: 20, offset: 0 };
+
 const AI_PAGE_IDS = [
   'page-body',
   'ai-suggestions',
@@ -210,6 +241,9 @@ const AI_PAGE_IDS = [
   'ai-status',
   'ai-patient-link',
   'ai-empty-note',
+  'ai-history',
+  'ai-history-list',
+  'ai-history-clear',
 ];
 
 const ADMIN_IDS = [
@@ -242,6 +276,10 @@ const AI_IDS = [
   'ai-cancel',
   'ai-status',
   'ai-response-region',
+  'ai-quick-actions',
+  'ai-quick-note',
+  'ai-history',
+  'ai-history-list',
 ];
 const PATIENT_IDS = [
   'page-body',
@@ -286,7 +324,7 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, routes = [], calls = [] }) {
+function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, conversations, routes = [], calls = [] }) {
   // A payload carrying a numeric `status` (and no `ok` flag) is an error
   // response: { status, code?, message?, retryAfter? }. A non-200 success
   // carries `ok: true` (e.g. { status: 204, ok: true }).
@@ -351,6 +389,15 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     if (path.endsWith('/ai/ask') && method === 'POST') {
       if (ai === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
       return respond(ai);
+    }
+    if (path.endsWith('/ai/conversations') && method === 'GET') {
+      return respond(conversations === undefined ? EMPTY_CONVERSATIONS : conversations);
+    }
+    if (path.endsWith('/ai/conversations') && method === 'DELETE') {
+      return json(204, null);
+    }
+    if (/\/ai\/conversations\/[^/]+$/.test(path) && method === 'DELETE') {
+      return json(204, null);
     }
     throw new Error(`unstubbed request: ${method} ${url}`);
   };
@@ -884,6 +931,221 @@ await check('AI page is gated without patient:read: nav hidden and denial shown'
     textOf(document.getElementById('ai-response-region')),
     'only available to accounts that can view patient data',
     'permission denial note missing',
+  );
+});
+
+/* ------------------------------- AI composer keys + conversation history */
+
+await check('AI page composer sends on Enter and inserts a new line on Shift+Enter', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ calls, me: DOCTOR, ai: AI_GENERAL_ANSWER });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Which patients are on metformin?';
+  await input.dispatch('input');
+
+  // Shift+Enter: the default browser behaviour (a new line) must survive.
+  const shiftEvent = {
+    key: 'Enter',
+    shiftKey: true,
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+  await input.dispatch('keydown', shiftEvent);
+  await settle();
+  assertEqualLocal(shiftEvent.prevented, false, 'Shift+Enter must not be intercepted');
+  assertEqualLocal(calls.filter((call) => call.url.includes('/ai/ask')).length, 0, 'Shift+Enter must not send');
+
+  // Enter: intercepted and sends exactly once.
+  const enterEvent = {
+    key: 'Enter',
+    shiftKey: false,
+    prevented: false,
+    preventDefault() { this.prevented = true; },
+  };
+  await input.dispatch('keydown', enterEvent);
+  await settle();
+  assertEqualLocal(enterEvent.prevented, true, 'Enter must be intercepted before a newline is typed');
+  const askCalls = calls.filter((call) => call.url.includes('/ai/ask'));
+  assertEqualLocal(askCalls.length, 1, 'Enter must send exactly one question');
+  assertEqualLocal(JSON.parse(askCalls[0].init.body).question, 'Which patients are on metformin?', 'sent question');
+  assertContains(textOf(document.getElementById('ai-response-region')), 'One synthetic patient is on metformin.', 'answer missing');
+});
+
+await check('AI panel send button sends and compose is disabled while in flight', async () => {
+  const calls = [];
+  const baseFetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  let resolveAsk = null;
+  globalThis.fetch = async (url, init = {}) => {
+    if (url.includes('/ai/ask')) {
+      calls.push({ url, init });
+      return new Promise((resolve) => {
+        resolveAsk = resolve;
+      });
+    }
+    return baseFetch(url, init);
+  };
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  const send = document.getElementById('ai-submit');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await send.dispatch('click');
+  await settle();
+
+  assertEqualLocal(calls.filter((call) => call.url.includes('/ai/ask')).length, 1, 'the send button must ask once');
+  assertEqualLocal(input.disabled, true, 'compose must be disabled while the request is in flight');
+  assertEqualLocal(send.disabled, true, 'the send button must disable while the request is in flight');
+
+  resolveAsk(json(200, AI_ANSWER));
+  await settle();
+  assertContains(textOf(document.getElementById('ai-response-region')), '13.5 g/dL', 'answer missing after the send button');
+  assertEqualLocal(input.disabled, false, 'compose must re-enable when the request finishes');
+  assertEqualLocal(send.disabled, false, 'the send button must re-enable when the request finishes');
+});
+
+await check('AI page history renders, expands the full answer, and clears behind a confirm dialog', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ calls, me: DOCTOR, conversations: CONVERSATIONS });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const list = document.getElementById('ai-history-list');
+  const entries = list.querySelectorAll('.ai-history__item');
+  assertEqualLocal(entries.length, 2, 'both history entries must render, newest first');
+  const summaryText = textOf(list);
+  assertContains(summaryText, 'What is the latest haemoglobin?', 'newest question missing');
+  assertContains(summaryText, 'Which patients are on metformin?', 'older question missing');
+  assertContains(summaryText, 'Patient', 'patient mode badge missing');
+  assertContains(summaryText, 'General', 'general mode badge missing');
+  assertContains(summaryText, 'minutes ago', 'relative timestamp missing');
+  assertContains(summaryText, 'get_patient_lab_results', 'tool name missing from the summary');
+
+  // Expand: aria-expanded, the full styled answer turn, citations, focus.
+  const firstSummary = list.querySelectorAll('.ai-history__summary')[0];
+  await firstSummary.dispatch('click');
+  const detail = list.querySelector('.ai-history__detail');
+  assertEqualLocal(firstSummary.getAttribute('aria-expanded'), 'true', 'summary must report expanded');
+  assertEqualLocal(detail.hidden, false, 'the answer detail must be visible when expanded');
+  const detailText = textOf(detail);
+  assertContains(detailText, 'The latest synthetic haemoglobin is 13.5 g/dL.', 'expanded answer missing');
+  assertContains(detailText, 'AI-generated', 'expanded turn must keep the AI-generated label');
+  assertContains(detailText, 'not a diagnosis or treatment recommendation', 'expanded turn must keep the disclaimer');
+  assertContains(detailText, 'Records consulted', 'expanded citations label missing');
+  assertContains(detailText, 'Synthetic lab result DEMO-LAB-0001', 'expanded citation missing');
+  assert(document.activeElement === detail, 'expanding must move focus into the answer');
+  assert(detail.querySelectorAll('a').map((a) => a.getAttribute('href')).includes('patient.html?id=p1'),
+    'patient citations must link to the record');
+
+  // Collapse again.
+  await firstSummary.dispatch('click');
+  assertEqualLocal(firstSummary.getAttribute('aria-expanded'), 'false', 'summary must report collapsed');
+  assertEqualLocal(detail.hidden, true, 'the answer detail must hide when collapsed');
+
+  // Clear history: confirmed behind the dialog, DELETEs, then an empty state.
+  await document.getElementById('ai-history-clear').dispatch('click');
+  const dialog = document.getElementById('app-dialog');
+  assert(dialog, 'the confirm dialog must open');
+  await clickButton(dialog, 'Clear history');
+  await settle();
+  assert(calls.some((call) => call.url.endsWith('/ai/conversations') && (call.init.method || 'GET') === 'DELETE'),
+    'clearing must DELETE the caller history');
+  assertContains(textOf(list), 'No questions yet.', 'empty history note missing after clearing');
+  assertContains(textOf(document.getElementById('ai-status')), 'cleared', 'clearing must be announced');
+});
+
+await check('AI panel history is filtered to the patient and grows without a reload', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    conversations: CONVERSATIONS,
+    ai: AI_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  // The rail history request carries the patient filter (never a full dump).
+  const historyCall = calls.find((call) => call.url.includes('/ai/conversations'));
+  assert(historyCall, 'history endpoint not called');
+  assert(historyCall.url.includes('patient_id=p1'), `history must filter by patient: ${historyCall.url}`);
+
+  const list = document.getElementById('ai-history-list');
+  assertContains(textOf(list), 'What is the latest haemoglobin?', 'past patient question missing');
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What changed since the last visit?';
+  await input.dispatch('input');
+  await document.getElementById('ai-submit').dispatch('click');
+  await settle();
+
+  // The new exchange joins the list without any reload or refetch.
+  const firstEntry = list.querySelectorAll('.ai-history__item')[0];
+  assertContains(textOf(firstEntry), 'What changed since the last visit?', 'new exchange missing from history');
+  assertContains(textOf(firstEntry), '13.5 g/dL', 'new answer missing from history');
+});
+
+await check('AI panel quick action "Summarize this patient" fills the composer and sends', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: AI_ANSWER,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const quick = document.getElementById('ai-quick-actions');
+  assertContains(textOf(quick), 'Summarize this patient', 'quick action missing');
+  assertContains(textOf(quick), 'What are the latest abnormal results?', 'lab suggestion chip missing');
+  assertContains(textOf(quick), 'Current medications and proposed plan?', 'medication suggestion chip missing');
+  assertContains(textOf(quick), 'What changed since the last visit?', 'change suggestion chip missing');
+
+  await clickButton(quick, 'Summarize this patient');
+  await settle();
+
+  const askCall = calls.find((call) => call.url.includes('/ai/ask'));
+  assert(askCall, 'the quick action must ask the assistant');
+  const body = JSON.parse(askCall.init.body);
+  assertEqualLocal(body.patient_id, 'p1', 'quick action must stay patient-scoped');
+  assertContains(body.question, 'Summarize this patient', 'quick action must send the canonical summary question');
+  assertContains(
+    document.getElementById('ai-question').value,
+    'Summarize this patient',
+    'quick action must also fill the composer',
+  );
+  assertContains(textOf(document.getElementById('ai-response-region')), '13.5 g/dL', 'quick action answer missing');
+
+  // Suggestion chips fill the composer without sending (review before send).
+  await clickButton(quick, 'What are the latest abnormal results?');
+  assertEqualLocal(
+    document.getElementById('ai-question').value,
+    'What are the latest abnormal results?',
+    'suggestion chip must fill the composer',
   );
 });
 

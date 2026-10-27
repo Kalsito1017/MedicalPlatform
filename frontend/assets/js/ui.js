@@ -90,6 +90,27 @@ export function displayDate(iso) {
   return formatDate(iso) || 'Not recorded';
 }
 
+/**
+ * ISO-8601 (UTC) -> compact relative label ("just now", "5 minutes ago",
+ * "yesterday", "3 days ago", then the absolute date). Returns '' when
+ * unparseable. Used for conversation-history timestamps.
+ */
+export function formatRelativeTime(iso) {
+  const date = parseDate(iso);
+  if (!date) return '';
+  const deltaSeconds = Math.round((Date.now() - date.getTime()) / 1000);
+  if (deltaSeconds < 0) return formatDateTime(iso) || '';
+  if (deltaSeconds < 45) return 'just now';
+  const minutes = Math.round(deltaSeconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.round(deltaSeconds / 3600);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(deltaSeconds / 86400);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days} days ago`;
+  return formatDate(iso) || '';
+}
+
 /* ------------------------------------------------------------- role labels */
 
 const ROLE_LABELS = {

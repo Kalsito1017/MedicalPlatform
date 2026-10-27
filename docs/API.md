@@ -155,7 +155,21 @@ Semantics of the added fields:
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| POST | `/api/v1/ai/ask` | `patient:read` | Body `{ "patient_id", "question" }` (patient-scoped) or `{ "question" }` (general lookup). Response (both modes): `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited (10/min per user, shared across both modes) and bounded (`question` 1–2000 chars, never blank). 401 anonymous; 403 without `patient:read`; 400 on malformed/oversized questions; 429 `rate_limited` with `Retry-After`; 503 `dependency_unavailable` when the LLM is disabled/unreachable. |
+| POST | `/api/v1/ai/ask` | `patient:read` | Body `{ "patient_id", "question" }` (patient-scoped) or `{ "question" }` (general lookup). Response (both modes): `{ "answer", "used_tools", "citations", "model", "ai_generated": true, "disclaimer" }`. Rate limited (10/min per user, shared across both modes) and bounded (`question` 1–2000 chars, never blank). 401 anonymous; 403 without `patient:read`; 400 on malformed/oversized questions; 429 `rate_limited` with `Retry-After`; 503 `dependency_unavailable` when the LLM is disabled/unreachable. Every successful ask is **persisted to the caller's history** (below) in the same request lifecycle; the response shape is unchanged (no added keys). |
+| GET | `/api/v1/ai/conversations` | `patient:read` | **Conversation history (new, wave V).** The caller's **own** persisted exchanges, newest first, in the standard pagination envelope `{ "items", "total", "limit", "offset" }` (`limit` 1–100 default 20, `offset` ≥ 0). Query: `patient_id` (optional UUID filter — patient-scoped exchanges only), `limit`, `offset`; unknown query parameters are `400 validation_error`. Each item: `{ "id", "patient_id", "question", "answer", "used_tools", "citations", "model", "created_at" }` where `patient_id` is `null` for general-lookup questions, `citations` are the `{type, id}` references as in the ask response, and `created_at` is ISO-8601 UTC `Z`. 401 anonymous; 403 without `patient:read`. Rows of other users are **never** returned (server-side `user_id` scoping; a foreign read is simply empty). |
+| DELETE | `/api/v1/ai/conversations` | `patient:read` | Clear the caller's **entire own** history. `204` empty body. Audited as `ai.history.clear` (metadata only). CSRF-protected. |
+| DELETE | `/api/v1/ai/conversations/{conversation_id}` | `patient:read` | Delete one **own** exchange. `204`; a foreign or unknown id is `404 not_found` (concealment) and changes nothing. Audited as `ai.history.delete` (metadata only). CSRF-protected. |
+
+**Conversation history semantics** (storage: `admin.ai_conversation`, see
+`backend/app/models/ai.py`): per-user **private** history of synthetic-demo
+conversations, readable and deletable only by its owner. It is deliberately NOT
+an audit table — audit keeps recording only `ai.ask`/`mcp.*` metadata as before
+and never payloads — and deliberately NOT soft-deleted: users erase their own
+history explicitly through the endpoints above. `patient_id` is a plain UUID
+(`null` = general lookup), not a foreign key, so history survives clinical
+record churn. A production build with real clinical content must add a
+retention/erasure policy first (docs/BACKLOG.md). History endpoints are not
+rate limited (the ask endpoint keeps its 10/min limit).
 
 **Two modes, one endpoint** (the response shape is identical in both):
 
@@ -184,7 +198,12 @@ never instructions. Output is labelled AI-generated and is not a diagnosis or
 treatment recommendation. Every ask is audited (`ai.ask`, resource `patient`
 with the patient id in patient mode, `ai_lookup` in general mode) together with
 one `mcp.<tool>` audit event per tool call; prompts, questions, and clinical
-payloads are never audited or logged.
+payloads are never audited or logged. History mutations audit as
+`ai.history.clear` / `ai.history.delete` (metadata only). Each successful ask
+additionally persists its exchange (question, answer, used_tools, citations,
+model, patient_id) to the caller's private history in the same commit as its
+`ai.ask` audit event — one row per request, never double-written on a single
+request lifecycle.
 
 ## Permission matrix (source of truth: `backend/app/authorization/policy.py`)
 

@@ -35,6 +35,7 @@ class EndpointCase:
     needs_patient: bool = False
     needs_encounter: bool = False
     needs_target_user: bool = False
+    needs_conversation: bool = False
     target_roles: tuple[str, ...] = ()
     role_path: str = "doctor"
 
@@ -98,6 +99,19 @@ MATRIX: tuple[EndpointCase, ...] = (
         body_kind="ai_ask",
         needs_patient=True,
     ),
+    # Conversation history (wave V): per-user private, always scoped to the
+    # caller server-side. The delete-by-id probe below targets an id the caller
+    # does not own, so its authorized status is the concealment 404 - own-row
+    # deletion answering 204 is covered in test_ai_history.
+    EndpointCase("GET", "/api/v1/ai/conversations", "patient:read", 200),
+    EndpointCase("DELETE", "/api/v1/ai/conversations", "patient:read", 204),
+    EndpointCase(
+        "DELETE",
+        "/api/v1/ai/conversations/{conversation_id}",
+        "patient:read",
+        404,
+        needs_conversation=True,
+    ),
 )
 
 
@@ -110,6 +124,8 @@ async def _build_request(case: EndpointCase, *, clinical_data, make_user):
     if case.needs_target_user:
         target = await make_user(roles=case.target_roles)
         path = path.format(user_id=target.id, role=case.role_path)
+    if case.needs_conversation:
+        path = path.format(conversation_id=uuid.uuid4())
 
     body: dict | None = None
     if case.body_kind == "login":

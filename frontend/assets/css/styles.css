@@ -2110,6 +2110,239 @@ a.patient-card:hover {
   font-weight: 600;
 }
 
+/* ------------------------------------------- AI composer (send inside box) */
+/* The send button lives INSIDE the textarea container at its right edge,
+   visually integrated with the field border (design reference: owner's
+   "Your question" box). Enter sends; Shift+Enter inserts a new line. */
+
+.ai-composer__box {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.ai-composer__box:focus-within {
+  border-color: var(--color-focus);
+  box-shadow: 0 0 0 3px var(--color-primary-soft);
+}
+
+.ai-composer__box textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text);
+  resize: vertical;
+}
+
+.ai-composer__box textarea:focus-visible {
+  outline: none;
+}
+
+.ai-composer__box textarea:disabled {
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.ai-send {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  border: 1px solid var(--color-primary);
+  border-radius: var(--radius-md);
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.ai-send:hover:not(:disabled) {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+}
+
+.ai-send:disabled {
+  background: var(--color-canvas-alt);
+  border-color: var(--color-border);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.ai-send:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.ai-send .icon {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.ai-keyboard-hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* -------------------------------------------------- AI quick actions (rail) */
+
+.ai-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5) 0;
+}
+
+.ai-quick:empty {
+  display: none;
+}
+
+.ai-quick .ai-summarize {
+  flex: 1 1 100%;
+}
+
+.ai-quick__note {
+  margin: var(--space-2) var(--space-5) 0;
+}
+
+/* --------------------------------------------------- AI conversation history */
+
+.ai-history-card {
+  max-width: 60rem;
+  margin-top: var(--space-4);
+}
+
+.ai-history__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) 0;
+}
+
+.ai-history__head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  color: var(--color-text);
+}
+
+.ai-history__note {
+  margin: var(--space-2) var(--space-5) 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+.ai-history-block {
+  margin-top: var(--space-3);
+  padding: var(--space-3) var(--space-5) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.ai-history__title {
+  margin: 0;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.ai-history {
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0 var(--space-5) var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ai-history--compact {
+  padding: var(--space-3) 0 var(--space-2);
+}
+
+.ai-history__item {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+
+.ai-history__summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  width: 100%;
+  padding: var(--space-3);
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ai-history__summary:hover {
+  background: var(--color-canvas-alt);
+}
+
+.ai-history__summary:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.ai-history__question {
+  font-size: var(--text-sm);
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-history__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.ai-history__tools {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.ai-history__detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-top: 1px dashed var(--color-border);
+  background: var(--color-canvas-alt);
+}
+
+.ai-history__detail:focus {
+  outline: 2px solid var(--color-focus);
+  outline-offset: -2px;
+}
+
+.ai-history__detail .chat-bubble {
+  max-width: 100%;
+}
+
 .password-display {
   margin: var(--space-2) 0 0;
   padding: var(--space-3);

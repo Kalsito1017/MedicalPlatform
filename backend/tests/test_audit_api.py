@@ -36,6 +36,11 @@ KNOWN_ACTIONS = {
     # names come from the fixed registry; attempts to call non-existent tools
     # audit under the fixed "mcp.unknown_tool" action (never model input).
     "ai.ask",
+    # Wave V: conversation-history mutations are metadata-only events (the
+    # question/answer payload is never audited - history lives in the private
+    # per-user ai_conversation table, see app.models.ai).
+    "ai.history.clear",
+    "ai.history.delete",
     "mcp.search_authorized_patients",
     "mcp.get_patient_summary",
     "mcp.get_patient_lab_results",

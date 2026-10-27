@@ -13,6 +13,12 @@ called; `citations` reference the synthetic records used
 (patient/encounter/lab/prescription ids) and may span multiple patients in
 general mode; `disclaimer` is the non-clinical-use notice. `question` is always
 1..QUESTION_MAX_CHARS characters and never blank.
+
+History (`GET/DELETE /api/v1/ai/conversations`) returns the caller's own
+persisted exchanges in the standard pagination envelope
+(`{"items", "total", "limit", "offset"}`); each item is `ConversationOut`.
+History is per-user private workflow data (see app.models.ai for the privacy
+position) - never audit data, never another user's rows.
 """
 from __future__ import annotations
 
@@ -20,6 +26,8 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+from app.schemas.common import Timestamp
 
 QUESTION_MAX_CHARS = 2000
 
@@ -61,3 +69,20 @@ class AskResponse(BaseModel):
     model: str
     ai_generated: Literal[True] = True
     disclaimer: str
+
+
+class ConversationOut(BaseModel):
+    """One persisted exchange from the caller's own AI history.
+
+    `patient_id` is NULL for general-lookup questions. `used_tools` and
+    `citations` mirror the provenance returned with the original answer.
+    """
+
+    id: UUID
+    patient_id: UUID | None = None
+    question: str
+    answer: str
+    used_tools: list[str]
+    citations: list[Citation]
+    model: str
+    created_at: Timestamp

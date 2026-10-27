@@ -5,16 +5,24 @@
 // = general lookup mode; the patient page rail sends patient_id for the
 // patient-scoped mode and is unchanged).
 // The page is a chat surface: user questions on the right, AI-generated answers
-// on the left with source chips and record citations, a composer with send +
-// cancel + 2000-character counter, and every state the rail has: loading,
-// cancel, 503 "AI assistant unavailable", 429 with a retry countdown, and
-// errors via api.describeApiError (network/offline included). Questions and
-// answers live only in this page's DOM — never in web storage, never logged.
+// on the left with source chips and record citations, a composer with an
+// inline send button (inside the textarea box) + cancel + 2000-character
+// counter, and every state the rail has: loading, cancel, 503 "AI assistant
+// unavailable", 429 with a retry countdown, and errors via
+// api.describeApiError (network/offline included).
+// Composer keys: Enter sends, Shift+Enter inserts a new line (hinted on the
+// page and in the textarea's accessible description).
+// Conversation history (docs/API.md "AI assistant" history): each successful
+// ask is persisted server-side to the caller's private history and listed in
+// the History section below the chat (newest first, expandable full answers
+// with citations, "Clear history" behind a confirm dialog). History lives in
+// the backend per user - never in web storage, never logged.
 // Permission gating: the nav item and the composer render only for accounts
 // with patient:read; the backend re-checks every request server-side.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as ui from './ui.js';
 
@@ -25,6 +33,7 @@ const SUGGESTED_QUESTIONS = [
   'Which patients have abnormal potassium results?',
   'Which patients are on metformin?',
   'Which synthetic patients have the most recent lab results?',
+  'Which patients went through me in the last 7 days?',
 ];
 
 const aiRequest = { controller: null };
@@ -84,6 +93,15 @@ function renderSuggestedQuestions() {
   }
 }
 
+/** Enter sends; Shift+Enter inserts a new line (documented in the hint). */
+function onComposerKeydown(event) {
+  if (!event || event.key !== 'Enter') return;
+  if (event.shiftKey) return;
+  if (event.isComposing) return;
+  if (event.preventDefault) event.preventDefault();
+  askAssistant();
+}
+
 function initAiPage(user) {
   const form = document.getElementById('ai-question-form');
   const input = document.getElementById('ai-question');
@@ -96,6 +114,8 @@ function initAiPage(user) {
     form.hidden = true;
     const suggestions = document.getElementById('ai-suggestions');
     if (suggestions) suggestions.hidden = true;
+    const historySection = document.getElementById('ai-history');
+    if (historySection) historySection.hidden = true;
     ui.clear(region);
     region.append(ui.el('div', { class: 'state-panel state-panel--empty' },
       ui.el('h3', { class: 'state-panel__title', text: 'AI assistant not available' }),
@@ -110,6 +130,13 @@ function initAiPage(user) {
 
   renderSuggestedQuestions();
   input.addEventListener('input', syncQuestionCounter);
+  input.addEventListener('keydown', onComposerKeydown);
+  const send = document.getElementById('ai-submit');
+  if (send) {
+    send.addEventListener('click', () => {
+      askAssistant();
+    });
+  }
   cancel.addEventListener('click', () => {
     if (aiRequest.controller) aiRequest.controller.abort();
   });
@@ -118,6 +145,7 @@ function initAiPage(user) {
     askAssistant();
   });
   syncQuestionCounter();
+  initHistory();
 }
 
 /* ------------------------------------------------------------ rendering */
@@ -282,6 +310,57 @@ function renderAiError(container, error) {
   setAiStatus('The assistant request did not succeed. See the message on this page.');
 }
 
+/* -------------------------------------------------------------- history */
+
+async function initHistory() {
+  const clearButton = document.getElementById('ai-history-clear');
+  if (clearButton) {
+    clearButton.addEventListener('click', () => {
+      clearHistoryFlow();
+    });
+  }
+  const list = document.getElementById('ai-history-list');
+  if (!list) return;
+  try {
+    const page = await aiHistory.fetchHistory();
+    aiHistory.renderHistoryList(list, page && Array.isArray(page.items) ? page.items : []);
+  } catch (error) {
+    aiHistory.renderHistoryFailure(list, error);
+  }
+}
+
+async function clearHistoryFlow() {
+  const list = document.getElementById('ai-history-list');
+  const confirmed = await ui.confirmDialog({
+    title: 'Clear your question history?',
+    message: 'This permanently removes every saved question and answer from your account \u2014 all patients and general lookups. It cannot be undone.',
+    confirmLabel: 'Clear history',
+    cancelLabel: 'Keep history',
+    danger: true,
+  });
+  if (!confirmed) return;
+  try {
+    await aiHistory.clearHistory();
+    aiHistory.renderHistoryList(list, []);
+    setAiStatus('Your question history was cleared.');
+  } catch (error) {
+    aiHistory.renderHistoryFailure(list, error);
+    setAiStatus('The question history could not be cleared. See the message on this page.');
+  }
+}
+
+/** The just-finished exchange joins the history list without a reload. */
+function recordHistoryEntry(question, payload) {
+  aiHistory.appendHistoryEntry(document.getElementById('ai-history-list'), {
+    question,
+    answer: payload && typeof payload.answer === 'string' ? payload.answer : '',
+    used_tools: Array.isArray(payload && payload.used_tools) ? payload.used_tools : [],
+    citations: Array.isArray(payload && payload.citations) ? payload.citations : [],
+    model: payload && typeof payload.model === 'string' ? payload.model : '',
+    created_at: new Date().toISOString(),
+  });
+}
+
 /* --------------------------------------------------------------- asking */
 
 async function askAssistant() {
@@ -305,7 +384,10 @@ async function askAssistant() {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   aiRequest.controller = controller;
 
+  // Compose is disabled while a request is in flight (send stays reachable
+  // only via Cancel); the finally block restores it.
   if (submit) submit.disabled = true;
+  if (input) input.disabled = true;
   if (cancel) cancel.hidden = false;
   setAiStatus('Consulting the assistant\u2026');
 
@@ -329,7 +411,7 @@ async function askAssistant() {
   region.setAttribute('aria-busy', 'true');
 
   try {
-    // General lookup mode: no patient_id in the body (docs/API.md).
+    // General lookup mode: no patient reference in the body (docs/API.md).
     const payload = await api.post(
       '/ai/ask',
       { question },
@@ -337,6 +419,7 @@ async function askAssistant() {
     );
     ui.clear(turn);
     renderAiAnswer(turn, payload);
+    recordHistoryEntry(question, payload);
   } catch (error) {
     ui.clear(turn);
     if (error && error.name === 'AbortError') {
@@ -354,6 +437,7 @@ async function askAssistant() {
       aiRequest.controller = null;
       region.removeAttribute('aria-busy');
       if (cancel) cancel.hidden = true;
+      if (input) input.disabled = false;
       syncQuestionCounter();
     }
     turn.removeAttribute('role');

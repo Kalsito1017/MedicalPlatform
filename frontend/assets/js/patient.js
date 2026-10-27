@@ -8,11 +8,13 @@
 //   GET /api/v1/patients/{id}/labs           -> Page of lab results
 //   GET /api/v1/patients/{id}/prescriptions  -> Page of prescriptions
 //   POST /api/v1/ai/ask                      -> AI-generated answer (optional)
+//   GET /api/v1/ai/conversations             -> own history, filtered by patient
 // Every section has its own loading, empty, and error state; missing records
 // are friendly empty states, not errors.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as ui from './ui.js';
 
@@ -545,8 +547,12 @@ ui.onReady(async () => {
   // AI-generated, with the disclaimer shown prominently. 503
   // (dependency_unavailable) is a normal demo state and renders an honest
   // unavailable panel; 429 renders a retry countdown; other errors go through
-  // api.describeApiError. Questions and answers are never stored in web
-  // storage and never logged.
+  // api.describeApiError. Composer keys: Enter sends, Shift+Enter inserts a
+  // new line; compose is disabled while a request is in flight. Quick actions
+  // ("Summarize this patient" + suggestion chips) ask real questions of the
+  // existing tools. Exchanges are persisted server-side per user and listed
+  // as this patient's history (docs/API.md "AI assistant" history) — never in
+  // web storage, never logged.
   // ================================================================
   initAiPanel(user);
 });
@@ -598,6 +604,17 @@ function initTabs() {
 
 const QUESTION_MAX = 2000;
 const aiRequest = { controller: null };
+
+// Doctor-fast actions: real questions for the existing MCP tools (the
+// canonical summary maps to get_patient_summary; the chips map to the lab,
+// prescription, and encounter reads). Nothing decorative, nothing automated.
+const SUMMARY_QUESTION =
+  'Summarize this patient: active problems, latest lab results, current medications, and the proposed plan.';
+const RAIL_SUGGESTIONS = [
+  'What are the latest abnormal results?',
+  'Current medications and proposed plan?',
+  'What changed since the last visit?',
+];
 
 function setAiStatus(message) {
   const status = document.getElementById('ai-status');
@@ -651,11 +668,22 @@ function initAiPanel(user) {
         text: 'The AI assistant is only available to accounts that can view this patient. Access is enforced by the backend.',
       }));
     }
+    const quickActions = document.getElementById('ai-quick-actions');
+    if (quickActions) quickActions.hidden = true;
+    const historySection = document.getElementById('ai-history');
+    if (historySection) historySection.hidden = true;
     setAiStatus('The AI assistant is not available for this account.');
     return;
   }
 
   input.addEventListener('input', syncQuestionCounter);
+  input.addEventListener('keydown', onComposerKeydown);
+  const send = document.getElementById('ai-submit');
+  if (send) {
+    send.addEventListener('click', () => {
+      askAssistant();
+    });
+  }
   cancel.addEventListener('click', () => {
     if (aiRequest.controller) aiRequest.controller.abort();
   });
@@ -664,6 +692,78 @@ function initAiPanel(user) {
     askAssistant();
   });
   syncQuestionCounter();
+  renderQuickActions();
+  initAiHistory();
+}
+
+/** Enter sends; Shift+Enter inserts a new line (documented in the hint). */
+function onComposerKeydown(event) {
+  if (!event || event.key !== 'Enter') return;
+  if (event.shiftKey) return;
+  if (event.isComposing) return;
+  if (event.preventDefault) event.preventDefault();
+  askAssistant();
+}
+
+function fillComposer(question) {
+  const input = document.getElementById('ai-question');
+  if (!input) return;
+  input.value = question;
+  syncQuestionCounter();
+  if (typeof input.focus === 'function') input.focus();
+}
+
+function renderQuickActions() {
+  const host = document.getElementById('ai-quick-actions');
+  if (!host) return;
+  ui.clear(host);
+  host.append(
+    ui.el('button', {
+      class: 'btn btn-primary ai-summarize',
+      type: 'button',
+      text: 'Summarize this patient',
+      'aria-describedby': 'ai-quick-note',
+      onClick: () => {
+        fillComposer(SUMMARY_QUESTION);
+        askAssistant();
+      },
+    }),
+  );
+  for (const question of RAIL_SUGGESTIONS) {
+    host.append(ui.el('button', {
+      class: 'chip chip--action',
+      type: 'button',
+      text: question,
+      onClick: () => fillComposer(question),
+    }));
+  }
+}
+
+async function initAiHistory() {
+  const list = document.getElementById('ai-history-list');
+  if (!list) return;
+  try {
+    const page = await aiHistory.fetchHistory({ patientId: state.patientId });
+    aiHistory.renderHistoryList(list, page && Array.isArray(page.items) ? page.items : [], {
+      compact: true,
+      emptyText: 'No questions about this patient yet.',
+    });
+  } catch (error) {
+    aiHistory.renderHistoryFailure(list, error);
+  }
+}
+
+/** The just-finished exchange joins this patient's history without a reload. */
+function recordHistoryEntry(question, payload) {
+  aiHistory.appendHistoryEntry(document.getElementById('ai-history-list'), {
+    question,
+    answer: payload && typeof payload.answer === 'string' ? payload.answer : '',
+    used_tools: Array.isArray(payload && payload.used_tools) ? payload.used_tools : [],
+    citations: Array.isArray(payload && payload.citations) ? payload.citations : [],
+    model: payload && typeof payload.model === 'string' ? payload.model : '',
+    created_at: new Date().toISOString(),
+    patient_id: state.patientId,
+  }, { compact: true });
 }
 
 function citationLabel(citation) {
@@ -833,7 +933,10 @@ async function askAssistant() {
   const controller = typeof AbortController === 'function' ? new AbortController() : null;
   aiRequest.controller = controller;
 
+  // Compose is disabled while a request is in flight (Cancel stays available);
+  // the finally block restores it.
   if (submit) submit.disabled = true;
+  if (input) input.disabled = true;
   if (cancel) cancel.hidden = false;
   setAiStatus('Consulting the assistant\u2026');
   if (region) {
@@ -861,6 +964,7 @@ async function askAssistant() {
       controller ? { signal: controller.signal } : undefined,
     );
     renderAiAnswer(payload, question);
+    recordHistoryEntry(question, payload);
   } catch (error) {
     if (error && error.name === 'AbortError') {
       if (region) {
@@ -877,6 +981,7 @@ async function askAssistant() {
     aiRequest.controller = null;
     if (region) region.removeAttribute('aria-busy');
     if (cancel) cancel.hidden = true;
+    if (input) input.disabled = false;
     syncQuestionCounter();
   }
 }

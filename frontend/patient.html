@@ -170,21 +170,37 @@
                 <p class="ai-card__subtitle">
                   AI-generated insights for clinical review — not a diagnosis or treatment recommendation.
                 </p>
+                <div class="ai-quick" id="ai-quick-actions" role="group" aria-label="Quick questions about this patient"></div>
+                <p class="field-hint ai-quick__note" id="ai-quick-note">Quick actions ask real questions of this
+                  patient&rsquo;s synthetic record &mdash; you review every answer.</p>
                 <div class="ai-chat" id="ai-response-region" role="region" aria-label="Assistant response">
                   <p class="text-muted">No question asked yet.</p>
+                </div>
+                <div class="ai-history-block" id="ai-history">
+                  <h3 class="ai-history__title">Your questions about this patient</h3>
+                  <p class="ai-history__note">Stored in your account&rsquo;s server-side history (never in this browser),
+                    newest first. Select an entry to read the full answer.</p>
+                  <ul class="ai-history ai-history--compact" id="ai-history-list"></ul>
                 </div>
                 <form class="ai-composer" id="ai-question-form" novalidate>
                   <div class="field">
                     <label for="ai-question">Your question about this synthetic patient</label>
-                    <textarea id="ai-question" rows="2"
-                              aria-describedby="ai-question-hint ai-char-count"
-                              placeholder="Ask a question about this patient..."></textarea>
-                    <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are not stored in your browser.</p>
+                    <div class="ai-composer__box">
+                      <textarea id="ai-question" rows="2"
+                                aria-describedby="ai-question-hint ai-keyboard-hint ai-char-count"
+                                placeholder="Ask a question about this patient..."></textarea>
+                      <button class="ai-send" type="button" id="ai-submit" aria-label="Send question" title="Send question">
+                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>
+                      </button>
+                    </div>
+                    <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are stored in
+                      this account&rsquo;s server-side history &mdash; never in this browser &mdash; and can be cleared
+                      from the AI Assistant page.</p>
+                    <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint">Enter to send &middot; Shift+Enter for a new line.</p>
                     <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
                     <p class="field-error" id="ai-question-error" hidden></p>
                   </div>
                   <div class="form-actions">
-                    <button class="btn btn-primary" type="submit" id="ai-submit">Ask the assistant</button>
                     <button class="btn btn-secondary" type="button" id="ai-cancel" hidden>Cancel request</button>
                   </div>
                 </form>
