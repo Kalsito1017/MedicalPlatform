@@ -210,7 +210,9 @@ docker compose run --rm app python /app/scripts/seed_demo_data.py   # synthetic 
 The seed is idempotent (keyed by natural keys; running it twice creates no
 duplicates). The demo cohort is 45 synthetic patients (2–6 encounters, 6–12 lab
 results, 0–5 prescriptions each) plus a 15-entry fictional medication catalog, with
-deliberate coherent abnormal lab patterns for AI lookups. Resetting clears audit
+deliberate coherent abnormal lab patterns for AI lookups. The dataset is
+Bulgarian-language (names, clinical notes, diagnoses, lab and medication display
+names in Cyrillic UTF-8; machine identifiers stay ASCII). Resetting clears audit
 history along with the data — expected for a demo.
 
 ## 10. Known free-tier risks and cost

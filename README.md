@@ -125,9 +125,12 @@ retention procedure and `docs/TROUBLESHOOTING.md` for failures.
 
 Synthetic demo dataset: the seed loads **45 fictional patients** (obviously demo-labeled
 `DEMO-XXXX` MRNs) with 2–6 encounters, 6–12 lab results, and 0–5 prescriptions each,
-plus a 15-entry fictional medication catalog. Lab values carry deliberate, coherent
-abnormal patterns (high potassium, anemia, diabetes, high LDL, elevated liver enzymes,
-and more) so AI lookups have realistic answers to find.
+plus a 15-entry fictional medication catalog. The dataset is **Bulgarian-language**:
+patient and staff names, clinical notes, encounter summaries, diagnoses, lab test names,
+and medication names are natural Bulgarian (Cyrillic UTF-8), while machine identifiers
+(MRNs, test/ICD/medication codes, enum values, units) stay ASCII. Lab values carry
+deliberate, coherent abnormal patterns (high potassium, anemia, diabetes, high LDL,
+elevated liver enzymes, and more) so AI lookups have realistic answers to find.
 
 ---
 
