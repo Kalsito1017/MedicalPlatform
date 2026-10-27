@@ -41,6 +41,9 @@ KNOWN_ACTIONS = {
     # per-user ai_conversation table, see app.models.ai).
     "ai.history.clear",
     "ai.history.delete",
+    # Wave U: reading the admin analytics overview is audited as metadata only
+    # (aggregates only; never a clinical payload or an individual record).
+    "analytics.read",
     "mcp.search_authorized_patients",
     "mcp.get_patient_summary",
     "mcp.get_patient_lab_results",

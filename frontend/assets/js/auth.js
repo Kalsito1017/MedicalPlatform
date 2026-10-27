@@ -44,6 +44,15 @@ export function navItemsFor(user) {
   if (hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
     items.push({ key: 'admin', label: 'Admin', href: 'admin.html' });
   }
+  if (hasPermission(user, 'analytics:read')) {
+    // The palette surfaces this destination as an action ("Open Analytics").
+    items.push({
+      key: 'analytics',
+      label: 'Analytics',
+      href: 'analytics.html',
+      commandLabel: 'Open Analytics',
+    });
+  }
   return items;
 }
 

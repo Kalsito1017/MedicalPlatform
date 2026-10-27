@@ -161,13 +161,17 @@ class ShimNode {
   }
 
   matches(selector) {
-    if (selector.startsWith('.')) return this._classSet.has(selector.slice(1));
-    if (selector.startsWith('#')) return this.id === selector.slice(1);
-    if (selector.startsWith('[')) {
-      const name = selector.slice(1, -1).split('=')[0];
+    const sel = String(selector);
+    if (sel === '') return false;
+    if (sel.startsWith('#')) return this.id === sel.slice(1);
+    if (sel.startsWith('[')) {
+      const name = sel.slice(1, -1).split('=')[0];
       return name in this.attributes;
     }
-    return this.tagName === selector.toUpperCase();
+    // Simple compound selectors: "tag", ".class", ".a.b", "tag.a.b".
+    const [tag, ...classes] = sel.split('.');
+    if (tag !== '' && this.tagName !== tag.toUpperCase()) return false;
+    return classes.every((cls) => this._classSet.has(cls));
   }
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null;

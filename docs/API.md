@@ -182,6 +182,80 @@ Semantics of the added fields:
 |---|---|---|---|
 | GET | `/api/v1/audit` | `audit:read` | Paginated audit events: actor, action, resource ref, outcome, timestamp, request id. No clinical payloads, no secrets. |
 
+### Analytics (admin)
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/api/v1/analytics/summary` | `analytics:read` | One bounded operational overview of the synthetic dataset (Admin only). **No query parameters** — the endpoint is a single call; unknown query parameters are `400 validation_error`. 401 anonymous; 403 without `analytics:read`. Every read is audited as `analytics.read` (metadata only — never a clinical payload). |
+
+**Change record:** added 2026-10-27 (wave U, admin analytics). Additive: one new
+endpoint and one new response shape; nothing existing changed.
+
+```json
+{
+  "generated_at": "2026-10-27T13:00:00Z",
+  "counts": { "patients", "encounters", "labs", "prescriptions",
+              "active_prescriptions", "diagnoses_active", "staff_active",
+              "ai_conversations" },
+  "last_30_days": { "encounters", "lab_results", "prescriptions_written",
+                    "ai_asks", "logins", "permission_denials" },
+  "lab_status_mix": { "final", "preliminary", "pending" },
+  "abnormal_lab_rate": { "abnormal", "total", "pct" },
+  "top_abnormal_tests": [ { "test_code", "test_name", "abnormal_count" } ],
+  "prescriptions_by_status": { "active", "completed", "stopped", "cancelled" },
+  "staff_by_role": [ { "role", "count" } ],
+  "audit_activity": [ { "day", "logins", "denials", "record_reads" } ],
+  "ai_usage": { "total_asks", "general_asks", "patient_asks",
+                "top_tools": [ { "tool", "calls" } ] },
+  "data_provenance": "synthetic"
+}
+```
+
+Semantics (all timestamps UTC; every count is an integer; no clinical
+measurement appears anywhere in this payload):
+
+- `counts` are current row counts of the bounded demo tables (soft-deleted
+  rows excluded). `counts.ai_conversations` is the `admin.ai_conversation`
+  history table — deliberately a different source from `ai_usage` below:
+  clearing personal history shrinks the history table but never erases what
+  the system was actually asked.
+- `last_30_days` covers `[now − 30 days, now]` UTC; each metric uses the
+  record's own event timestamp: encounters by `occurred_at`, labs by
+  `collected_at`, prescriptions by `start_date` (recorded start of the
+  course), and `ai_asks` / `logins` / `permission_denials` by the audit
+  event's `created_at` (`ai.ask` successes, `auth.login.success`,
+  `authz.denied`).
+- **Abnormal lab rule — the SAME rule the MCP lookup tools implement**
+  (see "MCP tool contract" above): a result is abnormal when its `value_num`
+  is strictly outside its recorded `[ref_low, ref_high]` (a missing bound is
+  never exceeded). The `status` field is the document state and is **never**
+  an abnormality flag; text-only results (no `value_num`) can never be
+  abnormal. `abnormal_lab_rate.total` counts the *evaluable* results only —
+  numeric values carrying at least one reference bound — and `pct` is
+  `abnormal / total × 100` **rounded to 1 decimal place, serialized as a JSON
+  number** (documented choice: it is a derived display rate, never a clinical
+  value; `0.0` when the total is 0).
+- `top_abnormal_tests`: at most **8** entries ordered by `abnormal_count`
+  desc (ties by code, then name); `prescriptions_by_status` and
+  `lab_status_mix` always list their **closed vocabularies in full**
+  (zero-filled).
+- `staff_by_role` lists all three policy roles with distinct **active**
+  (non-deleted, non-deactivated) accounts per role; an account holding two
+  roles is counted under both.
+- `audit_activity` is exactly the **last 14 UTC days including today**,
+  oldest first, **zero-filled** (`day` is `YYYY-MM-DD`). `logins` counts
+  `auth.login.success`, `denials` counts `authz.denied`, `record_reads`
+  counts the record-read actions (`patient.read`, `patient.summary.read`,
+  `labs.read`, `prescriptions.read`).
+- `ai_usage` counts **successful `ai.ask` audit events**: `patient_asks` are
+  those audited with a patient subject (`resource_type: "patient"`) and
+  `general_asks` everything else (`ai_lookup`), so the two always partition
+  `total_asks`. `top_tools` (at most **6**) counts real MCP tool calls from
+  the `mcp.<tool>` audit stream (exactly one event per call;
+  `mcp.unknown_tool` is a rejection marker, not a tool, and is excluded).
+- Efficiency: the payload is computed with a handful of grouped aggregate
+  SELECTs over the bounded tables (no N+1; asserted in tests).
+
 ### AI assistant (optional feature)
 
 | Method | Path | Permission | Notes |
@@ -239,8 +313,9 @@ request lifecycle.
 ## Permission matrix (source of truth: `backend/app/authorization/policy.py`)
 
 Three roles only (`tech_admin` was removed from the system entirely — owner
-decision, 2026-10-26). `analytics:read` is declared now for the analytics page
-a later wave builds; no endpoint requires it yet.
+decision, 2026-10-26). `analytics:read` was declared in advance of the
+analytics page and is now enforced by `GET /api/v1/analytics/summary` (see
+"Analytics", wave U, 2026-10-27).
 
 | Permission | doctor | nurse | clinical_admin (display label: **Admin**) |
 |---|---|---|---|

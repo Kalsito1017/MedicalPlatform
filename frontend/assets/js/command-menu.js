@@ -198,7 +198,9 @@ function allCommands() {
   for (const item of auth.navItemsFor(state.user)) {
     commands.push({
       id: `nav-${item.key}`,
-      title: `Go to ${item.label}`,
+      // Destinations keep "Go to …" except when the nav source declares an
+      // action-style command label (auth.js: "Open Analytics").
+      title: item.commandLabel || `Go to ${item.label}`,
       hint: item.href,
       keywords: `navigation page ${item.label}`,
       group: 'Navigation',

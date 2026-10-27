@@ -91,6 +91,8 @@ MATRIX: tuple[EndpointCase, ...] = (
         role_path="doctor",
     ),
     EndpointCase("GET", "/api/v1/audit", "audit:read", 200),
+    # Wave U (admin analytics): one bounded read-only overview, Admin only.
+    EndpointCase("GET", "/api/v1/analytics/summary", "analytics:read", 200),
     EndpointCase(
         "POST",
         "/api/v1/ai/ask",

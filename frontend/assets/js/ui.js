@@ -168,6 +168,7 @@ export const ICONS = {
   capsule: `${SVG_OPEN}<path d="M10.5 4.5 4.5 10.5a4.2 4.2 0 0 0 6 6l6-6a4.2 4.2 0 0 0-6-6z"/><path d="m7.5 7.5 6 6"/></svg>`,
   calendar: `${SVG_OPEN}<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/></svg>`,
   mail: `${SVG_OPEN}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>`,
+  chart: `${SVG_OPEN}<path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg>`,
 };
 
 /** Inline SVG icon element. Decorative: names are always adjacent text. */
@@ -965,6 +966,7 @@ const NAV_ICONS = {
   patients: 'users',
   ai: 'sparkles',
   admin: 'shield',
+  analytics: 'chart',
 };
 
 function renderNav(navNode, navItems, activeKey) {

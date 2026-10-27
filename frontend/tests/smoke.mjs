@@ -153,10 +153,11 @@ const entryModules = {
   'patient.html': 'patient.js',
   'ai.html': 'ai-assistant.js',
   'admin.html': 'admin.js',
+  'analytics.html': 'analytics.js',
 };
 const DYNAMIC_IDS = new Set(['app-dialog']);
 const CHROME_IDS = ['global-status', 'site-nav', 'user-area', 'nav-toggle'];
-const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html'];
+const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html', 'analytics.html'];
 
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
@@ -397,6 +398,48 @@ await check('index.html: brand panel and info-row disclosures present', async ()
   for (const marker of ['class="auth-hero"', 'class="info-rows"', 'What this demo is', 'What this demo is not', 'MediCore']) {
     assert(source.includes(marker), `missing ${marker}`);
   }
+});
+
+/* ------------------------------------------------ 1f. wave U (analytics) */
+
+await check('analytics.html keeps the CSP bootstrap block byte-identical', async () => {
+  // The inline window.__APP_CONFIG__ block is hashed into the CSP
+  // (frontend/_headers + scripts/security_check.py): a single changed byte
+  // breaks the hash, so the analytics page must copy it VERBATIM.
+  const bootstrap = (source) => {
+    const match = source.match(/<script>\s*\/\* Deployment override[\s\S]*?<\/script>/);
+    assert(match, 'missing inline config bootstrap block');
+    return match[0];
+  };
+  const analytics = await readFile(path.join(frontendRoot, 'analytics.html'), 'utf8');
+  const admin = await readFile(path.join(frontendRoot, 'admin.html'), 'utf8');
+  assertEqual(bootstrap(analytics), bootstrap(admin), 'bootstrap block drifted from admin.html');
+  assert(bootstrap(analytics).includes('window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};'), 'bootstrap hook missing');
+});
+
+await check('analytics page + module use pure CSS/SVG charts with no external resources', async () => {
+  const analytics = await readFile(path.join(frontendRoot, 'analytics.html'), 'utf8');
+  const moduleSource = stripComments(await readFile(path.join(jsDir, 'analytics.js'), 'utf8'));
+  assert(!analytics.includes('<canvas'), 'canvas is not allowed (pure CSS/SVG charts)');
+  assert(!moduleSource.includes('<canvas'), 'canvas is not allowed (pure CSS/SVG charts)');
+  for (const banned of ['chart.js', 'chartjs', 'd3.', 'echarts', 'highcharts', 'https://']) {
+    assert(!moduleSource.includes(banned), `analytics.js must not reference ${banned}`);
+  }
+  assert(moduleSource.includes("role: 'img'"), 'charts must carry role="img"');
+  assert(moduleSource.includes("'aria-label'"), 'charts must carry aria-label summaries');
+  assert(moduleSource.includes('visually-hidden'), 'charts must ship hidden data tables');
+  assert(moduleSource.includes("'stroke-dasharray'"), 'the donut arc must be an attribute, not a style');
+});
+
+await check('analytics nav and palette command are permission-gated in the shared modules', async () => {
+  const auth = stripComments(await readFile(path.join(jsDir, 'auth.js'), 'utf8'));
+  const menu = stripComments(await readFile(path.join(jsDir, 'command-menu.js'), 'utf8'));
+  assert(auth.includes("'analytics:read'"), 'auth.js must gate the nav item on analytics:read');
+  assert(auth.includes('commandLabel'), 'auth.js must declare the palette label for Analytics');
+  assert(auth.includes('Open Analytics'), 'the palette label must be "Open Analytics"');
+  assert(menu.includes('item.commandLabel'), 'command-menu.js must surface the nav-declared command label');
+  const analytics = await readFile(path.join(frontendRoot, 'analytics.html'), 'utf8');
+  assert(analytics.includes('Analytics'), 'analytics.html must be titled Analytics');
 });
 
 /* ------------------------------------------------------ 2. module import safety */

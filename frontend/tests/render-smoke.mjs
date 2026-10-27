@@ -248,6 +248,89 @@ const CONVERSATIONS = {
 };
 const EMPTY_CONVERSATIONS = { items: [], total: 0, limit: 20, offset: 0 };
 
+/* -------------------------------------------- analytics fixtures (wave U) */
+
+// Mirrors the documented GET /analytics/summary payload exactly
+// (docs/API.md "Analytics"): ints everywhere, bounded lists, synthetic label.
+const ANALYTICS_SUMMARY = {
+  generated_at: '2026-10-27T09:30:00Z',
+  counts: {
+    patients: 45,
+    encounters: 167,
+    labs: 415,
+    prescriptions: 104,
+    active_prescriptions: 62,
+    diagnoses_active: 90,
+    staff_active: 3,
+    ai_conversations: 12,
+  },
+  last_30_days: {
+    encounters: 24,
+    lab_results: 58,
+    prescriptions_written: 9,
+    ai_asks: 12,
+    logins: 31,
+    permission_denials: 4,
+  },
+  lab_status_mix: { final: 380, preliminary: 25, pending: 10 },
+  abnormal_lab_rate: { abnormal: 121, total: 402, pct: 30.1 },
+  top_abnormal_tests: [
+    { test_code: 'GLU', test_name: 'Glucose, fasting', abnormal_count: 12 },
+    { test_code: 'HBA1C', test_name: 'HbA1c', abnormal_count: 9 },
+    { test_code: 'K', test_name: 'Potassium', abnormal_count: 7 },
+    { test_code: 'HGB', test_name: 'Hemoglobin', abnormal_count: 5 },
+    { test_code: 'LDL', test_name: 'LDL cholesterol', abnormal_count: 4 },
+    { test_code: 'TSH', test_name: 'TSH', abnormal_count: 3 },
+  ],
+  prescriptions_by_status: { active: 62, completed: 22, stopped: 12, cancelled: 8 },
+  staff_by_role: [
+    { role: 'doctor', count: 2 },
+    { role: 'nurse', count: 2 },
+    { role: 'clinical_admin', count: 1 },
+  ],
+  audit_activity: [
+    { day: '2026-10-14', logins: 3, denials: 0, record_reads: 10 },
+    { day: '2026-10-15', logins: 2, denials: 1, record_reads: 8 },
+    { day: '2026-10-16', logins: 0, denials: 0, record_reads: 0 },
+    { day: '2026-10-17', logins: 4, denials: 0, record_reads: 12 },
+    { day: '2026-10-18', logins: 1, denials: 0, record_reads: 6 },
+    { day: '2026-10-19', logins: 0, denials: 0, record_reads: 2 },
+    { day: '2026-10-20', logins: 5, denials: 2, record_reads: 14 },
+    { day: '2026-10-21', logins: 3, denials: 0, record_reads: 9 },
+    { day: '2026-10-22', logins: 2, denials: 0, record_reads: 7 },
+    { day: '2026-10-23', logins: 0, denials: 0, record_reads: 0 },
+    { day: '2026-10-24', logins: 4, denials: 1, record_reads: 11 },
+    { day: '2026-10-25', logins: 1, denials: 0, record_reads: 5 },
+    { day: '2026-10-26', logins: 3, denials: 0, record_reads: 8 },
+    { day: '2026-10-27', logins: 3, denials: 0, record_reads: 6 },
+  ],
+  ai_usage: {
+    total_asks: 12,
+    general_asks: 5,
+    patient_asks: 7,
+    top_tools: [
+      { tool: 'get_patient_summary', calls: 9 },
+      { tool: 'get_patient_lab_results', calls: 7 },
+      { tool: 'find_patients_by_medication', calls: 4 },
+    ],
+  },
+  data_provenance: 'synthetic',
+};
+
+const ANALYTICS_IDS = [
+  'page-body',
+  'analytics-loading',
+  'analytics-generated-at',
+  'analytics-refresh',
+  'analytics-status',
+  'kpi-region',
+  'audit-activity-region',
+  'labs-region',
+  'prescriptions-region',
+  'staff-region',
+  'ai-region',
+];
+
 const AI_PAGE_IDS = [
   'page-body',
   'ai-suggestions',
@@ -344,7 +427,7 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, conversations, routes = [], calls = [] }) {
+function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, conversations, analytics, routes = [], calls = [] }) {
   // A payload carrying a numeric `status` (and no `ok` flag) is an error
   // response: { status, code?, message?, retryAfter? }. A non-200 success
   // carries `ok: true` (e.g. { status: 204, ok: true }).
@@ -418,6 +501,10 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     }
     if (/\/ai\/conversations\/[^/]+$/.test(path) && method === 'DELETE') {
       return json(204, null);
+    }
+    if (path.endsWith('/analytics/summary') && method === 'GET') {
+      if (analytics === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(analytics);
     }
     throw new Error(`unstubbed request: ${method} ${url}`);
   };
@@ -2450,6 +2537,251 @@ await check('AI asks carry an Idempotency-Key with a fresh value per request', a
   }
   assert(keys[0] !== keys[1], 'each NEW request must get a fresh key');
   assert(!JSON.stringify(keys).includes('haemoglobin'), 'the key must never encode clinical data');
+});
+
+/* ================================================ wave U — admin analytics ===
+   The analytics page renders real aggregates from GET /analytics/summary as
+   pure CSS/inline-SVG charts: SVG bar counts must match the data, the donut is
+   a stroke-dasharray arc, every chart carries role="img" + an aria-label and a
+   visually-hidden data table, empty states are honest, the first load shows
+   skeletons, Refresh rides the SWR cache, and the page/nav/palette all gate on
+   analytics:read. */
+
+await check('analytics page renders KPI tiles and pure-SVG charts from the summary payload', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, calls, analytics: ANALYTICS_SUMMARY });
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+
+  const kpi = document.getElementById('kpi-region');
+  const kpiText = textOf(kpi);
+  assertContains(kpiText, 'Patients', 'KPI labels missing');
+  assertContains(kpiText, '45', 'patient count missing');
+  assertContains(kpiText, '167', 'encounter count missing');
+  assertContains(kpiText, '+24 in the last 30 days', 'the 30-day delta missing');
+  assertEqualLocal(kpi.querySelectorAll('.kpi-tile').length, 8, 'eight KPI tiles expected');
+  assertContains(textOf(document.getElementById('analytics-generated-at')), '27 Oct 2026', 'generated-at line missing');
+
+  const audit = document.getElementById('audit-activity-region');
+  assertEqualLocal(audit.querySelectorAll('rect').length, 14 * 3, 'one grouped bar per day and series');
+  const chart = audit.querySelector('svg.chart');
+  assert(chart, 'the audit chart must render');
+  assertEqualLocal(chart.getAttribute('role'), 'img', 'the chart must be exposed as an image');
+  assertContains(chart.getAttribute('aria-label') || '', 'last 14 days', 'the chart needs a spoken summary');
+  assertContains(textOf(audit), 'Permission denials', 'the legend is missing');
+  assertEqualLocal(audit.querySelectorAll('tr').length, 15, 'hidden data table must carry 14 days + header');
+
+  const labs = document.getElementById('labs-region');
+  const donut = labs.querySelector('svg.donut');
+  assert(donut, 'the abnormal-rate donut must render');
+  assertEqualLocal(donut.getAttribute('role'), 'img', 'the donut must be exposed as an image');
+  assertContains(donut.getAttribute('aria-label') || '', '121 of 402', 'the donut summary must carry the numbers');
+  assertEqualLocal(donut.querySelectorAll('circle').length, 2, 'track + value arc expected');
+  const arc = donut.querySelectorAll('circle')[1];
+  assertContains(arc.getAttribute('stroke-dasharray') || '', ' ', 'the arc length must be a dasharray attribute');
+  assertContains(textOf(labs), '30.1%', 'the donut label must show the rate');
+  assertContains(textOf(labs), 'Glucose, fasting (GLU)', 'top abnormal tests missing');
+  assertContains(textOf(labs), 'Preliminary', 'status mix missing');
+
+  const prescriptions = document.getElementById('prescriptions-region');
+  assertContains(textOf(prescriptions), 'Completed', 'prescription statuses missing');
+  assertEqualLocal(prescriptions.querySelectorAll('rect').length, 8, 'four bar rows with track + fill expected');
+
+  const staff = document.getElementById('staff-region');
+  assertContains(textOf(staff), 'Doctor', 'role pills missing');
+  assertContains(textOf(staff), 'Admin', 'admin role pill missing');
+
+  const ai = document.getElementById('ai-region');
+  assertContains(textOf(ai), 'General lookups', 'AI split missing');
+  assertContains(textOf(ai), 'Patient questions', 'AI split missing');
+  assertContains(textOf(ai), 'get_patient_summary', 'tool chips missing');
+  assertContains(textOf(ai), '\u00d7 9', 'tool call counts missing');
+
+  // Every chart pairs its visual with a visually-hidden data table.
+  for (const regionId of ['audit-activity-region', 'labs-region', 'prescriptions-region', 'staff-region', 'ai-region']) {
+    const region = document.getElementById(regionId);
+    assert(
+      region.querySelectorAll('.visually-hidden').length >= 1,
+      `${regionId} must carry a hidden data table`,
+    );
+  }
+});
+
+await check('analytics empty states are honest when a metric is empty', async () => {
+  const emptyish = {
+    ...ANALYTICS_SUMMARY,
+    top_abnormal_tests: [],
+    abnormal_lab_rate: { abnormal: 0, total: 0, pct: 0 },
+    prescriptions_by_status: { active: 0, completed: 0, stopped: 0, cancelled: 0 },
+    staff_by_role: [
+      { role: 'doctor', count: 0 },
+      { role: 'nurse', count: 0 },
+      { role: 'clinical_admin', count: 0 },
+    ],
+    ai_usage: { total_asks: 0, general_asks: 0, patient_asks: 0, top_tools: [] },
+  };
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, analytics: emptyish });
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+
+  assertContains(
+    textOf(document.getElementById('ai-region')),
+    'No AI usage recorded yet',
+    'zero AI usage must be said honestly',
+  );
+  const labs = textOf(document.getElementById('labs-region'));
+  assertContains(labs, 'No abnormal lab results recorded yet', 'zero abnormal results must be said honestly');
+  assertContains(
+    labs,
+    'No numeric lab results with reference ranges yet',
+    'a zero denominator must be explained',
+  );
+  assertContains(
+    textOf(document.getElementById('prescriptions-region')),
+    'No prescriptions recorded yet',
+    'zero prescriptions must be said honestly',
+  );
+  assertContains(
+    textOf(document.getElementById('staff-region')),
+    'No active staff roles yet',
+    'zero staff roles must be said honestly',
+  );
+});
+
+await check('analytics first load shows shimmer skeletons and replaces them with the summary', async () => {
+  let releaseSummary = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = url.split('?')[0];
+    if (path.endsWith('/auth/me')) return json(200, CLIN_ADMIN);
+    if (path.endsWith('/analytics/summary')) {
+      return new Promise((resolve) => {
+        releaseSummary = () => resolve(json(200, ANALYTICS_SUMMARY));
+      });
+    }
+    throw new Error(`unstubbed request: ${url}`);
+  };
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+
+  const kpi = document.getElementById('kpi-region');
+  assert(kpi.querySelector('.skeleton-block'), 'first load must show the shimmer skeleton');
+  assertContains(textOf(kpi), 'Loading key numbers', 'the skeleton must announce its label');
+
+  releaseSummary();
+  await settle();
+  assertContains(textOf(kpi), '45', 'content must replace the skeleton');
+  assertEqualLocal(kpi.querySelector('.skeleton-block'), null, 'the skeleton must be gone');
+});
+
+await check('analytics Refresh re-fetches through the SWR cache-hit path', async () => {
+  let summaryCalls = 0;
+  let releaseSecond = null;
+  globalThis.fetch = async (url, init = {}) => {
+    const path = url.split('?')[0];
+    if (path.endsWith('/auth/me')) return json(200, CLIN_ADMIN);
+    if (path.endsWith('/analytics/summary')) {
+      summaryCalls += 1;
+      if (summaryCalls === 1) return json(200, ANALYTICS_SUMMARY);
+      return new Promise((resolve) => {
+        releaseSecond = () =>
+          resolve(json(200, { ...ANALYTICS_SUMMARY, counts: { ...ANALYTICS_SUMMARY.counts, patients: 46 } }));
+      });
+    }
+    throw new Error(`unstubbed request: ${url}`);
+  };
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+  assertContains(textOf(document.getElementById('kpi-region')), '45', 'first load must render the totals');
+
+  await document.getElementById('analytics-refresh').dispatch('click');
+  await settle();
+  assertEqualLocal(summaryCalls, 2, 'Refresh must re-fetch through the SWR key');
+  assertContains(textOf(document.getElementById('kpi-region')), '45', 'cached data must render instantly');
+  assertEqualLocal(document.querySelector('.skeleton-block'), null, 'a cache hit must not show a skeleton');
+  assert(document.querySelector('.sync-chip'), 'the background refresh must be marked');
+
+  releaseSecond();
+  await settle();
+  assertContains(textOf(document.getElementById('kpi-region')), '46', 'the revalidated payload must update the DOM');
+  assertEqualLocal(document.querySelector('.sync-chip'), null, 'the updating indicator must clear');
+});
+
+await check('analytics page renders the permission-denied panel for non-admins', async () => {
+  for (const user of [DOCTOR, NURSE]) {
+    const calls = [];
+    globalThis.fetch = makeFetch({ me: user, calls, analytics: ANALYTICS_SUMMARY });
+    const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+    await freshPage('analytics.js');
+    await settle();
+
+    const body = textOf(document.getElementById('page-body'));
+    assertContains(body, 'You do not have permission', `${user.roles[0]} must see the denial panel`);
+    assertContains(body, 'analytics:read', 'the denial must name the missing permission');
+    assertContains(body, 'Back to dashboard', 'the denial must offer a way out');
+    assert(
+      !calls.some((call) => call.url.includes('/analytics/summary')),
+      `${user.roles[0]} must never fetch the summary`,
+    );
+    assert(
+      !textOf(document.getElementById('site-nav')).includes('Analytics'),
+      `${user.roles[0]} must not see the Analytics nav item`,
+    );
+  }
+});
+
+await check('nav item gating: Analytics appears only with analytics:read', async () => {
+  const patientsPage = [...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region'];
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, patients: { items: [], total: 0, limit: 20, offset: 0 } });
+  let document = bootDom(patientsPage);
+  await freshPage('patients.js');
+  await settle();
+  assertContains(
+    textOf(document.getElementById('site-nav')),
+    'Analytics',
+    'admin must see the Analytics nav item',
+  );
+
+  for (const user of [DOCTOR, NURSE]) {
+    globalThis.fetch = makeFetch({ me: user, patients: { items: [], total: 0, limit: 20, offset: 0 } });
+    document = bootDom(patientsPage);
+    await freshPage('patients.js');
+    await settle();
+    assert(
+      !textOf(document.getElementById('site-nav')).includes('Analytics'),
+      `${user.roles[0]} must not see the Analytics nav item`,
+    );
+  }
+});
+
+await check('command palette offers "Open Analytics" only to permitted users', async () => {
+  const patientsPage = [...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region'];
+
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, patients: { items: [], total: 0, limit: 50, offset: 0 } });
+  let document = bootDom(patientsPage);
+  await freshPage('patients.js');
+  await settle();
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  await settle();
+  assertContains(
+    textOf(document.getElementById('command-menu-list')),
+    'Open Analytics',
+    'the admin palette must offer Open Analytics',
+  );
+
+  globalThis.fetch = makeFetch({ me: DOCTOR, patients: { items: [], total: 0, limit: 50, offset: 0 } });
+  document = bootDom(patientsPage);
+  await freshPage('patients.js');
+  await settle();
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  await settle();
+  assert(
+    !textOf(document.getElementById('command-menu-list')).includes('Open Analytics'),
+    'the doctor palette must not offer Open Analytics',
+  );
 });
 
 /* ------------------------------------------------------------------ report */
