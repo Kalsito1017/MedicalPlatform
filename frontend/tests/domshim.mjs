@@ -43,6 +43,11 @@ class ShimNode {
         return this.values[name] === undefined ? '' : this.values[name];
       },
     };
+    // scrollIntoView recorder: the command menu follows its active option with
+    // { block: 'nearest' } while arrowing (command-menu.js). Tests assert the
+    // follow target and options via ShimDocument.scrollIntoViewLog (reset per
+    // installDom) or this node's own scrollIntoViewCalls.
+    this.scrollIntoViewCalls = [];
     const self = this;
     this.classList = {
       add: (...c) => c.forEach((x) => self._classSet.add(x)),
@@ -147,6 +152,13 @@ class ShimNode {
     ShimDocument.activeElement = this;
   }
 
+  /* Selection-following scroll: records { node, options } per call. */
+  scrollIntoView(options) {
+    const normalized = options === undefined ? null : options;
+    this.scrollIntoViewCalls.push(normalized);
+    ShimDocument.scrollIntoViewLog.push({ node: this, options: normalized });
+  }
+
   /* <dialog> semantics: modal open/close plus the close event. */
   showModal() {
     this.open = true;
@@ -193,6 +205,8 @@ class ShimNode {
 
 export class ShimDocument {
   static activeElement = null;
+  /* Every scrollIntoView call this document has seen: [{ node, options }]. */
+  static scrollIntoViewLog = [];
   constructor() {
     this.readyState = 'complete';
     this.body = new ShimNode('body');
@@ -270,9 +284,15 @@ export function dispatchWindowEvent(type, event = {}) {
   if (registry) registry.dispatch(type, event);
 }
 
+/** Scroll-follow log for the current document (see ShimNode.scrollIntoView). */
+export function scrollIntoViewCalls() {
+  return ShimDocument.scrollIntoViewLog;
+}
+
 export function installDom() {
   const document = new ShimDocument();
   ShimDocument.activeElement = null;
+  ShimDocument.scrollIntoViewLog = [];
   globalThis.document = document;
   globalThis.window = globalThis;
   globalThis.location = {

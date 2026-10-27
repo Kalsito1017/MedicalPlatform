@@ -455,6 +455,121 @@ await check('analytics nav and palette command are permission-gated in the share
   assert(analytics.includes('Analytics'), 'analytics.html must be titled Analytics');
 });
 
+/* --------------------------------------------- 1g. responsive (wave UI-C) */
+
+await check('styles.css scales display type fluidly and steps tokens up for TV/large displays', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(css.includes('clamp('), 'display type must scale fluidly with clamp()');
+  const tv = css.match(/@media \(min-width: 1600px\)[\s\S]*?\n\}/);
+  assert(tv, 'missing the ≥1600px TV/large-display token step');
+  assert(
+    /^\s*@media \(min-width: 1600px\) \{\s*:root \{[^}]*\}\s*\}$/.test(tv[0]),
+    'the TV step must contain ONLY a :root token override (no per-element magic numbers)',
+  );
+  for (const token of ['--text-base:', '--text-2xl:', '--space-4:', '--container-max:', '--sidebar-width:']) {
+    assert(tv[0].includes(token), `TV step must override ${token}`);
+  }
+  const uhd = css.match(/@media \(min-width: 2560px\)[\s\S]*?\n\}/);
+  assert(uhd, 'missing the ≥2560px 4K token step');
+  assert(
+    /^\s*@media \(min-width: 2560px\) \{\s*:root \{[^}]*\}\s*\}$/.test(uhd[0]),
+    'the 4K step must contain ONLY a :root token override',
+  );
+  for (const token of ['--text-base:', '--container-max:']) {
+    assert(uhd[0].includes(token), `4K step must override ${token}`);
+  }
+  // The content column grows with the steps: 75rem base -> wider at TV ->
+  // wider again at 4K, so cards/tables use more of a large display.
+  const maxRem = (block) => Number((block.match(/--container-max:\s*([\d.]+)rem/) || [])[1]);
+  assert(maxRem(tv[0]) > 75, 'the TV step must raise the content max-width past the 75rem base');
+  assert(maxRem(uhd[0]) > maxRem(tv[0]), 'the 4K step must raise the content max-width again');
+});
+
+await check('styles.css keeps 320px windows and 200% zoom overflow-free', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const selector of ['.quick-links', '.patient-cards', '.summary-grid', '.kpi-grid', '.ai-split']) {
+    const escaped = selector.replace(/\./g, '\\.');
+    assert(
+      new RegExp(`${escaped}\\s*\\{[^}]*minmax\\(min\\(`).test(css),
+      `${selector} must clamp its auto-fit tracks with minmax(min(…)) so 320px/200%-zoom layouts never overflow`,
+    );
+  }
+  assert(/\.text-break\s*\{[^}]*overflow-wrap: anywhere/.test(css), '.text-break must wrap long names/MRNs');
+  for (const selector of [
+    '.patient-card__name',
+    '.patient-header__main h1',
+    '.user-chip__name',
+    '.cell-stack__primary',
+    '.command-menu__option-title',
+  ]) {
+    const escaped = selector.replace(/\./g, '\\.').replace(/\s+/g, '\\s+');
+    assert(
+      new RegExp(`${escaped}[^{]*\\{[^}]*overflow-wrap: anywhere`).test(css),
+      `${selector} must wrap long synthetic names (Bulgarian compound names, long MRNs) instead of overflowing`,
+    );
+  }
+});
+
+await check('focus rings are tokenised and thickened for TV viewing distance', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(css.includes('--focus-width:'), 'focus-ring thickness must be a root token');
+  assert(
+    /:focus-visible\s*\{[^}]*outline: var\(--focus-width\)/.test(css),
+    ':focus-visible must draw its outline from --focus-width',
+  );
+  const tv = css.match(/@media \(min-width: 1600px\)[\s\S]*?\n\}/);
+  assert(tv[0].includes('--focus-width:'), 'the TV step must thicken focus rings for distance viewing');
+});
+
+await check('prefers-reduced-motion kills every animation and transition globally', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  const block = css.match(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\n\}/);
+  assert(block, 'missing the reduced-motion media block');
+  assert(block[0].includes('animation: none !important'), 'animations must be disabled globally');
+  assert(block[0].includes('transition: none !important'), 'transitions must be disabled globally (sheets snap, toasts pop)');
+  assert(block[0].includes('scroll-behavior: auto !important'), 'smooth scrolling must be disabled');
+  assert(css.includes('::view-transition-'), 'view-transition pseudo-elements must be motion-gated too');
+});
+
+await check('command-menu.js keeps the active option visible while arrowing', async () => {
+  const source = await readFile(path.join(jsDir, 'command-menu.js'), 'utf8');
+  assert(
+    source.includes("scrollIntoView({ block: 'nearest'"),
+    'the active option must follow the selection with {block: nearest}',
+  );
+  assert(
+    source.includes('command-menu-option-${state.activeIndex}'),
+    'the follow scroll must target the NEW active option id',
+  );
+});
+
+await check('pages engage safe-area insets and sheets clear the home indicator', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('viewport-fit=cover'), `${file} must lay out edge-to-edge so safe-area insets engage`);
+  }
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(
+    /\.dialog,\s*\.command-menu \{[^}]*env\(safe-area-inset-bottom\)/.test(css),
+    'bottom sheets must keep content clear of the home indicator',
+  );
+});
+
+await check('DESIGN.md documents the responsive wave (phone / TV / reduced)', async () => {
+  const doc = await readFile(path.join(frontendRoot, 'DESIGN.md'), 'utf8');
+  for (const marker of [
+    'Responsive',
+    'TV',
+    'clamp',
+    'minmax(min(',
+    '--focus-width',
+    'viewport-fit',
+    'text-break',
+  ]) {
+    assert(doc.includes(marker), `DESIGN.md missing documentation for ${marker}`);
+  }
+});
+
 /* ------------------------------------------------------ 2. module import safety */
 
 const api = await import(path.join(jsDir, 'api.js'));

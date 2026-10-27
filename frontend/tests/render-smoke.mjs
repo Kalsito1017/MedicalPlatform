@@ -32,12 +32,17 @@
  * toggling, predictive back (LIFO overlay unwinding via popstate/history
  * simulation), idle module warm-up with modulepreload hints, hover-intent
  * patient prefetch (permission-gated, in-memory), and idempotency keys on
- * mutating requests.
+ * mutating requests, and the wave UI-C responsive contract: the command
+ * palette's arrow-follow scroll ({block:'nearest'} on the NEW active option),
+ * wrap-safe long synthetic names in patient cards and the patient header,
+ * and the narrow-width structure contract (card-stacked tables, labelled
+ * keyboard-focusable scroll regions — the shim has no layout, real layout at
+ * 320–430px is browser-verified).
  * What this does NOT verify: real browser DOM, layout/CSS, focus behaviour,
  * screen-reader output, and live backend integration.
  * ------------------------------------------------------------------------- */
 
-import { installDom, fixture, textOf, settle, dispatchWindowEvent } from './domshim.mjs';
+import { installDom, fixture, textOf, settle, dispatchWindowEvent, scrollIntoViewCalls } from './domshim.mjs';
 
 const JS = new URL('../assets/js/', import.meta.url).href;
 // Shared module for date expectations: Intl output varies slightly across ICU
@@ -2889,6 +2894,166 @@ await check('command palette offers "Open Analytics" only to permitted users', a
     !textOf(document.getElementById('command-menu-list')).includes('Open Analytics'),
     'the doctor palette must not offer Open Analytics',
   );
+});
+
+/* ============================================ wave UI-C: responsive === */
+
+/* ------------------------------------- command palette arrow-follow scroll */
+
+await check('command menu arrows scroll the NEW active option into view with block:nearest', async () => {
+  // Long filtered list: the active option must follow the arrows via
+  // scrollIntoView({block:'nearest'}) (the fix in command-menu.js renderList).
+  const names = [
+    'Елена Георгиева (демо)',
+    'Иван Петров (демо)',
+    'Александър-Константин Димитров-Стоянов (демо)',
+    'Мария Иванова (демо)',
+    'Антоанета Иванова-Петрова (демо)',
+  ];
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    patients: {
+      items: names.map((display_name, index) => ({
+        id: `pg${index + 1}`,
+        mrn: `DEMO-00${index + 1}`,
+        display_name,
+        provenance: 'synthetic',
+      })),
+      total: names.length,
+      limit: 50,
+      offset: 0,
+    },
+  });
+  const document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  await document.dispatch('keydown', { key: 'k', metaKey: true, preventDefault() {} });
+  await settle(); // the bounded patient list lands lazily on open
+
+  const input = document.getElementById('command-menu-input');
+  input.value = 'go to patient';
+  await input.dispatch('input'); // a long filtered list (nav + all patients)
+
+  const options = document.getElementById('command-menu-list').querySelectorAll('.command-menu__option');
+  assert(options.length >= 5, `the filtered list must be long enough to need following (got ${options.length})`);
+
+  const scrollCalls = scrollIntoViewCalls();
+  scrollCalls.length = 0; // record from the arrow moves only
+
+  await input.dispatch('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assertEqualLocal(scrollCalls.length, 1, 'ArrowDown must scroll the active option exactly once');
+  assertEqualLocal(scrollCalls[0].node.getAttribute('id'), 'command-menu-option-1', 'first ArrowDown must follow the NEW active option');
+  assertEqualLocal(scrollCalls[0].options && scrollCalls[0].options.block, 'nearest', 'the follow scroll must use block: nearest (no jump when already in view)');
+
+  await input.dispatch('keydown', { key: 'ArrowDown', preventDefault() {} });
+  assertEqualLocal(scrollCalls.length, 2, 'the second ArrowDown must scroll exactly once more');
+  assertEqualLocal(scrollCalls[1].node.getAttribute('id'), 'command-menu-option-2', 'second ArrowDown must follow the NEW active option');
+  assertEqualLocal(scrollCalls[1].options && scrollCalls[1].options.block, 'nearest', 'the follow scroll must stay {block: nearest}');
+
+  assertEqualLocal(input.getAttribute('aria-activedescendant'), 'command-menu-option-2', 'aria-activedescendant must follow the arrows');
+
+  // Mouse path: running an option by click closes the palette and must not
+  // trigger any selection scrolling (the follow is an arrow-key affordance).
+  scrollCalls.length = 0;
+  const active = document.getElementById('command-menu-list').querySelector('#command-menu-option-2');
+  await active.dispatch('click');
+  assertEqualLocal(scrollCalls.length, 0, 'a mouse click must not trigger selection scrolling');
+  assertEqualLocal(document.getElementById('command-menu').open, false, 'the palette must close after running the command');
+});
+
+/* ------------------------------------------- long names + narrow-width structure */
+
+await check('long synthetic compound names render wrap-safe in cards/header; pagination keeps thumb targets', async () => {
+  // The real seed's longest name (scripts/seed_demo_data.py: DEMO-0013).
+  const LONG_NAME = 'Александър-Константин Димитров-Стоянов (демо)';
+  const LONG_PATIENT = {
+    id: 'p13',
+    mrn: 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013',
+    display_name: LONG_NAME,
+    given_name: 'Александър-Константин',
+    family_name: 'Димитров-Стоянов',
+    date_of_birth: '1949-04-22',
+    sex: 'M',
+    provenance: 'synthetic',
+  };
+
+  // Patient card (patients list): full name, wrap class applied.
+  globalThis.fetch = makeFetch({ patients: { items: [LONG_PATIENT], total: 42, limit: 20, offset: 0 } });
+  let document = bootDom([...CHROME_IDS, 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region']);
+  await freshPage('patients.js');
+  await settle();
+
+  const nameNode = document.getElementById('patients-region').querySelector('.patient-card__name');
+  assert(nameNode, 'the patient card name node must render');
+  assertContains(nameNode.textContent, LONG_NAME, 'the full long name must render, untruncated');
+  assert(nameNode.classList.contains('patient-card__name'), 'the card name must keep its wrap class');
+  const mrnNode = document.getElementById('patients-region').querySelector('.patient-card__mrn');
+  assertContains(mrnNode.textContent, 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render');
+
+  // Pagination page buttons carry hit-slop: >=44px effective thumb targets
+  // (the numbered buttons are visually ~38x34px).
+  const pageButtons = document.getElementById('patients-region').querySelectorAll('.btn-page');
+  assert(pageButtons.length > 0, 'pagination page buttons must render');
+  for (const button of pageButtons) {
+    assert(button.classList.contains('hit-slop'), 'every pagination page button must carry hit-slop');
+  }
+
+  // Patient header: full name in the heading, wrap utility applied.
+  globalThis.fetch = makeFetch({
+    patient: LONG_PATIENT,
+    summary: { ...SUMMARY, patient: LONG_PATIENT },
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
+  globalThis.location.search = '?id=p13';
+  await freshPage('patient.js');
+  await settle();
+
+  const heading = document.getElementById('patient-heading');
+  assertContains(heading.textContent, LONG_NAME, 'the full long name must render in the patient header');
+  assert(heading.classList.contains('text-break'), 'the patient heading must carry the wrap utility');
+  assertContains(textOf(document.getElementById('demographics-region')), 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render in the header');
+});
+
+await check('narrow-width structure: card-stacked tables and labelled keyboard-focusable scroll regions', async () => {
+  // The shim has no layout: this asserts the responsive class/attribute
+  // CONTRACT that the phone CSS keys off (table-stack at ≤620px, scroll
+  // regions focusable for keyboards/TV remotes). Real 320–430px layout is
+  // browser-verified (see the checklist in DESIGN.md).
+  globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const scroller = document.getElementById('labs-region').querySelector('.table-scroll');
+  assert(scroller, 'the labs table must live in a horizontal scroll container');
+  assertEqualLocal(scroller.getAttribute('role'), 'region', 'the scroll container must be a labelled region');
+  assertEqualLocal(scroller.getAttribute('tabindex'), '0', 'the scroll container must be keyboard/remote focusable');
+  assertEqualLocal(scroller.getAttribute('aria-label'), 'Lab results', 'the scroll container must carry an accessible name');
+  const table = scroller.querySelector('table');
+  assert(table.classList.contains('table-stack'), 'data tables must carry the ≤620px card-stacking class');
+});
+
+await check('AI answer markdown tables get the same keyboard-focusable scroll-region parity', async () => {
+  globalThis.fetch = makeFetch({ me: DOCTOR, ai: AI_MARKDOWN_ANSWER });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const input = document.getElementById('ai-question');
+  input.value = 'Кои пациенти имат отклонения в калия?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const answerScroller = document.getElementById('ai-response-region').querySelector('.ai-md-table-scroll');
+  assert(answerScroller, 'the markdown answer table must render in its scroll container');
+  assertEqualLocal(answerScroller.getAttribute('role'), 'region', 'the answer table scroller must be a labelled region');
+  assertEqualLocal(answerScroller.getAttribute('tabindex'), '0', 'the answer table scroller must be keyboard/remote focusable');
+  assertEqualLocal(answerScroller.getAttribute('aria-label'), 'Data table', 'the answer table scroller must carry a constant accessible name');
 });
 
 /* ------------------------------------------------------------------ report */

@@ -660,7 +660,7 @@ export function renderPagination(container, { total, limit, offset, onChange, it
     const isCurrent = page === currentPage;
     list.append(el('li', {},
       el('button', {
-        class: isCurrent ? 'btn btn-page btn-sm is-current' : 'btn btn-page btn-sm',
+        class: isCurrent ? 'btn btn-page btn-sm is-current hit-slop' : 'btn btn-page btn-sm hit-slop',
         type: 'button',
         'aria-label': `Page ${page}`,
         'aria-current': isCurrent ? 'page' : null,

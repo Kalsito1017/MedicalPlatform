@@ -5,7 +5,8 @@
 // outerHTML. Every piece of answer content becomes a text node
 // (createTextNode / textContent), so any HTML or script in the answer is
 // INERT TEXT. Attributes are only ever app-authored constants (class names,
-// scope="col"); no attribute NAME or VALUE is ever taken from the answer.
+// scope="col", and the table scroll wrapper's constant keyboard-parity trio —
+// see below); no attribute NAME or VALUE is ever taken from the answer.
 // No side effects at module load (import-safe outside the browser); it uses
 // the ambient `document` at call time.
 //
@@ -192,7 +193,13 @@ function buildTable(headerCells, separatorCells, bodyRows) {
   }
   table.append(body);
 
+  // Horizontal scroll container for wide tables. Keyboard/TV-remote parity
+  // with the app's .table-scroll regions: a labelled, focusable scroll region
+  // (constant attributes only — never derived from the answer).
   const scroller = el('div', 'ai-md-table-scroll');
+  scroller.setAttribute('role', 'region');
+  scroller.setAttribute('aria-label', 'Data table');
+  scroller.setAttribute('tabindex', '0');
   scroller.append(table);
   return scroller;
 }

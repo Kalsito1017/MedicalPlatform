@@ -235,7 +235,12 @@ function renderDemographics(patient) {
   );
 
   const heading = document.getElementById('patient-heading');
-  if (heading) heading.textContent = name;
+  if (heading) {
+    // Long synthetic compound names (e.g. "Александър-Константин
+    // Димитров-Стоянов (демо)") wrap cleanly at phone widths and 200% zoom.
+    heading.classList.add('text-break');
+    heading.textContent = name;
+  }
 }
 
 function renderSummary(summary) {

@@ -243,6 +243,17 @@ await check('pipe tables render as real thead/tbody tables', () => {
   assertEqual(textOf(raw), '| само текст | още текст |', 'raw pipe text stays literal');
 });
 
+await check('table scroller is a labelled, keyboard-focusable scroll region (constant attributes)', () => {
+  // Keyboard/TV-remote parity with the app's .table-scroll containers: the
+  // horizontal scroll wrapper is a labelled region reachable by Tab so arrow
+  // keys/page keys can scroll it. The attributes are app-authored CONSTANTS
+  // (checked by value below) — never derived from the answer text.
+  const scroller = first(['| a | b |', '|---|---|', '| 1 | 2 |'].join('\n'));
+  assertEqual(scroller.getAttribute('role'), 'region', 'the scroll wrapper must be a labelled region');
+  assertEqual(scroller.getAttribute('tabindex'), '0', 'the scroll wrapper must be keyboard focusable');
+  assertEqual(scroller.getAttribute('aria-label'), 'Data table', 'the wrapper needs a constant accessible name');
+});
+
 await check('table columns right-align when numeric (class-based, no style writes)', () => {
   const table = first([
     '| Пациент | Калий | Флаг |',
@@ -451,9 +462,24 @@ await check('XSS: tree-wide sweep finds no handlers, URLs, or dangerous nodes', 
   assert(out.length > 0, 'the input still renders');
   assertInert({ children: out }, 'kitchen sink');
   const names = attributeNames({ children: out });
-  assertEqualList(names.filter((name) => name !== 'class' && name !== 'scope'), [], 'only class/scope attributes may exist');
-  for (const name of names) {
-    assert(!name.toLowerCase().startsWith('on'), `event-handler attribute ${name} must not survive`);
+  // The renderer may add ONLY app-authored constant attributes: class/scope
+  // plus the table scroll wrapper's fixed keyboard-parity trio. The trio is
+  // value-checked below: no attribute NAME — and no attribute VALUE outside
+  // these exact constants — may ever come from answer text.
+  const CONSTANT_ATTRIBUTES = {
+    role: 'region',
+    'aria-label': 'Data table',
+    tabindex: '0',
+  };
+  const allowed = new Set(['class', 'scope', ...Object.keys(CONSTANT_ATTRIBUTES)]);
+  assertEqualList(names.filter((name) => !allowed.has(name)), [], 'only app-authored constant attributes may exist');
+  for (const node of elements({ children: out })) {
+    for (const [name, value] of Object.entries(node.attributes || {})) {
+      if (name in CONSTANT_ATTRIBUTES) {
+        assertEqual(value, CONSTANT_ATTRIBUTES[name], `${name} must be the exact app constant, never answer text`);
+      }
+      assert(!name.toLowerCase().startsWith('on'), `event-handler attribute ${name} must not survive`);
+    }
   }
 });
 

@@ -538,3 +538,96 @@ cannot be determined (from `navigator.userAgentData.platform` →
 `navigator.platform` → `navigator.userAgent`). The static HTML default is the
 neutral "Ctrl/⌘ K" and `data-command-shortcut` chips are rewritten at chrome
 init. The "Keyboard shortcuts" dialog continues to list both real bindings.
+
+## 9. Wave UI-C: Responsive (phone / TV / reduced)
+
+One system, three regimes: **phone** (≤620px, primary target 360–430px),
+**TV / large displays** (≥1600px, with a 4K step at ≥2560px), and **reduced**
+conditions (320px windows, 200% browser zoom ≈ half viewport width,
+`prefers-reduced-motion`). Enforced statically by `tests/smoke.mjs` and
+structurally by `tests/render-smoke.mjs` (the DOM shim has no layout — real
+layout is on the browser checklist below).
+
+### Phone (≤620px)
+
+- **No horizontal overflow anywhere.** Wide data (staff/labs/prescriptions
+  tables, AI Markdown answer tables) scrolls horizontally inside labelled,
+  focusable scroll containers (`.table-scroll`, `.ai-md-table-scroll`); at
+  ≤620px `.table-stack` turns data tables into labelled cards
+  (`td::before { content: attr(data-label) }`). Every auto-fit grid clamps its
+  tracks with `minmax(min(<track>, 100%), 1fr)` (`minmax(min(` in
+  styles.css) so a 320px viewport can never overflow a track minimum, even
+  nested inside padded panels at 200% zoom.
+- **Fluid display type.** `--text-2xl`/`--text-3xl` use `clamp()` between the
+  phone and desktop values so headlines scale down gracefully instead of
+  overflowing at 360px.
+- **Long strings wrap.** Bulgarian compound names
+  ("Александър-Константин Димитров-Стоянов (демо)") and long MRNs wrap via
+  `overflow-wrap: anywhere` on every name/MRN surface (`.patient-card__name`,
+  `.patient-header__main h1`, `.user-chip__name`, `.cell-stack__primary`,
+  `.command-menu__option-title/-hint`, `.patient-header__meta .mono`) plus the
+  generic `.text-break` utility (applied to the patient heading in
+  `patient.js`). Truncation is reserved for one-line meta rows
+  (`.ai-history__question`).
+- **Thumb reach & targets.** Primary actions stay where the thumb is (AI
+  composer at the card bottom, list/toolbars inline); every small/icon control
+  carries `.hit-slop` (≥44px effective target without visual change).
+- **Safe areas.** All pages declare `viewport-fit=cover`; the topbar,
+  composer, footer, nav, toast region, and the bottom sheets
+  (`.dialog`/`.command-menu` at ≤620px) pad with `env(safe-area-inset-*)` so
+  nothing hides under the notch or home indicator. The ≤960px safe-triangle
+  left gutter (≥22px) keeps hit areas out of the back-swipe edge.
+
+### TV / large displays (≥1600px, 4K step ≥2560px)
+
+- **Root-token scaling only.** Each step is a single `:root` override of
+  `--text-*`, `--space-*`, `--container-max`, `--sidebar-width`, and
+  `--focus-width` — no per-element magic numbers, so every component scales
+  coherently (cards, tables, pills, chat surfaces, charts). The content column
+  grows 75rem → 94rem (~1500px) → 120rem (~1920px) so cards/tables use more of
+  the display while prose keeps readable line lengths (62ch caps on `.lede`,
+  `.footer-note`, `.state-panel__text`).
+- **Focus at distance.** `--focus-width` (3px base → 5px → 6px) drives every
+  focus ring (`:focus-visible`, scroll regions, disclosures, status regions),
+  keeping outlines thick enough to see from a couch.
+
+### Reduced (320px, 200% zoom, reduced-motion)
+
+- 320px/zoom reflow is the same no-overflow contract as phone (WCAG 1.4.10):
+  grids clamp with `minmax(min(`, long text wraps, controls never clip.
+- `prefers-reduced-motion: reduce` kills `animation`, `transition`, and
+  `scroll-behavior` globally (`!important`): shimmer sweeps drop to static
+  blocks, view transitions are instant, sheets snap, toasts pop, the emoji
+  ticker freezes. The one dynamic style write (`--sheet-dy`, sheet.js) still
+  tracks the finger 1:1; only its settle transition is removed.
+
+### Keyboard / remote parity (also the TV remote model)
+
+- Everything is operable by Tab/arrows/Enter/Esc: command palette (type
+  filters, ↑/↓ move, Enter runs, Esc closes), ARIA tabs (←/→/Home/End),
+  native `<dialog>` focus trapping + Esc, buttons/links everywhere.
+- The palette follows its selection: after each arrow move, `renderList()`
+  calls `scrollIntoView({ block: 'nearest', inline: 'nearest' })` on the **new**
+  active option (`#command-menu-option-<index>`), so long filtered lists keep
+  the highlight visible without scrolling when it is already in view (instant,
+  reduced-motion-safe). Covered by the render-smoke arrow-follow scenario
+  (domshim records every `scrollIntoView` call).
+- Every horizontal/vertical scroll container is a labelled, focusable region
+  (`role="region"`, `aria-label`, `tabindex="0"`): the app's `.table-scroll`
+  containers, the AI answer `.ai-md-table-scroll` (constant attributes only —
+  the untrusted renderer never takes attribute names/values from answer text),
+  and the `.ai-chat` conversation regions. Arrow keys/page keys scroll a
+  focused region on keyboards and TV remotes.
+- No mouse-only affordances: hover-intent prefetch has a focus-intent twin
+  (`focusin`, prefetch.js); palette patient entries warm on arrow-focus too
+  (`warmActiveCommand`); hover styles are decorative-only; swipe-to-dismiss
+  sheets always have Esc/Back equivalents.
+
+### Browser checklist (what tests cannot verify)
+
+Real-device passes the lead should run: 320/360/430px overflow sweep on every
+page (incl. long-name seed patient DEMO-0013); 200% zoom reflow (WCAG 1.4.10);
+1920/4K token steps + focus-ring thickness at viewing distance; notch/home
+indicator insets with `viewport-fit=cover`; reduced-motion pass (no shimmer,
+instant transitions); keyboard/remote walk of palette, tabs, dialogs, and
+scroll regions.
