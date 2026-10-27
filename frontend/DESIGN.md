@@ -113,7 +113,7 @@ headings 700 weight, tight leading.
   `ui.confirmDialog` / `ui.openDialog` / `ui.infoDialog`.
 - **Pagination** — "Showing X–Y of Z" + prev/next chevrons (visually-hidden
   labels) + numbered page circles.
-- **States** — skeleton loading rows, empty/error state panels, global banner
+- **States** — heart-loader loading placeholders, empty/error state panels, global banner
   tones, form fields with hint/error/aria-invalid styling.
 
 ## 3. Mockup → feature mapping decisions
@@ -225,18 +225,53 @@ inline `style` attributes, no `el.style.*` or `setProperty()` writes — dynamic
 appearance always goes through predefined classes/attributes (enforced by
 `tests/smoke.mjs`).
 
-### 1. Skeleton loaders
-One shimmer component (`.skeleton-block`, `.skeleton-row`, `.skeleton-card`,
-`.skeleton-bar--lg/md/sm/circle`) plus `ui.renderLoading(container,
-{ label, rows, variant, wrapperTag })`. `variant: 'rows'` approximates table
-rows; `variant: 'cards'` approximates patient cards (avatar circle + name/meta
-bars). Under `prefers-reduced-motion` the shimmer sweep is dropped and static
-grey blocks remain. The skeleton is announced (`role="status"`) and replaced
-atomically by the real renderer. Covered async regions: patient list cards,
-patient detail sections (demographics/summary/labs/prescriptions/encounters),
-AI conversation history (both the page and the patient rail), the staff table,
-the audit table, and dashboard recent patients. There is no analytics surface
-in the demo (no endpoint exists), so there is no analytics placeholder to cover.
+### 1. Heart loader (the app-wide loading indicator)
+
+**The anatomical heart is THE loading indicator of the platform** (owner request
+2026-10-27): `ui.heartLoader({ size, label })` renders `assets/images/heart-loader.png`
+(local asset, transparent background — deliberately **no plate** behind the
+image, so it reads as intentional on both canvases) as
+`.heart-loader > img.heart-loader__img` (decorative: `alt=""`,
+`aria-hidden="true"` — the surrounding region owns the `role="status"`
+announcement) plus an optional visible caption `.heart-loader__label` (pass
+`label: ''` when the surrounding state panel already carries the status text).
+
+**Sizing rule** (class-based only): `sm` ≈ 28px wide for compact regions/rows,
+`md` ≈ 48px (default) for every list/table/section load, `lg` ≈ 72px for the
+**AI answer region**. `ui.renderLoading(container, { label, rows, variant,
+wrapperTag })` keeps its signature for all existing call sites and renders the
+**md** heart on a centred `.loading-block` surface plate (rows and cards
+alike; `rows` is accepted in name only now that the loader is a single
+indicator). The placeholder is announced (`role="status"`, label text) and
+replaced atomically by the real renderer.
+
+**The heartbeat** is the signature look: a gentle "lub-dub" —
+`@keyframes heart-beat` 0% `scale(1)` → 12% `scale(1.12)` → 24% `scale(1)` →
+36% `scale(1.06)` → 48% `scale(1)`, `1.5s ease-in-out infinite`, pure
+transform, **no fill-mode** (interruptible/re-targetable, DESIGN.md item 11),
+soft enough for a clinical product. A soft danger-hue drop shadow
+(`--heart-glow`, token overridden per theme) lifts the heart off both canvases.
+`prefers-reduced-motion`: the global rule freezes the pulse to a static image.
+
+**Wiring map (old visual → heart)**: shimmer skeleton rows/cards
+(`ui.renderLoading`) → centred md heart on `.loading-block`; hero blur slabs
+(`ui.renderBlurPlaceholder`/`blurPlaceholderNode`) → md/lg heart inside the
+kept `blur-placeholder` contract (see item 8); the assistant emoji thinking
+ticker (`emojiLoadingNode`) → lg heart in the answer region's state panel
+(favicon avatar + "Consulting the assistant…" status text kept); static pre-JS
+page fallbacks (dashboard/patients/patient/admin/analytics HTML) → the same
+heart markup. Button pending states keep their disabled + label pattern; the
+SWR "Updating…" `.sync-chip` stays as-is (background refresh indicator, not a
+full loader).
+
+**Retired visuals (dead code deleted, proven by `tests/smoke.mjs`)**: the
+shimmer skeleton CSS/markup and the **emoji thinking ticker** (`.ai-emoji-loader`,
+`emoji-pulse`, `emojiLoadingNode`) — the emoji ticker was a previous owner
+request and was superseded by the heart loader on **2026-10-27**. Covered async
+regions: patient list cards, patient detail sections
+(demographics/summary/labs/prescriptions/encounters), AI conversation history
+(both the page and the patient rail), the staff table, the audit table, the
+analytics regions, dashboard recent patients, and both LLM answer regions.
 
 ### 2. Optimistic updates (admin staff table)
 `admin.js` mutation flow: confirm dialog → **optimistic row update** (grant /
@@ -291,7 +326,7 @@ clears it and every page load starts cold). Within a page view, repeat loads
 payload **instantly** and revalidate in the background; the DOM re-renders
 only when the fresh payload differs, with a tiny `.sync-chip` "Updating…"
 indicator in the meantime. A failed background revalidation never replaces
-working content with an error state. First visits are unchanged (skeleton →
+working content with an error state. First visits are unchanged (heart loader →
 data, or the existing error/empty states). Applied to: patients list, patient
 detail sections, staff list, audit list, and both AI history lists. Note:
 because the app is multi-page (full loads), the cache cannot survive a real
@@ -393,21 +428,31 @@ console logging.
   Persisting prefetched clinical payloads across documents would require web
   storage (banned for clinical data) or a service worker (out of scope).
 
-### 8. Blur placeholders
+### 8. Blur placeholders (hero loading regions → heart loader)
 
-The app has no raster images (initials avatars only), so the classic
-blur-up image placeholder is adapted: HERO-ish async regions show a soft
-blurred/low-detail placeholder — `.blur-placeholder` / `.blur-block` slabs with
-a CSS `filter: blur()` gradient, shaped to approximate the content layout
-(`ui.renderBlurPlaceholder`, `ui.blurPlaceholderNode`). Used for the **patient
-header card** (`#demographics-region`), the **AI answer turn** (patient rail
-and AI page), and the **dashboard welcome** region. Deliberately distinct from
-the wave UI-A shimmer skeletons: skeletons approximate table/list rows and stay
-where they fit (lists, staff/audit tables, section rows). Arrival is a class
-toggled on `data-ready` state (`ui.markBlurReady` → `.blur-region.is-ready`),
-and the real content sharpens in via the `blur-in` opacity/filter animation —
-never a style write. `prefers-reduced-motion`: instant swap (the global rule
-kills the animation).
+HERO-ish async regions — the **patient header card** (`#demographics-region`),
+the **AI answer turn** (patient rail and AI page), and the **dashboard
+welcome** region — use `ui.renderBlurPlaceholder` / `ui.blurPlaceholderNode`
+and settle through the ready-transition contract: the container carries
+`.blur-region.is-loading` while pending and `ui.markBlurReady` flips
+`.blur-region.is-ready`, so the real content sharpens in via the `blur-in`
+opacity/filter animation — class toggles only, never a style write.
+`prefers-reduced-motion`: instant swap (the global rule kills the animation).
+
+**Visual (2026-10-27):** the placeholder is the **heart loader** (item 1) —
+md heart for `hero`/`welcome`, lg heart for the `answer` variant. The former
+blurred gradient slabs (`.blur-block*`) are deleted as superseded dead code.
+
+**Naming decision (documented per owner instruction):** the `blur*` function
+and class names (`blurPlaceholderNode`, `renderBlurPlaceholder`,
+`markBlurReady`, `.blur-region`, `.blur-placeholder`, `blur-in`) are
+**kept deliberately** — they are the DOM contract callers (`patient.js`,
+`dashboard.js`, `ai-assistant.js`) and the render suite bind to, renaming them
+would churn four modules and the tests for cosmetics only, and the arrival
+`blur-in` sharpen-in is still literally what happens on ready. The *visuals*
+changed; the loading → content → ready semantics did not. Hero regions stay
+distinct from `ui.renderLoading` (item 1) not by shape but by contract: hero
+regions transition in with `is-ready`, list/table loads swap atomically.
 
 ### 9. View transitions
 
@@ -456,22 +501,24 @@ file/property (with an allowlist comment) and fails if anything else slips in.
 ### 11. Interruptible animations
 
 Audit of every transition/animation in `styles.css`: all motion is either a
-short keyframe (≤260ms, **no fill-mode**, end state = base state) or a pure
-transition on transform/opacity/colour — so every animation is re-targetable
-mid-flight and can never lock state or block input:
+short keyframe (≤260ms, **no fill-mode**, end state = base state), a looping
+decorative keyframe (heart-beat: 1.5s, **no fill-mode**, no state coupling),
+or a pure transition on transform/opacity/colour — so every animation is
+re-targetable mid-flight and can never lock state or block input:
 
 - toasts: `toast-in` entrance keyframe + `.is-closing` exit transition
   (removal after 160ms; instant under reduced motion);
 - dialogs/command menu: `overlay-in` entrance keyframe; close is a view
   transition / instant swap;
-- skeletons: the shimmer sweep is decorative and has no state coupling;
+- heart loader: the `heart-beat` lub-dub loop is decorative and has no state
+  coupling — it is simply removed with its region when the content arrives;
 - sync chip: `fade-in`, class-toggled on/off (rapid toggling settles on one
   chip — tested);
 - accordion history expand/collapse: `reveal-in` on the detail (discardable
   mid-flight; re-expanding replays it);
 - tab indicator: 120ms colour/border transition (naturally re-targetable);
 - hover states (buttons, nav links, cards, chips): 120ms colour transitions;
-- blur placeholders: `blur-in` on arrival (class-toggled).
+- hero loading regions: `blur-in` on arrival (class-toggled).
 
 `prefers-reduced-motion` parity: the global `animation: none; transition: none`
 rule covers all of the above, plus the view-transition pseudo kill. State-
@@ -596,9 +643,9 @@ layout is on the browser checklist below).
 - 320px/zoom reflow is the same no-overflow contract as phone (WCAG 1.4.10):
   grids clamp with `minmax(min(`, long text wraps, controls never clip.
 - `prefers-reduced-motion: reduce` kills `animation`, `transition`, and
-  `scroll-behavior` globally (`!important`): shimmer sweeps drop to static
-  blocks, view transitions are instant, sheets snap, toasts pop, the emoji
-  ticker freezes. The one dynamic style write (`--sheet-dy`, sheet.js) still
+  `scroll-behavior` globally (`!important`): the heart pulse freezes to a
+  static image, view transitions are instant, sheets snap, toasts pop. The one
+  dynamic style write (`--sheet-dy`, sheet.js) still
   tracks the finger 1:1; only its settle transition is removed.
 
 ### Keyboard / remote parity (also the TV remote model)
@@ -625,9 +672,14 @@ layout is on the browser checklist below).
 
 ### Browser checklist (what tests cannot verify)
 
-Real-device passes the lead should run: 320/360/430px overflow sweep on every
+Real-device passes the lead should run: **heart loader sweep** (pulse rhythm
+feel — the lub-dub must read gentle, not frantic; heart at sm/md/lg sizes in
+compact rows, list/section loads, and the LLM answer region; both themes — the
+transparent PNG must have no white box and the `--heart-glow` shadow must look
+intentional on light *and* dark canvases; reduced-motion = static heart);
+320/360/430px overflow sweep on every
 page (incl. long-name seed patient DEMO-0013); 200% zoom reflow (WCAG 1.4.10);
 1920/4K token steps + focus-ring thickness at viewing distance; notch/home
-indicator insets with `viewport-fit=cover`; reduced-motion pass (no shimmer,
-instant transitions); keyboard/remote walk of palette, tabs, dialogs, and
-scroll regions.
+indicator insets with `viewport-fit=cover`; reduced-motion pass (static heart,
+no pulse, instant transitions); keyboard/remote walk of palette, tabs, dialogs,
+and scroll regions.

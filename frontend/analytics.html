@@ -80,7 +80,12 @@
         </div>
 
         <div id="page-body">
-          <p class="text-muted" id="analytics-loading">Loading the analytics overview&hellip;</p>
+          <div class="loading-block" id="analytics-loading">
+            <div class="heart-loader heart-loader--md">
+              <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+              <p class="heart-loader__label">Loading the analytics overview&hellip;</p>
+            </div>
+          </div>
           <div id="analytics-status" class="status-region" role="status" aria-live="polite"></div>
 
           <section class="section-block" id="kpi-section" aria-labelledby="kpi-heading">

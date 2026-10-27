@@ -265,14 +265,52 @@ await check('styles.css defines the wave UI pattern utilities', async () => {
     'text-wrap: balance',
     'corner-shape: squircle',
     'env(safe-area-inset',
-    'skeleton-shimmer',
+    '@keyframes heart-beat',
     '.command-menu',
     '.toast-region',
     '.sync-chip',
   ]) {
     assert(css.includes(marker), `styles.css missing ${marker}`);
   }
-  assert(css.includes('skeleton-bar--circle'), 'card-shaped skeleton variant missing');
+  assert(css.includes('.heart-loader--lg'), 'heart loader size variants missing');
+});
+
+await check('heart loader is the app-wide loader; skeletons and the emoji ticker are retired', async () => {
+  // The anatomical heart PNG (local asset) is THE loading indicator since
+  // 2026-10-27: it must be wired to the component and served by the pages
+  // that carry a static pre-JS loading fallback.
+  const image = await readFile(path.join(frontendRoot, 'assets', 'images', 'heart-loader.png')).then(
+    () => true,
+    () => false,
+  );
+  assert(image, 'missing assets/images/heart-loader.png');
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
+  assert(css.includes('.heart-loader__img'), 'styles.css must style the heart loader');
+  assert(css.includes('@keyframes heart-beat'), 'the lub-dub heartbeat keyframes missing');
+  assert(css.includes('.heart-loader--sm') && css.includes('.heart-loader--lg'), 'heart loader sizes missing');
+  assert(uiSource.includes('assets/images/heart-loader.png'), 'ui.js must reference the heart PNG');
+  for (const file of ['dashboard.html', 'patients.html', 'patient.html', 'admin.html', 'analytics.html']) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('assets/images/heart-loader.png'), `${file} static loading fallback must show the heart`);
+  }
+
+  // Retirement proof (dead-code rule): the superseded visuals must be GONE —
+  // the emoji thinking ticker (previous owner request) and the shimmer
+  // skeletons are both replaced by the heart loader.
+  const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const banned of ['emoji-pulse', 'ai-emoji-loader', 'skeleton-']) {
+    assert(!cssCode.includes(banned), `styles.css must not reference the retired ${banned}`);
+  }
+  for (const file of jsFiles) {
+    const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
+    for (const banned of ['emoji-pulse', 'ai-emoji-loader', 'emojiLoadingNode', 'skeleton']) {
+      assert(!source.includes(banned), `assets/js/${file} must not reference the retired ${banned}`);
+    }
+  }
+  const doc = await readFile(path.join(frontendRoot, 'DESIGN.md'), 'utf8');
+  assert(doc.includes('Heart loader'), 'DESIGN.md must document the heart loader');
+  assert(doc.includes('2026-10-27'), 'DESIGN.md must note the superseded emoji ticker date');
 });
 
 /* --------------------------------------------- 1e. wave UI-B pattern hygiene */

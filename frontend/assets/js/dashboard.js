@@ -185,8 +185,8 @@ function render(user) {
 
 ui.onReady(async () => {
   ui.setRetryHandler(() => window.location.reload());
-  // Dashboard welcome hero: a soft blur placeholder stands in for the session
-  // content while it loads (blur placeholders, DESIGN.md item 8).
+  // Dashboard welcome hero: the heart loader (hero placeholder contract)
+  // stands in for the session content while it loads (DESIGN.md item 8).
   ui.renderBlurPlaceholder(document.getElementById('page-body'), {
     label: 'Loading your session',
     variant: 'welcome',

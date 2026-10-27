@@ -98,7 +98,7 @@ function load() {
   const key = cache.keyFor('/patients', { q: state.query, limit: PAGE_SIZE, offset: state.offset });
 
   // Stale-while-revalidate: a cached page renders instantly and refreshes in
-  // the background; a cold cache keeps the original skeleton -> data flow.
+  // the background; a cold cache keeps the original loader -> data flow.
   const cached = cache.peek(key);
   if (!cached) {
     if (status) status.textContent = 'Loading synthetic patients.';

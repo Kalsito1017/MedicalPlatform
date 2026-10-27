@@ -14,8 +14,8 @@
 //     key always maps to the same request.
 //   * TTL (30s): an entry younger than the TTL is served immediately AND
 //     revalidated in the background; a stale entry is treated as absent so the
-//     normal loading skeleton shows again. First visit (no entry) is unchanged:
-//     skeleton -> data, or a friendly error state on failure.
+//     normal loading placeholder shows again. First visit (no entry) is unchanged:
+//     heart loader -> data, or a friendly error state on failure.
 //   * Background revalidation never replaces working content with an error:
 //     when the refetch fails the cached copy simply stays on screen. The DOM is
 //     only re-rendered when the fresh payload actually differs (no flicker).

@@ -13,8 +13,8 @@
 // Each chart is exposed as role="img" with an aria-label summary PLUS a
 // visually-hidden data table, so screen readers get the same numbers.
 //
-// Data flow is cache.js stale-while-revalidate: first paint shows shimmer
-// skeletons (ui.renderLoading), "Refresh" re-fetches through the same SWR key
+// Data flow is cache.js stale-while-revalidate: first paint shows the heart
+// loader (ui.renderLoading), "Refresh" re-fetches through the same SWR key
 // (a cache hit renders instantly while the background revalidation runs).
 // Numbers are rendered with .tabular-nums; nothing is invented — every value
 // on screen comes from the payload, and empty states say so honestly.
@@ -475,7 +475,7 @@ function renderAll(data) {
 function loadSummary() {
   const key = cache.keyFor(SUMMARY_PATH);
   if (!cache.peek(key)) {
-    // First paint (or stale entry): shimmer skeletons until the data lands.
+    // First paint (or stale entry): the heart loader until the data lands.
     renderSkeletons();
   }
   cache.swr(key, () => api.get(SUMMARY_PATH), {

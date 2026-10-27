@@ -80,7 +80,12 @@
         </div>
 
         <div id="page-body">
-          <p class="text-muted" id="admin-loading">Loading your session…</p>
+          <div class="loading-block" id="admin-loading">
+            <div class="heart-loader heart-loader--md">
+              <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+              <p class="heart-loader__label">Loading your session&hellip;</p>
+            </div>
+          </div>
 
           <section class="section-block" id="create-staff-section" hidden aria-labelledby="create-staff-heading">
             <h2 id="create-staff-heading">Create a staff account</h2>
@@ -124,7 +129,12 @@
             <h2 id="staff-heading">Staff accounts</h2>
             <div id="staff-status" class="status-region" role="status" aria-live="polite" tabindex="-1"></div>
             <div id="staff-region">
-              <p class="text-muted">Loading staff accounts…</p>
+              <div class="loading-block">
+                <div class="heart-loader heart-loader--md">
+                  <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+                  <p class="heart-loader__label">Loading staff accounts&hellip;</p>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -136,7 +146,12 @@
             <p class="text-muted">A read-only view of the audit log (newest first): who did what and when. It never contains passwords, tokens, or clinical payloads.</p>
             <div id="audit-status" class="status-region" role="status" aria-live="polite"></div>
             <div id="audit-region">
-              <p class="text-muted">Loading audit events…</p>
+              <div class="loading-block">
+                <div class="heart-loader heart-loader--md">
+                  <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+                  <p class="heart-loader__label">Loading audit events&hellip;</p>
+                </div>
+              </div>
             </div>
           </section>
         </div>

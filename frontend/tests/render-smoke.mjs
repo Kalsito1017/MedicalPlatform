@@ -19,13 +19,13 @@
  * flows with confirm dialogs and 403/409 rendering, one-time generated
  * password display, AI assistant panel states: answer labelling, 503
  * unavailable, 429 rate limit, 2000-char limit, loading/cancel, permission
- * gating), plus the wave UI patterns: shimmer skeletons replaced atomically by
+ * gating), plus the wave UI patterns: heart loaders replaced atomically by
  * content, stale-while-revalidate (cache hit renders instantly, background
  * refetch updates the DOM only on change), the ⌘K command menu (open, filter,
  * run, Esc + focus restore, bounded patient entries, real shortcut list),
  * optimistic staff mutations with rollback and error toasts, and undo toasts
  * whose Undo action runs the inverse API call, plus the wave UI-B patterns:
- * blur placeholders swapping to sharp content on the ready class, the
+ * hero placeholders (heart loader) settling on the ready class, the
  * view-transition helper (usage + instant fallback), swipe-to-dismiss sheets
  * (below-threshold keeps the sheet, above-threshold dismisses WITHOUT
  * confirming), interruptible-animation class re-targeting under rapid
@@ -734,6 +734,11 @@ await check('AI panel renders the answer with AI-generated labelling, tools, and
   assertContains(region, 'get_patient_lab_results', 'tool chip missing');
   assertContains(region, 'Synthetic lab result DEMO-LAB-0001', 'citation label missing');
   assertContains(region, 'Model: demo-model-1', 'model fine print missing');
+  assertEqualLocal(
+    document.getElementById('ai-response-region').querySelector('.heart-loader__img'),
+    null,
+    'the rendered answer must replace the heart loader',
+  );
 });
 
 await check('AI panel shows a calm unavailable state on 503, not a crash', async () => {
@@ -853,7 +858,10 @@ await check('AI panel shows a loading state and supports cancelling the request'
   await document.getElementById('ai-question-form').dispatch('submit');
   await settle();
 
-  assertContains(textOf(document.getElementById('ai-response-region')), 'Consulting the assistant', 'loading state missing');
+  const pendingAnswer = document.getElementById('ai-response-region');
+  assertContains(textOf(pendingAnswer), 'Consulting the assistant', 'loading state missing');
+  assert(pendingAnswer.querySelector('.heart-loader__img'), 'the pending answer must show the heart loader');
+  assert(pendingAnswer.querySelector('.heart-loader--lg'), 'the answer region takes the lg heart');
   assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
 
   await document.getElementById('ai-cancel').dispatch('click');
@@ -1027,7 +1035,10 @@ await check('AI page shows a loading state and supports cancelling the request',
   await document.getElementById('ai-question-form').dispatch('submit');
   await settle();
 
-  assertContains(textOf(document.getElementById('ai-response-region')), 'Consulting the assistant', 'loading state missing');
+  const pendingAnswer = document.getElementById('ai-response-region');
+  assertContains(textOf(pendingAnswer), 'Consulting the assistant', 'loading state missing');
+  assert(pendingAnswer.querySelector('.heart-loader__img'), 'the pending answer must show the heart loader');
+  assert(pendingAnswer.querySelector('.heart-loader--lg'), 'the answer region takes the lg heart');
   assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
 
   await document.getElementById('ai-cancel').dispatch('click');
@@ -1919,9 +1930,9 @@ await check('anonymous access to an authenticated page redirects to sign-in', as
 
 /* ============================================ wave UI patterns (render) ==== */
 
-/* ------------------------------------------------------- skeleton loaders */
+/* ------------------------------------------------------- heart loaders */
 
-await check('skeleton loaders show on first load and are replaced by real content', async () => {
+await check('heart loaders show on first load and are replaced by real content', async () => {
   let releasePatients = null;
   globalThis.fetch = async (url, init = {}) => {
     if (url.includes('/auth/me')) return json(200, DOCTOR);
@@ -1937,14 +1948,15 @@ await check('skeleton loaders show on first load and are replaced by real conten
   await settle();
 
   const region = document.getElementById('patients-region');
-  assert(region.querySelector('.skeleton-block'), 'first load must show the shimmer skeleton');
-  assert(region.querySelector('.skeleton-card'), 'the patient skeleton must approximate the card shape');
-  assertContains(textOf(region), 'Loading synthetic patients', 'the skeleton must announce its label');
+  assert(region.querySelector('.loading-block'), 'first load must show the loading placeholder');
+  assert(region.querySelector('.heart-loader__img'), 'the placeholder must show the heart loader');
+  assertContains(textOf(region), 'Loading synthetic patients', 'the placeholder must announce its label');
 
   releasePatients();
   await settle();
-  assertContains(textOf(region), 'Ann Test', 'content must replace the skeleton');
-  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'the skeleton must be gone once data arrives');
+  assertContains(textOf(region), 'Ann Test', 'content must replace the placeholder');
+  assertEqualLocal(region.querySelector('.loading-block'), null, 'the placeholder must be gone once data arrives');
+  assertEqualLocal(region.querySelector('.heart-loader__img'), null, 'the heart must be gone once data arrives');
 });
 
 /* --------------------------------------------- stale-while-revalidate (SWR) */
@@ -1981,7 +1993,7 @@ await check('stale-while-revalidate renders cached data instantly then refreshes
   assertContains(textOf(region), 'Ann Test', 'first load must render the data');
 
   // A second load of the same URL must serve the cache immediately and
-  // revalidate in the background (no skeleton, no flicker).
+  // revalidate in the background (no loader, no flicker).
   const input = document.getElementById('patient-search');
   input.value = '';
   await input.dispatch('input');
@@ -1990,7 +2002,7 @@ await check('stale-while-revalidate renders cached data instantly then refreshes
   assertEqualLocal(patientCallCount, 2, 'the second load must still revalidate against the API');
   assertContains(textOf(region), 'Ann Test', 'cached data must render instantly on the second load');
   assert(!textOf(region).includes('Bob Test'), 'nothing may change until the revalidation lands');
-  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'a cache hit must not show a skeleton');
+  assertEqualLocal(region.querySelector('.loading-block'), null, 'a cache hit must not show the heart loader');
   assertContains(textOf(document.getElementById('patients-status')), '1 synthetic patient found', 'cached status must render instantly');
   assert(region.querySelector('.sync-chip'), 'a tiny updating indicator must mark the background refresh');
 
@@ -2267,9 +2279,9 @@ function assertEqualLocal(actual, expected, message) {
 
 /* ============================================ wave UI-B patterns (render) === */
 
-/* ---------------------------------------------------- blur placeholders */
+/* ---------------------------------------------------- hero placeholders */
 
-await check('blur placeholders swap to sharp content via the ready class', async () => {
+await check('hero placeholders (heart loader) swap to content via the ready class', async () => {
   const document = bootDom([]);
   const region = document.createElement('div');
   document.body.append(region);
@@ -2277,19 +2289,23 @@ await check('blur placeholders swap to sharp content via the ready class', async
   ui.renderBlurPlaceholder(region, { label: 'Loading patient demographics', variant: 'hero' });
   assert(region.classList.contains('blur-region'), 'the region must carry the blur-region class');
   assert(region.classList.contains('is-loading'), 'the region must be marked loading');
-  assert(region.querySelector('.blur-placeholder'), 'the blurred placeholder must render');
+  assert(region.querySelector('.blur-placeholder'), 'the hero placeholder must render');
   assertContains(textOf(region), 'Loading patient demographics', 'the placeholder must announce its label');
-  assert(region.querySelectorAll('.blur-block').length >= 3, 'placeholder blocks must approximate the layout');
+  assert(region.querySelector('.heart-loader__img'), 'the placeholder must show the heart loader');
+  assert(region.querySelector('.heart-loader--md'), 'the hero placeholder takes the md heart');
 
   ui.clear(region);
   region.append(ui.el('p', { text: 'Real demographics' }));
   ui.markBlurReady(region);
   assertEqualLocal(region.querySelector('.blur-placeholder'), null, 'the placeholder must be gone');
+  assertEqualLocal(region.querySelector('.heart-loader__img'), null, 'the heart must be gone');
   assert(region.classList.contains('is-ready'), 'the ready class must be toggled on');
   assert(!region.classList.contains('is-loading'), 'the loading class must clear');
 
-  // Re-targeting: further swaps stay consistent (class toggling is idempotent).
+  // Re-targeting: further swaps stay consistent (class toggling is idempotent),
+  // and the answer variant takes the lg heart of the AI answer region.
   ui.renderBlurPlaceholder(region, { variant: 'answer' });
+  assert(region.querySelector('.heart-loader--lg'), 'the answer placeholder takes the lg heart');
   ui.markBlurReady(region);
   assert(region.classList.contains('is-ready'), 'repeated swaps settle on the ready state');
 });
@@ -2313,8 +2329,9 @@ await check('patient header card shows a blur placeholder that sharpens in on ar
   await settle();
 
   const region = document.getElementById('demographics-region');
-  assert(region.querySelector('.blur-placeholder'), 'the hero header must show the blur placeholder');
-  assertEqualLocal(region.querySelector('.skeleton-block'), null, 'hero regions use blur placeholders, not skeletons');
+  assert(region.querySelector('.blur-placeholder'), 'the hero header must show the placeholder');
+  assert(region.querySelector('.heart-loader__img'), 'the hero placeholder must show the heart loader');
+  assertEqualLocal(region.querySelector('.loading-block'), null, 'hero regions use the hero placeholder, not the list loader');
 
   releaseDemographics();
   await settle();
@@ -2762,7 +2779,7 @@ await check('analytics empty states are honest when a metric is empty', async ()
   );
 });
 
-await check('analytics first load shows shimmer skeletons and replaces them with the summary', async () => {
+await check('analytics first load shows the heart loader and replaces it with the summary', async () => {
   let releaseSummary = null;
   globalThis.fetch = async (url, init = {}) => {
     const path = url.split('?')[0];
@@ -2779,13 +2796,15 @@ await check('analytics first load shows shimmer skeletons and replaces them with
   await settle();
 
   const kpi = document.getElementById('kpi-region');
-  assert(kpi.querySelector('.skeleton-block'), 'first load must show the shimmer skeleton');
-  assertContains(textOf(kpi), 'Loading key numbers', 'the skeleton must announce its label');
+  assert(kpi.querySelector('.loading-block'), 'first load must show the loading placeholder');
+  assert(kpi.querySelector('.heart-loader__img'), 'the placeholder must show the heart loader');
+  assertContains(textOf(kpi), 'Loading key numbers', 'the placeholder must announce its label');
 
   releaseSummary();
   await settle();
-  assertContains(textOf(kpi), '45', 'content must replace the skeleton');
-  assertEqualLocal(kpi.querySelector('.skeleton-block'), null, 'the skeleton must be gone');
+  assertContains(textOf(kpi), '45', 'content must replace the placeholder');
+  assertEqualLocal(kpi.querySelector('.loading-block'), null, 'the placeholder must be gone');
+  assertEqualLocal(kpi.querySelector('.heart-loader__img'), null, 'the heart must be gone');
 });
 
 await check('analytics Refresh re-fetches through the SWR cache-hit path', async () => {
@@ -2813,7 +2832,7 @@ await check('analytics Refresh re-fetches through the SWR cache-hit path', async
   await settle();
   assertEqualLocal(summaryCalls, 2, 'Refresh must re-fetch through the SWR key');
   assertContains(textOf(document.getElementById('kpi-region')), '45', 'cached data must render instantly');
-  assertEqualLocal(document.querySelector('.skeleton-block'), null, 'a cache hit must not show a skeleton');
+  assertEqualLocal(document.querySelector('.loading-block'), null, 'a cache hit must not show the heart loader');
   assert(document.querySelector('.sync-chip'), 'the background refresh must be marked');
 
   releaseSecond();

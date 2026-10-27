@@ -138,11 +138,11 @@ function listItemLabel(entry) {
 
 /* ------------------------------------------------------------- sections */
 
-// Runs one section load: skeleton (or blur placeholder for hero regions) ->
-// data -> renderer, or a friendly error panel with retry. Renderers own their
-// empty states. GET responses are cached in memory (cache.js): revisiting a
-// section renders the cached copy instantly and revalidates in the background,
-// re-rendering only on change.
+// Runs one section load: heart loader (via the hero placeholder contract for
+// hero regions) -> data -> renderer, or a friendly error panel with retry.
+// Renderers own their empty states. GET responses are cached in memory
+// (cache.js): revisiting a section renders the cached copy instantly and
+// revalidates in the background, re-rendering only on change.
 function loadSection(container, key, fetcher, render, { loadingLabel = 'Loading', onError = null, blurVariant = null } = {}) {
   const attempt = () => {
     if (!cache.peek(key)) {
@@ -516,8 +516,8 @@ function loadDemographics() {
     cache.keyFor(path),
     () => api.get(path),
     renderDemographics,
-    // Hero region: a soft blur placeholder approximates the header card, then
-    // the real demographics sharpen in (blur placeholders, DESIGN.md item 8).
+    // Hero region: the heart loader stands in for the header card, then the
+    // real demographics sharpen in (hero loading regions, DESIGN.md item 8).
     { loadingLabel: 'Loading patient demographics', blurVariant: 'hero' },
   );
 }
@@ -1032,8 +1032,9 @@ async function askAssistant() {
   setAiStatus('Consulting the assistant\u2026');
   if (region) {
     ui.clear(region);
-    // Blur placeholder for the answer turn (hero-ish async region): low-detail
-    // blurred blocks approximate the answer layout until it arrives.
+    // Heart loader for the answer turn (DESIGN.md "Heart loader"): the state
+    // panel keeps the assistant avatar and the status text, the anatomical
+    // heart pulses in the answer region until the Markdown answer arrives.
     region.classList.add('blur-region', 'is-loading');
     region.classList.remove('is-ready');
     region.setAttribute('aria-busy', 'true');
@@ -1045,7 +1046,7 @@ async function askAssistant() {
       ui.el('div', { class: 'state-panel', role: 'status' },
         ui.el('div', { class: 'state-panel__media' },
           ui.assistantAvatar({ size: 'lg' }),
-          ui.emojiLoadingNode(),
+          ui.heartLoader({ size: 'lg', label: '' }),
         ),
         ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
         ui.el('p', {
@@ -1053,7 +1054,6 @@ async function askAssistant() {
           text: 'The assistant is reviewing this synthetic record to answer your question.',
         }),
       ),
-      ui.blurPlaceholderNode({ label: 'Consulting the assistant', variant: 'answer' }),
     );
   }
 

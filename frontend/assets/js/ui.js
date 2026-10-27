@@ -271,44 +271,57 @@ export function withViewTransition(update) {
   return start(run);
 }
 
-/* ------------------------------------------------- blur placeholders */
+/* ---------------------------------------------------------- heart loader */
+
+// THE loading indicator of the app (owner request 2026-10-27): the anatomical
+// heart PNG (local asset, transparent background — no plate behind it in
+// either theme). It supersedes the shimmer skeletons and the emoji thinking
+// ticker (both removed).
+const HEART_LOADER_SRC = 'assets/images/heart-loader.png';
 
 /**
- * Soft blurred/low-detail placeholder for HERO-ish async regions (patient
- * header card, AI answer turn, dashboard welcome) — deliberately distinct from
- * the shimmer skeletons used for tables/lists. Blurred gradient blocks
- * approximate the content layout (see styles.css `.blur-placeholder`); when
- * the content arrives, `markBlurReady` toggles the `is-ready` class and the
- * real content fades/sharpens in (pure CSS transition/animation on the class —
- * no style writes). prefers-reduced-motion swaps instantly (global rule).
+ * Decorative heart loader with a gentle "lub-dub" heartbeat (styles.css
+ * `heart-beat`: pure transform keyframes, no fill-mode — interruptible per
+ * DESIGN.md item 11). Sizes: 'sm' (~28px, compact regions/rows), 'md' (~48px,
+ * default), 'lg' (~72px, the AI answer region) — class-based sizing only.
+ * The image is decorative (alt="", aria-hidden): the surrounding region owns
+ * the `role="status"` announcement. `label` renders the visible caption under
+ * the heart; pass `label: ''` when the surrounding state panel already carries
+ * the status text. prefers-reduced-motion: the pulse freezes to a static
+ * image (global CSS rule).
+ */
+export function heartLoader({ size = 'md', label = 'Loading' } = {}) {
+  return el('div', { class: `heart-loader heart-loader--${size}` },
+    el('img', {
+      class: 'heart-loader__img',
+      src: HEART_LOADER_SRC,
+      alt: '',
+      'aria-hidden': 'true',
+    }),
+    label ? el('p', { class: 'heart-loader__label', text: `${label}\u2026` }) : null,
+  );
+}
+
+/* ------------------------------------------------- hero loading regions */
+
+/**
+ * Loading placeholder for HERO-ish async regions (patient header card, AI
+ * answer turn, dashboard welcome). The DOM contract is the ready-transition
+ * contract kept from the former blur-slab visual: the container carries
+ * `.blur-region.is-loading` while pending, and `markBlurReady` flips
+ * `.is-ready` so the real content sharpens in via the `blur-in` transition
+ * (styles.css — class toggles only, never a style write). The visual is the
+ * heart loader since 2026-10-27 (the historical `blur*` names are kept
+ * because callers and tests bind to this contract). Variants: 'hero' and
+ * 'welcome' take the md heart, 'answer' the lg heart of the AI answer region.
+ * prefers-reduced-motion swaps instantly (global rule).
  */
 export function blurPlaceholderNode({ label = 'Loading', variant = 'hero' } = {}) {
-  const blocks = [];
-  const add = (name) => blocks.push(el('div', { class: `blur-block blur-block--${name}`, 'aria-hidden': 'true' }));
-  if (variant === 'answer') {
-    add('lg');
-    add('lg');
-    add('md');
-    add('sm');
-  } else if (variant === 'welcome') {
-    add('title');
-    add('lg');
-    add('md');
-  } else {
-    add('circle');
-    add('lg');
-    add('md');
-    add('sm');
-  }
-
   return el('div', {
     class: `blur-placeholder blur-placeholder--${variant}`,
     role: 'status',
     'aria-live': 'polite',
-  },
-    el('p', { class: 'visually-hidden', text: `${label}\u2026` }),
-    el('div', { class: 'blur-blocks' }, blocks),
-  );
+  }, heartLoader({ size: variant === 'answer' ? 'lg' : 'md', label }));
 }
 
 export function renderBlurPlaceholder(container, options = {}) {
@@ -350,7 +363,7 @@ function detectPlatform() {
  * elsewhere, "Ctrl/⌘ K" when the platform cannot be determined. Pass a
  * platform string to test the mapping.
  */
-// --- Assistant identity + thinking ticker ---------------------------------
+// --- Assistant identity --------------------------------------------------
 // The site favicon doubles as the assistant's identity image.
 const ASSISTANT_LOGO_SRC = 'assets/images/favicon.svg';
 
@@ -361,17 +374,6 @@ export function assistantAvatar({ size = '' } = {}) {
     alt: '',
     'aria-hidden': 'true',
   });
-}
-
-// Emoji loading ticker for the assistant's thinking state. Decorative:
-// the surrounding status text announces the state for assistive technology.
-export function emojiLoadingNode() {
-  const glyphs = ['🩺', '💊', '🔬', '🧠'];
-  return el(
-    'div',
-    { class: 'ai-emoji-loader', 'aria-hidden': 'true' },
-    glyphs.map((glyph) => el('span', { class: 'ai-emoji-loader__glyph', text: glyph })),
-  );
 }
 
 export function assistantTurnHead() {
@@ -481,38 +483,26 @@ export function renderPatientCard(patient) {
 /* --------------------------------------------------------------- loading */
 
 /**
- * Shimmer skeleton placeholder shaped like the content it replaces, so the
- * region's height and rhythm are close to the real data (no layout jump when
- * the content arrives). Variants:
- *   'rows'  (default) — three-bar rows: tables, lists, text sections;
- *   'cards' — avatar circle + name/meta bars: patient card grids.
- * The shimmer is a moving gradient over a solid grey block; under
- * prefers-reduced-motion the CSS drops the shimmer and the static grey blocks
- * remain. The skeleton is always replaced atomically by the real renderer.
+ * Centered heart-loader placeholder for async regions (tables, lists,
+ * sections): the anatomical heart pulses while the data loads and the region's
+ * label is announced through the `role="status"` wrapper and its visible
+ * caption. The placeholder is always replaced atomically by the real renderer.
+ * Sizing rule (DESIGN.md "Heart loader"): every full-region load takes the md
+ * heart (rows and cards alike); sm is for compact regions/rows and lg for the
+ * AI answer region. The signature is kept unchanged for the existing call
+ * sites: `rows` (former shimmer row count) and `variant` are still accepted —
+ * `variant` selects the documented size, `rows` is honoured in name only now
+ * that the loader is a single centered indicator.
  */
 export function renderLoading(container, { label = 'Loading', rows = 5, variant = 'rows', wrapperTag = 'div' } = {}) {
   clear(container);
-  const wrapper = el(wrapperTag, { class: 'skeleton-block', role: 'status', 'aria-live': 'polite' },
-    el('p', { class: 'visually-hidden', text: `${label}\u2026` }),
+  const sizeByVariant = { rows: 'md', cards: 'md' };
+  const size = sizeByVariant[variant] || 'md';
+  container.append(
+    el(wrapperTag, { class: 'loading-block', role: 'status', 'aria-live': 'polite' },
+      heartLoader({ size, label }),
+    ),
   );
-  for (let i = 0; i < rows; i += 1) {
-    if (variant === 'cards') {
-      wrapper.append(el('div', { class: 'skeleton-card' },
-        el('div', { class: 'skeleton-bar skeleton-bar--circle', 'aria-hidden': 'true' }),
-        el('div', { class: 'skeleton-card__body' },
-          el('div', { class: 'skeleton-bar skeleton-bar--lg', 'aria-hidden': 'true' }),
-          el('div', { class: 'skeleton-bar skeleton-bar--md', 'aria-hidden': 'true' }),
-        ),
-      ));
-    } else {
-      wrapper.append(el('div', { class: 'skeleton-row' },
-        el('div', { class: 'skeleton-bar skeleton-bar--lg', 'aria-hidden': 'true' }),
-        el('div', { class: 'skeleton-bar skeleton-bar--md', 'aria-hidden': 'true' }),
-        el('div', { class: 'skeleton-bar skeleton-bar--sm', 'aria-hidden': 'true' }),
-      ));
-    }
-  }
-  container.append(wrapper);
 }
 
 /**

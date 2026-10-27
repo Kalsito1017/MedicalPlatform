@@ -412,15 +412,17 @@ async function askAssistant() {
   );
   const turn = ui.el('div', { class: 'ai-turn', role: 'status' });
   region.append(turn);
-  // Blur placeholder for the answer turn: low-detail blurred blocks stand in
-  // for the answer until it arrives (blur placeholders, DESIGN.md item 8).
+  // Heart loader for the answer turn (DESIGN.md "Heart loader"): the state
+  // panel keeps the assistant avatar and the status text, the anatomical heart
+  // pulses in the answer region until the Markdown answer arrives. The
+  // blur-region/ready classes drive the answer's sharpen-in on arrival.
   turn.classList.add('blur-region', 'is-loading');
   turn.classList.remove('is-ready');
   turn.append(
     ui.el('div', { class: 'state-panel' },
       ui.el('div', { class: 'state-panel__media' },
         ui.assistantAvatar({ size: 'lg' }),
-        ui.emojiLoadingNode(),
+        ui.heartLoader({ size: 'lg', label: '' }),
       ),
       ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
       ui.el('p', {
@@ -428,7 +430,6 @@ async function askAssistant() {
         text: 'The assistant is searching the synthetic records your account may read.',
       }),
     ),
-    ui.blurPlaceholderNode({ label: 'Consulting the assistant', variant: 'answer' }),
   );
   region.setAttribute('aria-busy', 'true');
 

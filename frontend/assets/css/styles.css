@@ -51,6 +51,10 @@
   --shadow-2: 0 6px 16px rgba(15, 23, 42, 0.08);
   --shadow-3: 0 18px 42px rgba(15, 23, 42, 0.18);
 
+  /* Heart loader glow — a soft danger-hue drop shadow that lifts the
+     transparent heart PNG off the light canvas (no plate behind it). */
+  --heart-glow: 0 6px 16px rgba(220, 38, 38, 0.3);
+
   /* Focus ring — one thickness token so the TV/large-display step can thicken
      every focus ring for viewing distance at once (no per-element numbers). */
   --focus-width: 3px;
@@ -143,6 +147,9 @@
     --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45);
     --shadow-3: 0 18px 42px rgba(0, 0, 0, 0.55);
+
+    /* Heart loader glow on the dark canvas (lighter danger hue). */
+    --heart-glow: 0 6px 18px rgba(248, 113, 113, 0.32);
   }
 }
 
@@ -1435,126 +1442,83 @@ a.patient-card:hover {
   color: var(--color-text-muted);
 }
 
-/* Skeleton shimmer loaders — shape-matched placeholders for async regions.
-   A moving light gradient sweeps over solid grey blocks; under
-   prefers-reduced-motion the sweep is dropped and static grey blocks remain
-   (see the motion-safe section). The real content replaces the whole block
-   atomically when it arrives. */
+/* Heart loader — THE app-wide loading indicator (owner request 2026-10-27,
+   superseding the shimmer skeletons and the emoji thinking ticker). The
+   anatomical-heart PNG (local asset, transparent background) pulses with a
+   gentle "lub-dub" heartbeat: pure transform keyframes WITHOUT fill-mode, so
+   the animation is interruptible/re-targetable (DESIGN.md item 11). A soft
+   danger-hue drop shadow (--heart-glow) lifts the heart off both canvases;
+   there is deliberately no plate behind the image itself. Under
+   prefers-reduced-motion the global rule freezes the pulse to a static
+   image. */
 
-.skeleton-block {
+.heart-loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.heart-loader__img {
+  display: block;
+  width: 48px;
+  height: auto;
+  filter: drop-shadow(var(--heart-glow));
+  animation: heart-beat 1.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Sizing rule (DESIGN.md): sm ≈ 28px for compact regions/rows, md ≈ 48px
+   (default) for list/table/section loads, lg ≈ 72px for the AI answer region. */
+.heart-loader--sm .heart-loader__img {
+  width: 28px;
+}
+
+.heart-loader--lg .heart-loader__img {
+  width: 72px;
+}
+
+.heart-loader__label {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+@keyframes heart-beat {
+  0% {
+    transform: scale(1);
+  }
+
+  12% {
+    transform: scale(1.12);
+  }
+
+  24% {
+    transform: scale(1);
+  }
+
+  36% {
+    transform: scale(1.06);
+  }
+
+  48% {
+    transform: scale(1);
+  }
+}
+
+/* Plate for full-region loads (ui.renderLoading): the heart is centred on the
+   same surface card the real content will occupy. */
+.loading-block {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5) var(--space-4);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: var(--space-4);
-}
-
-.skeleton-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  padding: var(--space-3) 0;
-  border-bottom: 1px dashed var(--color-border);
-}
-
-.skeleton-row:last-child {
-  border-bottom: 0;
-}
-
-/* Card-shaped skeleton row: avatar circle + name/meta bars. */
-.skeleton-card {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) 0;
-  border-bottom: 1px dashed var(--color-border);
-}
-
-.skeleton-card:last-child {
-  border-bottom: 0;
-}
-
-.skeleton-card__body {
-  flex: 1 1 auto;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.skeleton-bar {
-  position: relative;
-  overflow: hidden;
-  height: 0.9rem;
-  border-radius: var(--radius-sm);
-  background: var(--color-canvas-alt);
-}
-
-.skeleton-bar::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  transform: translateX(-100%);
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.55) 50%,
-    transparent 100%
-  );
-  animation: skeleton-shimmer 1.4s ease-in-out infinite;
-}
-
-.skeleton-bar--lg {
-  flex: 2 1 12rem;
-  width: 100%;
-}
-
-.skeleton-bar--md {
-  flex: 1 1 8rem;
-  width: 70%;
-}
-
-.skeleton-bar--sm {
-  flex: 1 1 5rem;
-  width: 45%;
-}
-
-.skeleton-bar--circle {
-  flex: 0 0 auto;
-  width: 2.5rem;
-  height: 2.5rem;
-  border-radius: var(--radius-full);
-}
-
-/* Inside the card-shaped row the bars stack vertically: width matters, the
-   row flex-basis rules above must not stretch their height. */
-.skeleton-card__body .skeleton-bar {
-  flex: 0 0 auto;
-  height: 0.85rem;
-}
-
-.skeleton-card__body .skeleton-bar--lg {
-  width: 60%;
-}
-
-.skeleton-card__body .skeleton-bar--md {
-  width: 40%;
-}
-
-@keyframes skeleton-shimmer {
-  from {
-    transform: translateX(-100%);
-  }
-  to {
-    transform: translateX(100%);
-  }
-}
-
-@keyframes skeleton-pulse {
-  from {
-    opacity: 0.65;
-  }
-  to {
-    opacity: 1;
-  }
 }
 
 .global-status:empty {
@@ -2707,11 +2671,6 @@ a.patient-card:hover {
     transition: none !important;
     scroll-behavior: auto !important;
   }
-
-  /* Skeleton shimmer: keep the static grey blocks, drop the sweep entirely. */
-  .skeleton-bar::after {
-    content: none;
-  }
 }
 
 /* ===================================================== wave UI patterns ===
@@ -3088,14 +3047,15 @@ h2,
    so every animation is re-targetable mid-flight and never blocks input.
    ======================================================================= */
 
-/* ------------------------------------------------- blur placeholders */
+/* ------------------------------------------------- hero loading regions */
 
-/* Soft blurred/low-detail placeholders for HERO-ish async regions (patient
-   header card, AI answer turn, dashboard welcome). Distinct from the shimmer
-   skeletons: those approximate table/list rows; these approximate a hero
-   block's layout with blurred gradient slabs. The region carries
-   .blur-region.is-loading while pending; markBlurReady() flips .is-ready and
-   the real content fades/sharpens in (class toggle only — never a style
+/* Loading placeholder for HERO-ish async regions (patient header card, AI
+   answer turn, dashboard welcome). The visual is the heart loader (2026-10-27;
+   the former blurred gradient slabs are removed); the historical `.blur-*`
+   class names stay because callers/tests bind to this ready-transition
+   contract. The region carries `.blur-region.is-loading` while pending;
+   markBlurReady() flips `.is-ready` and the real content sharpens in via the
+   `blur-in` opacity/filter animation (class toggle only — never a style
    write). Under prefers-reduced-motion the global rule kills the animation
    and the swap is instant. */
 
@@ -3104,56 +3064,10 @@ h2,
 }
 
 .blur-placeholder {
-  padding: var(--space-1) 0;
-}
-
-.blur-blocks {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  align-items: flex-start;
-  padding: var(--space-2) 0;
-}
-
-.blur-block {
-  width: 100%;
-  height: 0.95rem;
-  border-radius: var(--radius-sm);
-  background: linear-gradient(
-    110deg,
-    var(--color-canvas-alt) 30%,
-    var(--color-border) 50%,
-    var(--color-canvas-alt) 70%
-  );
-  filter: blur(2px);
-  opacity: 0.9;
-}
-
-.blur-block--circle {
-  width: 2.75rem;
-  height: 2.75rem;
-  border-radius: var(--radius-full);
-}
-
-.blur-block--title {
-  height: 1.5rem;
-  width: 55%;
-}
-
-.blur-block--lg {
-  width: 100%;
-}
-
-.blur-block--md {
-  width: 72%;
-}
-
-.blur-block--sm {
-  width: 45%;
-}
-
-.blur-placeholder--answer .blur-block {
-  height: 0.85rem;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-3) 0;
 }
 
 @keyframes blur-in {
@@ -3532,10 +3446,10 @@ h2,
   font-variant-numeric: tabular-nums;
 }
 
-/* --- Assistant identity + emoji thinking ticker (loading animation) ------
-   The favicon is the assistant's identity image; the emoji ticker animates
-   the "Consulting the assistant" state. Pure transform/opacity keyframes
-   without fill-mode (interruptible, per DESIGN.md item 11). */
+/* --- Assistant identity + thinking state ---------------------------------
+   The favicon is the assistant's identity image. The thinking state's loading
+   visual is the heart loader (`.heart-loader`, above) since 2026-10-27; the
+   former emoji ticker (`.ai-emoji-loader`, `emoji-pulse`) is removed. */
 .ai-avatar {
   width: 28px;
   height: 28px;
@@ -3575,53 +3489,6 @@ h2,
   justify-content: center;
   gap: var(--space-3);
   margin-bottom: var(--space-2);
-}
-
-.ai-emoji-loader {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  min-height: 28px;
-}
-
-.ai-emoji-loader__glyph {
-  font-size: 20px;
-  line-height: 1;
-  animation: emoji-pulse 1.8s ease-in-out infinite;
-  will-change: transform, opacity;
-}
-
-.ai-emoji-loader__glyph:nth-child(2) {
-  animation-delay: 0.22s;
-}
-
-.ai-emoji-loader__glyph:nth-child(3) {
-  animation-delay: 0.44s;
-}
-
-.ai-emoji-loader__glyph:nth-child(4) {
-  animation-delay: 0.66s;
-}
-
-@keyframes emoji-pulse {
-  0%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0) scale(1);
-  }
-
-  30% {
-    opacity: 1;
-    transform: translateY(-3px) scale(1.18);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ai-emoji-loader__glyph {
-    animation: none;
-    opacity: 1;
-  }
 }
 
 /* ============================================== wave UI-C: responsiveness ===

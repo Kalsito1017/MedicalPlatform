@@ -92,7 +92,12 @@
         <p id="patients-status" class="visually-hidden" role="status" aria-live="polite"></p>
 
         <div id="patients-region">
-          <p class="text-muted">Loading synthetic patients…</p>
+          <div class="loading-block">
+            <div class="heart-loader heart-loader--md">
+              <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+              <p class="heart-loader__label">Loading synthetic patients&hellip;</p>
+            </div>
+          </div>
         </div>
       </main>
 
