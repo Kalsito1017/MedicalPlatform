@@ -42,7 +42,8 @@ Hard rules: the browser and the LLM never touch the database; the MCP server is
 internal-only and gets no privileged credentials; acting identity always comes from the
 verified server-side session; every patient-data operation goes through one shared
 authorization layer. Full detail: **`docs/ARCHITECTURE.md`**. Permissions:
-**`docs/SECURITY.md`**. API contract: **`docs/API.md`**.
+**`docs/SECURITY.md`**. API contract: **`docs/API.md`**. Presentation/defense overview
+(problem, example questions, agent-vs-REST comparison, diagrams): **`docs/CONCEPT.md`**.
 
 ---
 
