@@ -1,0 +1,11 @@
+# Namespace for the Clinical AI Platform local Kubernetes stack.
+#
+# Everything lives in one namespace (app, database, seed job). The name is
+# short on purpose: it shows up in every kubectl command in docs/KUBERNETES.md
+# and in the database DNS name baked into the Secret (db.clinical.svc).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clinical
+  labels:
+    app.kubernetes.io/part-of: clinical-ai-platform

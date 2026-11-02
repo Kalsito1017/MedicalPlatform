@@ -1,0 +1,71 @@
+# One-shot demo-seed Job — the k8s counterpart of:
+#   docker compose run --rm app python /app/scripts/seed_demo_data.py
+#
+# MANUALLY APPLIED, NEVER PART OF up.sh. Run it only AFTER the app Deployment
+# is Ready: the entrypoint of the app pod applies the Alembic migrations on
+# start, and this Job expects a migrated schema. (The Job overrides the image
+# ENTRYPOINT entirely, so it runs the seed script and nothing else — no
+# migration side effects here.)
+#
+# Usage:
+#   scripts/k8s/seed.sh            # applies this file and follows the logs
+#
+# Idempotent: scripts/seed_demo_data.py only creates missing rows (natural
+# keys / deterministic demo UUIDs), so re-running the Job never duplicates
+# data. If DEMO_*_PASSWORD variables are missing from k8s/secret.yaml, random
+# passwords are generated and printed ONCE in the Job log — copy them out of
+# `kubectl logs` before they are needed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-demo-data
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: seed
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  # Strict one-shot: no automatic retries — seed.sh re-applies on demand.
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: seed
+        app.kubernetes.io/part-of: clinical-ai-platform
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seed
+          image: medicalplatform-app:local
+          imagePullPolicy: IfNotPresent
+          # command replaces the image ENTRYPOINT (docker-entrypoint.sh):
+          # migrations are NOT run here — they already ran on app start.
+          command: ["python", "/app/scripts/seed_demo_data.py"]
+          envFrom:
+            - configMapRef:
+                name: app-config
+            - secretRef:
+                name: app-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

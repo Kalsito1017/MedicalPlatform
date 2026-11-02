@@ -1,0 +1,31 @@
+# Application Service — type LoadBalancer so Docker Desktop Kubernetes maps
+# the app to localhost. This is the k8s counterpart of the compose `ports:
+# "8000:8000"` mapping.
+#
+# Port choice: 8081 on the host, 8000 in the container. Two ports are avoided
+# on purpose: 8000 is published by the docker-compose stack on the same
+# machine, and 8080 is commonly taken by other local dev tools (it is occupied
+# on the author's machine — Docker Desktop's LoadBalancer fails to bind and
+# stays <pending> if the host port is taken). If 8081 is taken on YOUR
+# machine, change `port` below AND PUBLIC_ORIGIN / API_BASE_URL /
+# ALLOWED_ORIGINS in k8s/configmap.yaml to match. Local URL:
+#   http://localhost:8081
+#
+# Alternative (no LoadBalancer, always works): keep this ClusterIP and
+#   kubectl --context docker-desktop port-forward -n clinical svc/app 8081:8081
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: app
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http

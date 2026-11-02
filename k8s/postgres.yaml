@@ -1,0 +1,137 @@
+# PostgreSQL 16 for the Clinical AI Platform — the k8s counterpart of the
+# `db` service in docker-compose.yml (postgres:16-alpine).
+#
+# StatefulSet + PersistentVolumeClaim: the data volume (volumeClaimTemplates
+# `data`, 1Gi) survives pod restarts and reschedules. Full reset = delete the
+# PVC (see docs/KUBERNETES.md, "Data persistence and full reset").
+#
+# The Service is a plain ClusterIP named `db`; the app reaches it at
+# db.clinical.svc (see k8s/secret.example.yaml). Unlike compose, port 5432 is
+# NOT published to the host — no host port conflicts with a running
+# docker-compose stack. For psql access use:
+#   kubectl --context docker-desktop run psql --rm -it --image=postgres:16-alpine \
+#     --env=PGPASSWORD=<password> -- psql -h db.clinical.svc -U app clinical_demo
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: db
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  serviceName: db
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: db
+        app.kubernetes.io/part-of: clinical-ai-platform
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            # POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB come from the
+            # same Secret as the app credentials (k8s/secret.yaml).
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: app-secret
+                  key: POSTGRES_DB
+            # Keep the data in a subdirectory of the mount point so the volume
+            # root is never mistaken for a PGDATA directory.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          # Same health semantics as the compose healthcheck: pg_isready
+          # against the configured user/database.
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            # Modest hardening only. runAsNonRoot / drop-capabilities are NOT
+            # applied here on purpose: the official postgres image's entrypoint
+            # starts as root to fix ownership of the fresh data volume and then
+            # drops to the `postgres` user via su-exec — forcing non-root or
+            # dropping capabilities breaks first-time initialization.
+            allowPrivilegeEscalation: false
+  # The `data` volume is created from the template below (PVC data-db-0) and
+  # mounted via volumeMounts — do not also declare it under spec.template.volumes.
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: db
+          app.kubernetes.io/part-of: clinical-ai-platform
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # storageClassName omitted: uses the cluster's default StorageClass.
+        # On Docker Desktop Kubernetes that is `standard` (backed by the
+        # bundled local-path provisioner).
+        resources:
+          requests:
+            storage: 1Gi

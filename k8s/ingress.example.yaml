@@ -1,0 +1,34 @@
+# OPTIONAL — Ingress for later ingress-nginx use. NOT applied by scripts/k8s/
+# up.sh and not required for the local stack (the LoadBalancer Service in
+# k8s/app-service.yaml already maps to http://localhost:8080).
+#
+# To use it later:
+#   1. install ingress-nginx in the cluster,
+#   2. kubectl --context docker-desktop apply -f k8s/ingress.example.yaml
+#   3. add `127.0.0.1 clinical.local` to your hosts file and browse
+#      http://clinical.local (port 80 of the ingress controller).
+#
+# For real production put TLS in front (cert-manager / a managed LB) and
+# switch APP_ENV to production — see docs/KUBERNETES.md, "Moving to real
+# production".
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: clinical.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: app
+                port:
+                  name: http

@@ -1,0 +1,144 @@
+# Application Deployment for the Clinical AI Platform — the k8s counterpart
+# of the `app` service in docker-compose.yml (single-origin image: FastAPI +
+# static frontend on port 8000, migrations-on-start entrypoint).
+#
+# Image: medicalplatform-app:local — built on the host and used directly by
+# Docker Desktop Kubernetes (imagePullPolicy: IfNotPresent). Build it with:
+#   docker compose build app && docker tag medicalplatform-app:latest medicalplatform-app:local
+# (see docs/KUBERNETES.md).
+#
+# Configuration contract (identical to compose): all settings come from the
+# runtime environment — envFrom merges k8s/configmap.yaml (non-secret) and
+# k8s/secret.yaml (secret). Nothing is baked into the image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/part-of: clinical-ai-platform
+spec:
+  # One replica: the demo has a single session/DB footprint; scale-out is a
+  # "moving to real production" concern (see docs/KUBERNETES.md).
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: app
+        app.kubernetes.io/part-of: clinical-ai-platform
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Wait for Postgres before starting the app: the entrypoint runs Alembic
+      # migrations on start and crashes (pod restarts) if the database is not
+      # reachable yet. This mirrors compose's depends_on: condition:
+      # service_healthy. Uses the app image (already present) and only checks
+      # the TCP port; `db.clinical.svc` resolves via cluster DNS.
+      initContainers:
+        - name: wait-for-db
+          image: medicalplatform-app:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - |
+              import socket, sys, time
+              for _ in range(90):
+                  try:
+                      s = socket.create_connection(("db.clinical.svc", 5432), 2)
+                      s.close()
+                      print("db.clinical.svc:5432 is reachable")
+                      sys.exit(0)
+                  except OSError:
+                      time.sleep(2)
+              print("db.clinical.svc:5432 unreachable after 180s", file=sys.stderr)
+              sys.exit(1)
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: app
+          image: medicalplatform-app:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            # Non-secret config (APP_ENV, origins, LLM toggles, ...).
+            - configMapRef:
+                name: app-config
+            # Secrets (APP_SECRET_KEY, DATABASE_URL, MIGRATION_DATABASE_URL,
+            # LLM_API_KEY, DEMO_*). Missing key = unset variable = safe default
+            # in backend/app/config.py; required keys are validated at startup
+            # (the pod crash-loops with a names-only error if they are absent).
+            - secretRef:
+                name: app-secret
+          # Probe semantics mirror scripts/healthcheck.py:
+          #   /health/live  — process liveness, never depends on DB/LLM
+          #   /health/ready — checks the database connection
+          # startupProbe absorbs the migrations-on-start step (entrypoint runs
+          # `alembic upgrade head` before uvicorn binds the port).
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            # The image already runs as uid 10001 (see backend/Dockerfile).
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            # Python (PYTHONDONTWRITEBYTECODE=1 in the image) never writes to
+            # the code tree; the only expected writable path is /tmp
+            # (tempfile), provided as an emptyDir below.
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

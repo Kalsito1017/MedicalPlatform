@@ -1,0 +1,56 @@
+# Non-secret application configuration for the Clinical AI Platform.
+#
+# Mirrors the docker-compose.yml / .env contract (see backend/app/config.py).
+# Secret values (APP_SECRET_KEY, DATABASE_URL, MIGRATION_DATABASE_URL,
+# LLM_API_KEY, DEMO_*_PASSWORD) live in k8s/secret.yaml — never here.
+#
+# The app Deployment loads this with envFrom, so every key below becomes an
+# environment variable of the same name. Keep key names in step with
+# .env.example (case-insensitive there; use UPPER_SNAKE here).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: clinical
+  labels:
+    app.kubernetes.io/name: app
+    app.kubernetes.io/part-of: clinical-ai-platform
+data:
+  # --- Core application ---
+  # Local cluster = production-shaped INFRASTRUCTURE, but served over plain
+  # http://localhost. Keep APP_ENV=development here so session cookies stay
+  # usable without TLS and /docs stays open for the demo. Switch to
+  # "production" only behind real TLS (see docs/KUBERNETES.md, "Moving to
+  # real production").
+  APP_ENV: "development"
+  PUBLIC_ORIGIN: "http://localhost:8081"
+  API_BASE_URL: "http://localhost:8081"
+  LOG_LEVEL: "INFO"
+
+  # --- Sessions / CSRF (names and TTL only; no secrets here) ---
+  SESSION_COOKIE_NAME: "cap_session"
+  SESSION_TTL_HOURS: "8"
+  CSRF_COOKIE_NAME: "csrf_token"
+
+  # --- LLM (optional; the app runs fully without it) ---
+  # The AI features degrade gracefully while LLM_ENABLED=false. To enable:
+  #   1. put LLM_API_KEY in k8s/secret.yaml (see k8s/secret.example.yaml),
+  #   2. set LLM_ENABLED: "true" here,
+  #   3. kubectl --context docker-desktop apply -f k8s/configmap.yaml
+  #      kubectl --context docker-desktop rollout restart deployment/app -n clinical
+  LLM_ENABLED: "false"
+  LLM_API_BASE_URL: "https://opencode.ai/inference/go"
+  LLM_MODEL: "mimo-v2.6-pro"
+  LLM_MAX_TOOL_CALLS: "4"
+  LLM_REQUEST_TIMEOUT_SECONDS: "45"
+
+  # --- CORS / transport ---
+  # 8081 = the LoadBalancer port on localhost (compose holds :8000; 8080 is
+  # often taken by other local dev tools). Keep in step with k8s/app-service.yaml.
+  ALLOWED_ORIGINS: "http://localhost:8081,http://localhost:5173"
+  REQUEST_MAX_BODY_BYTES: "1048576"
+
+  # --- Container runtime ---
+  # Migrations-on-start is the same demo-scale trade-off as docker-compose.yml
+  # (see scripts/docker-entrypoint.sh and docs/DEPLOYMENT.md).
+  RUN_MIGRATIONS_ON_START: "1"
