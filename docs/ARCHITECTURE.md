@@ -345,7 +345,7 @@ payloads.
 | Table | Key columns |
 |---|---|
 | `patient` | id, synthetic MRN, synthetic display name fields, date_of_birth, provenance, created_at, updated_at, deleted_at |
-| `encounter` | id, patient_id → patient, occurred_at, encounter_type, synthetic summary, timestamps, deleted_at |
+| `encounter` | id, patient_id → patient, occurred_at, encounter_type, synthetic summary, practitioner_id, weight_kg, height_cm, systolic_bp, diastolic_bp, heart_rate, temperature_c, oxygen_saturation, timestamps, deleted_at |
 
 ### `laboratory`
 | Table | Key columns |
@@ -374,7 +374,11 @@ UTC. The seed adds Monday–Friday 09:00–12:00 / 13:00–17:00 plus three upco
 demo appointments; re-running it is idempotent.
 
 Seed data is fictional and obviously synthetic, loaded by `scripts/seed_demo_data.py`
-(idempotent or with a documented reset — see `docs/DEPLOYMENT.md`).
+(idempotent or with a documented reset — see `docs/DEPLOYMENT.md`). Since
+2026-11-11 the seed adds a longitudinal expansion per patient: 8–12 visits over
+~24 months, repeated key-lab panels, baseline/follow-up points around mapped
+prescriptions, and per-visit BP/HR/temperature/SpO2. The response view is
+derived at read time; no separate outcome table duplicates clinical data.
 
 ---
 

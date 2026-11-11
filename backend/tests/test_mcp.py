@@ -801,7 +801,8 @@ async def test_find_patients_by_lab_unknown_test_code_is_a_controlled_error(
     # The submitted value is never echoed; the known codes are catalog data.
     assert submitted not in serialized
     assert "NOPE" not in serialized
-    assert "GLU" in error["message"] and "Potassium" in error["message"]
+    assert "GLU" in error["message"]
+    assert "Potassium" in error["message"] or "Калий" in error["message"]
     assert "Traceback" not in serialized and "SELECT" not in serialized
 
     rows = await audit_rows(
@@ -1701,6 +1702,14 @@ async def test_summary_extension_fields_are_typed_and_additive(
         "measured_at": "2026-10-24T12:00:00Z",
         "previous_weight_kg": "72.00",
         "previous_measured_at": "2026-10-07T12:00:00Z",
+        "systolic_bp": None,
+        "diastolic_bp": None,
+        "heart_rate": None,
+        "temperature_c": None,
+        "oxygen_saturation": None,
+        "previous_systolic_bp": None,
+        "previous_diastolic_bp": None,
+        "previous_heart_rate": None,
     }
     # Per-visit vitals also ride on the encounters (trend across visits).
     by_id = {item["id"]: item for item in payload["encounters"]}

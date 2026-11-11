@@ -156,3 +156,53 @@ async def test_message_send_validation(auth_client, make_user) -> None:
             headers=csrf_headers(client),
         )
     ).status_code == 400
+
+
+async def test_message_counts_and_search_are_caller_scoped(auth_client, make_user) -> None:
+    doctor = await make_user(roles=("doctor",))
+    other = await make_user(roles=("doctor",))
+    admin = await make_user(roles=("clinical_admin",))
+    doctor_client = await auth_client(doctor)
+    other_client = await auth_client(other)
+    admin_client = await auth_client(admin)
+    token = uuid.uuid4().hex[:10]
+
+    sent = await _send(
+        admin_client,
+        doctor.id,
+        subject=f"counts-{token}",
+        body=f"private searchable body {token}",
+    )
+    assert sent.status_code == 201
+    await _send(admin_client, other.id, subject=f"other-{token}", body="other user")
+
+    counts = await doctor_client.get(f"{MESSAGES_URL}/counts")
+    assert counts.status_code == 200, counts.text
+    body = counts.json()
+    assert body["inbox_total"] >= 1
+    assert body["unread_total"] >= 1
+    assert body["sent_total"] == 0
+
+    other_counts = await other_client.get(f"{MESSAGES_URL}/counts")
+    assert other_counts.status_code == 200
+    assert other_counts.json()["inbox_total"] >= 1
+    assert other_counts.json()["unread_total"] >= 1
+
+    search = await doctor_client.get(
+        MESSAGES_URL, params={"box": "inbox", "q": token, "limit": 100}
+    )
+    assert search.status_code == 200, search.text
+    items = search.json()["items"]
+    assert len(items) == 1
+    assert items[0]["id"] == str(sent.json()["id"])
+    assert all(token in (item["subject"] or "") or token in item["body"] for item in items)
+
+    # Search never crosses into another user's mailbox.
+    other_search = await other_client.get(
+        MESSAGES_URL, params={"box": "inbox", "q": token, "limit": 100}
+    )
+    assert other_search.status_code == 200
+    assert all(item["id"] != str(sent.json()["id"]) for item in other_search.json()["items"])
+    assert (await doctor_client.get(
+        MESSAGES_URL, params={"box": "inbox", "q": "x" * 101}
+    )).status_code == 400

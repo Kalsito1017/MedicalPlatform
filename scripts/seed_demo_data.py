@@ -13,13 +13,17 @@ ICD codes, medication codes, enum column values (encounter_type, statuses,
 note_type, sex, blood_type), units, emails, UUIDs, and dates — see the
 localization notes on each spec below.
 
-The cohort is 45 synthetic patients with 2-6 encounters, 6-12 lab results
-and 0-5 prescriptions each, plus a 15-entry fictional medication catalog. Lab
+The cohort is 45 synthetic patients with a base timeline of 2-6 encounters,
+6-12 lab results and 0-5 prescriptions each, plus an additive longitudinal
+pass that brings each patient to 8-12 visits, 16-40 lab results and repeated
+key-marker panels. It also adds BP/HR/temperature/SpO2 to every visit and
+baseline/follow-up lab points around mapped prescriptions. A 15-entry
+fictional medication catalog supplies the treatment names. Lab
 values carry deliberate, coherent abnormal patterns (high potassium, anemia,
 diabetes, elevated liver enzymes, high LDL, and more) so AI lookups have
 realistic answers to find. The clinical data layer adds, per patient: a blood
 type (closed ABO/Rh vocabulary), per-visit vitals snapshots (weight/height with
-small realistic drift), 1-3 diagnoses coherent with the lab patterns, 1-2
+small realistic drift, plus BP/HR/temperature/SpO2), 1-3 diagnoses coherent with the lab patterns, 1-2
 SOAP-style clinical notes per encounter (symptoms / assessment / proposed plan
 text), and care-team assignments. Lab visits get a lab_order plus a specimen;
 prescriptions get line items and an audit trail (lifecycle events in
@@ -98,6 +102,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.authorization.policy import ROLE_PERMISSIONS
 from app.config import load_settings
+from app.services.outcomes import METRICS_BY_MEDICATION
 from app.models import (
     Appointment,
     ClinicalNote,
@@ -1776,6 +1781,305 @@ async def seed_scheduling(
         summary.bump("appointments", created=True)
 
 
+LONGITUDINAL_STANDARD_OFFSETS: tuple[int, ...] = (35, 100, 165, 240, 315, 390)
+LONGITUDINAL_RESPONSE_TYPE = "chronic disease review"
+
+
+def _longitudinal_panel_codes(profiles: tuple[str, ...]) -> list[str]:
+    """Bounded key markers for the extended visit history."""
+    codes: list[str] = []
+    for profile in profiles:
+        for code in PROFILES[profile].lab_codes:
+            if code not in codes:
+                codes.append(code)
+    if not codes:
+        codes = ["GLU", "HGB", "K", "WBC"]
+    return codes[:6]
+
+
+def _longitudinal_lab_value(
+    code: str,
+    profiles: tuple[str, ...],
+    rng: random.Random,
+    *,
+    improved: bool,
+) -> Decimal:
+    """A deterministic, clinically coherent value for a longitudinal panel.
+
+    Abnormal profile markers stay abnormal after treatment but move toward the
+    reference boundary, producing a visible before/after change without
+    erasing the pattern that AI lookups are meant to find.
+    """
+    test = LAB_TEST_BY_CODE[code]
+    abnormal = _abnormal_range(code, profiles)
+    if abnormal is not None:
+        low, high = abnormal
+        if improved:
+            if high > test.ref_high:
+                value = test.ref_high + (high - test.ref_high) * 0.25
+            elif low < test.ref_low:
+                value = test.ref_low - (test.ref_low - low) * 0.25
+            else:
+                value = (low + high) / 2
+        else:
+            value = rng.uniform(low, high)
+    else:
+        midpoint = (test.ref_low + test.ref_high) / 2
+        spread = (test.ref_high - test.ref_low) or 1.0
+        value = midpoint + rng.uniform(-0.35, 0.35) * spread
+    return Decimal(f"{value:.{test.decimals}f}")
+
+
+def _longitudinal_bp(
+    day: date,
+    bp_starts: list[date],
+    has_bp_profile: bool,
+    rng: random.Random,
+) -> tuple[int, int]:
+    """Coherent BP snapshot: high before antihypertensive treatment, lower after."""
+    if bp_starts:
+        treated = any(start <= day for start in bp_starts)
+        if treated:
+            return rng.randint(124, 138), rng.randint(78, 86)
+        return rng.randint(148, 164), rng.randint(90, 100)
+    if has_bp_profile:
+        return rng.randint(140, 152), rng.randint(86, 94)
+    return rng.randint(108, 128), rng.randint(68, 82)
+
+
+async def seed_longitudinal_data(
+    session: AsyncSession,
+    summary: Summary,
+    patient: Patient,
+    pkey: str,
+    profiles: tuple[str, ...],
+    run_day: date,
+    med_ids: dict[str, uuid.UUID],
+    staff_ids: dict[str, uuid.UUID],
+) -> None:
+    """Append a denser visit/lab timeline without rewriting legacy rows.
+
+    The existing seed already provides the base cohort. This additive pass
+    gives every patient six more visits (four standard + two BP follow-up
+    encounters for antihypertensive patients), repeated key-lab panels,
+    explicit baseline/follow-up lab points around mapped prescriptions, and
+    deterministic BP/HR/temperature/SpO2 data. All ids use a ``longitudinal``
+    namespace, so earlier seed data and ids remain byte-identical.
+    """
+    rng = random.Random(f"{CLINICAL_RNG_SEED}:{pkey}:longitudinal")
+    existing_encounters = list(
+        (
+            await session.scalars(
+                select(Encounter)
+                .where(Encounter.patient_id == patient.id, Encounter.not_deleted())
+                .order_by(Encounter.occurred_at.asc(), Encounter.id)
+            )
+        ).all()
+    )
+    prescription_rows = (
+        await session.execute(
+            select(Prescription, Medication.code)
+            .join(Medication, Prescription.medication_id == Medication.id)
+            .where(Prescription.patient_id == patient.id, Prescription.not_deleted())
+            .order_by(Prescription.start_date.asc(), Prescription.id)
+        )
+    ).all()
+    med_code_by_prescription: dict[uuid.UUID, str] = {}
+    bp_starts: list[date] = []
+    start_by_lab_code: dict[str, list[date]] = defaultdict(list)
+    for prescription, med_code in prescription_rows:
+        med_code_by_prescription[prescription.id] = med_code
+        if med_code in ("MED-002", "MED-008"):
+            bp_starts.append(prescription.start_date)
+        for metric in METRICS_BY_MEDICATION.get(med_code, ()):
+            if metric.kind == "lab":
+                start_by_lab_code[metric.code].append(prescription.start_date)
+
+    has_bp_profile = any(name in ("hypertension", "renal", "hyperkalemia") for name in profiles)
+    # Four standard visits + two response visits for BP medication gives every
+    # patient six new visits and lands the full dataset in the 8-12 range.
+    standard_count = 4 if bp_starts else 6
+    days = [run_day - timedelta(days=offset) for offset in LONGITUDINAL_STANDARD_OFFSETS[:standard_count]]
+    if bp_starts:
+        first_start = min(bp_starts)
+        days.append(first_start - timedelta(days=30))
+        days.append(min(run_day - timedelta(days=1), first_start + timedelta(days=90)))
+    days = sorted(dict.fromkeys(days))
+
+    latest_weight = next(
+        (row.weight_kg for row in reversed(existing_encounters) if row.weight_kg is not None),
+        None,
+    )
+    latest_height = next(
+        (row.height_cm for row in reversed(existing_encounters) if row.height_cm is not None),
+        None,
+    )
+    base_height = float(latest_height) if latest_height is not None else (
+        165.0 if patient.sex == "male" else 170.0
+    )
+    base_weight = float(latest_weight) if latest_weight is not None else base_height * 0.30
+    panel_codes = _longitudinal_panel_codes(profiles)
+
+    # Backfill vitals on pre-existing rows first, so the new Outcomes view is
+    # useful on an already-seeded database as well as a fresh one.
+    for encounter in existing_encounters:
+        if encounter.systolic_bp is None:
+            systolic, diastolic = _longitudinal_bp(
+                encounter.occurred_at.date(), bp_starts, has_bp_profile, rng
+            )
+            encounter.systolic_bp = systolic
+            encounter.diastolic_bp = diastolic
+            if encounter.heart_rate is None:
+                encounter.heart_rate = rng.randint(60, 92)
+            if encounter.temperature_c is None:
+                encounter.temperature_c = Decimal(f"{rng.uniform(36.3, 37.2):.1f}")
+            if encounter.oxygen_saturation is None:
+                encounter.oxygen_saturation = rng.randint(96, 100)
+            summary.backfilled["encounter.vitals"] += 1
+
+    new_encounter_ids: list[uuid.UUID] = []
+    for encounter_index, occurred_day in enumerate(days):
+        encounter_id = demo_id("encounter", pkey, "longitudinal", str(encounter_index))
+        existing = await session.get(Encounter, encounter_id)
+        if existing is not None:
+            summary.bump("encounters", created=False)
+            if existing.practitioner_id is None:
+                existing.practitioner_id = staff_ids["doctor"]
+                summary.backfilled["encounter.practitioner_id"] += 1
+            new_encounter_ids.append(existing.id)
+            continue
+        encounter_type = LONGITUDINAL_RESPONSE_TYPE if bp_starts and encounter_index >= standard_count else rng.choice(ENCOUNTER_TYPES)
+        summary_text = _synthetic_encounter_summary(rng, encounter_type)
+        systolic, diastolic = _longitudinal_bp(occurred_day, bp_starts, has_bp_profile, rng)
+        weight = base_weight + rng.uniform(-1.2, 1.2) + encounter_index * 0.15
+        height = base_height + rng.uniform(-0.5, 0.5)
+        encounter = Encounter(
+            id=encounter_id,
+            patient_id=patient.id,
+            occurred_at=datetime.combine(occurred_day, time(hour=rng.randint(8, 16), tzinfo=timezone.utc)),
+            encounter_type=encounter_type,
+            summary=summary_text,
+            practitioner_id=staff_ids["nurse"] if rng.random() < 0.20 else staff_ids["doctor"],
+            weight_kg=Decimal(f"{weight:.2f}"),
+            height_cm=Decimal(f"{height:.2f}"),
+            systolic_bp=systolic,
+            diastolic_bp=diastolic,
+            heart_rate=rng.randint(60, 92),
+            temperature_c=Decimal(f"{rng.uniform(36.3, 37.2):.1f}"),
+            oxygen_saturation=rng.randint(96, 100),
+        )
+        session.add(encounter)
+        await session.flush()
+        new_encounter_ids.append(encounter.id)
+        summary.bump("encounters", created=True)
+
+        # Every new visit is documented by one progress note.
+        symptoms, assessment, proposed_plan, body = _note_texts(patient, profiles, rng, None)
+        session.add(
+            ClinicalNote(
+                id=demo_id("clinical_note", pkey, "longitudinal", str(encounter_index), "1"),
+                patient_id=patient.id,
+                encounter_id=encounter.id,
+                author_id=staff_ids["nurse"] if encounter_type == "nurse visit" else staff_ids["doctor"],
+                note_type=NOTE_TYPE_BY_ENCOUNTER_TYPE.get(encounter_type, DEFAULT_NOTE_TYPE),
+                symptoms=symptoms,
+                assessment=assessment,
+                proposed_plan=proposed_plan,
+                body=body,
+                created_at=datetime.combine(occurred_day, time(hour=9, tzinfo=timezone.utc)),
+            )
+        )
+        summary.bump("clinical_notes", created=True)
+
+        # A repeat panel on the visit; the order/specimen keep the existing
+        # data-coherence contract (one order and specimen per encounter with labs).
+        order_id = demo_id("lab_order", pkey, "longitudinal", str(encounter_index))
+        session.add(
+            LabOrder(
+                id=order_id,
+                patient_id=patient.id,
+                encounter_id=encounter.id,
+                ordering_practitioner_id=staff_ids["doctor"],
+                ordered_at=datetime.combine(occurred_day, time(hour=7, minute=15, tzinfo=timezone.utc)),
+                status="completed",
+            )
+        )
+        await session.flush()
+        session.add(
+            Specimen(
+                id=demo_id("specimen", pkey, "longitudinal", str(encounter_index)),
+                lab_order_id=order_id,
+                specimen_type="blood",
+                collected_at=datetime.combine(occurred_day, time(hour=7, minute=45, tzinfo=timezone.utc)),
+                received_at=datetime.combine(occurred_day, time(hour=8, minute=30, tzinfo=timezone.utc)),
+                status="resulted",
+            )
+        )
+        summary.bump("lab_orders", created=True)
+        summary.bump("specimens", created=True)
+        for slot, code in enumerate(panel_codes):
+            test = LAB_TEST_BY_CODE[code]
+            improved = any(start <= occurred_day for start in start_by_lab_code.get(code, ()))
+            value = _longitudinal_lab_value(code, profiles, rng, improved=improved)
+            session.add(
+                LabResult(
+                    id=demo_id("lab", pkey, "longitudinal", str(encounter_index), str(slot)),
+                    patient_id=patient.id,
+                    encounter_id=encounter.id,
+                    test_code=test.code,
+                    test_name=test.name,
+                    value_num=value,
+                    unit=test.unit,
+                    ref_low=Decimal(str(test.ref_low)),
+                    ref_high=Decimal(str(test.ref_high)),
+                    status="final",
+                    collected_at=datetime.combine(occurred_day, time(hour=8, tzinfo=timezone.utc)),
+                    resulted_at=datetime.combine(occurred_day, time(hour=14, tzinfo=timezone.utc)),
+                )
+            )
+            summary.bump("lab_results", created=True)
+
+    # Explicit baseline/follow-up points for every mapped lab prescription.
+    # These are not tied to a visit; the response read model uses them to show
+    # a complete observed change even when encounters and lab draws do not
+    # fall on the same day.
+    response_index = 0
+    for prescription, med_code in prescription_rows:
+        for metric in METRICS_BY_MEDICATION.get(med_code, ()):
+            if metric.kind != "lab" or metric.code not in LAB_TEST_BY_CODE:
+                continue
+            test = LAB_TEST_BY_CODE[metric.code]
+            for label, delta_days, improved in (
+                ("baseline", -30, False),
+                ("follow-up", 90, True),
+            ):
+                measured_day = prescription.start_date + timedelta(days=delta_days)
+                if measured_day > run_day:
+                    measured_day = run_day - timedelta(days=1)
+                lab_id = demo_id("lab", pkey, "response", str(response_index), label, metric.code)
+                if await session.get(LabResult, lab_id) is not None:
+                    continue
+                value = _longitudinal_lab_value(metric.code, profiles, rng, improved=improved)
+                session.add(
+                    LabResult(
+                        id=lab_id,
+                        patient_id=patient.id,
+                        encounter_id=None,
+                        test_code=test.code,
+                        test_name=test.name,
+                        value_num=value,
+                        unit=test.unit,
+                        ref_low=Decimal(str(test.ref_low)),
+                        ref_high=Decimal(str(test.ref_high)),
+                        status="final",
+                        collected_at=datetime.combine(measured_day, time(hour=8, tzinfo=timezone.utc)),
+                        resulted_at=datetime.combine(measured_day, time(hour=14, tzinfo=timezone.utc)),
+                    )
+                )
+                summary.bump("lab_results", created=True)
+        response_index += 1
+
+
 async def seed_patients(
     session: AsyncSession,
     summary: Summary,
@@ -1822,6 +2126,16 @@ async def seed_patients(
             clinical_rng,
             med_ids,
             prescriber_ids,
+            staff_ids,
+        )
+        await seed_longitudinal_data(
+            session,
+            summary,
+            patient,
+            pkey,
+            profiles,
+            run_day,
+            med_ids,
             staff_ids,
         )
 

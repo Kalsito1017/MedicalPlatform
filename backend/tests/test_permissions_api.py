@@ -122,6 +122,7 @@ MATRIX: tuple[EndpointCase, ...] = (
     EndpointCase("GET", "/api/v1/admin/logs", "logs:read", 200),
     EndpointCase("GET", "/api/v1/admin/logs/stream", "logs:read", 200),
     EndpointCase("GET", "/api/v1/messages", "message:read", 200),
+    EndpointCase("GET", "/api/v1/messages/counts", "message:read", 200),
     EndpointCase("GET", "/api/v1/messages/recipients", "message:read", 200),
     EndpointCase(
         "POST",

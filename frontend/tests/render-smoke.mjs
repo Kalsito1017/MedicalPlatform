@@ -178,9 +178,17 @@ const MESSAGES_IDS = [
   'page-body',
   'messages-loading',
   'messages-status',
+  'messages-count',
+  'messages-unread',
   'messages-inbox-tab',
+  'messages-inbox-count',
   'messages-sent-tab',
+  'messages-sent-count',
   'messages-new',
+  'messages-search-form',
+  'messages-search',
+  'messages-workspace',
+  'messages-list-panel',
   'messages-region',
   'messages-detail',
 ];
@@ -814,6 +822,7 @@ const PATIENT_IDS = [
   'labs-region',
   'prescriptions-region',
   'encounters-region',
+  'outcomes-region',
   'print-status',
   'print-record',
   'remove-patient',
@@ -864,6 +873,13 @@ const PATIENT_TAB_FIXTURE = [
         text: 'Encounters',
       },
       {
+        id: 'tab-outcomes',
+        tag: 'button',
+        class: 'tab',
+        attrs: { role: 'tab', 'aria-controls': 'panel-outcomes', 'aria-selected': 'false', tabindex: '-1' },
+        text: 'Outcomes',
+      },
+      {
         id: 'tab-ai-patient',
         tag: 'button',
         class: 'tab',
@@ -876,6 +892,7 @@ const PATIENT_TAB_FIXTURE = [
   { id: 'panel-labs', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
   { id: 'panel-prescriptions', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
   { id: 'panel-encounters', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  { id: 'panel-outcomes', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
   { id: 'panel-ai-patient', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
 ];
 
@@ -910,7 +927,7 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_TRENDS, prescriptions, encounters = ENCOUNTERS, staff, audit, ai, conversations, analytics, messages, messageRecipients, routes = [], calls = [] }) {
+function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_TRENDS, prescriptions, encounters = ENCOUNTERS, staff, audit, ai, conversations, analytics, messages, messageRecipients, messageCounts, routes = [], calls = [] }) {
   // A payload carrying a numeric `status` (and no `ok` flag) is an error
   // response: { status, code?, message?, retryAfter? }. A non-200 success
   // carries `ok: true` (e.g. { status: 204, ok: true }).
@@ -986,6 +1003,16 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_
     }
     if (/\/ai\/conversations\/[^/]+$/.test(path) && method === 'DELETE') {
       return json(204, null);
+    }
+    if (path.endsWith('/messages/counts') && method === 'GET') {
+      const counts = messageCounts || {
+        inbox_total: Number.isFinite(messages && messages.total) ? messages.total : 0,
+        unread_total: messages && Array.isArray(messages.items)
+          ? messages.items.filter((item) => !item.read_at).length
+          : 0,
+        sent_total: 0,
+      };
+      return respond(counts);
     }
     if (path.endsWith('/messages/recipients') && method === 'GET') {
       if (messageRecipients === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
@@ -1221,6 +1248,90 @@ await check('patient detail renders demographics, summary, labs, prescriptions',
   assertContains(rx, 'Three times daily', 'frequency missing');
 });
 
+await check('patient summary shows last visit, vitals and treatment response; Outcomes tab charts them', async () => {
+  const enrichedSummary = {
+    ...SUMMARY,
+    last_visit: {
+      id: 'e1',
+      occurred_at: '2026-09-14T09:30:00Z',
+      encounter_type: 'office_visit',
+      summary: 'Routine follow-up.',
+      weight_kg: '70.50',
+      height_cm: '165.00',
+      systolic_bp: 128,
+      diastolic_bp: 78,
+      heart_rate: 72,
+    },
+    visit_count: 6,
+    vitals: {
+      weight_kg: '70.50',
+      height_cm: '165.00',
+      measured_at: '2026-09-14T09:30:00Z',
+      systolic_bp: 128,
+      diastolic_bp: 78,
+      heart_rate: 72,
+      oxygen_saturation: 98,
+    },
+    medication_responses: [{
+      prescription_id: 'rx1',
+      medication: 'Metformin',
+      status: 'active',
+      started_on: '2026-02-10',
+      metric_code: 'HBA1C',
+      metric_name: 'HbA1c',
+      unit: '%',
+      baseline: { measured_at: '2026-01-18T08:00:00Z', value: '9.4' },
+      follow_up: { measured_at: '2026-06-02T08:00:00Z', value: '7.2' },
+      current: { measured_at: '2026-10-14T08:00:00Z', value: '7.0' },
+      delta: '-2.4',
+      trend: 'improved',
+      points: [
+        { measured_at: '2026-01-18T08:00:00Z', value: '9.4' },
+        { measured_at: '2026-06-02T08:00:00Z', value: '7.2' },
+        { measured_at: '2026-10-14T08:00:00Z', value: '7.0' },
+      ],
+    }],
+  };
+  const outcomeEncounters = {
+    items: [
+      { ...ENCOUNTERS.items[0], systolic_bp: 128, diastolic_bp: 78, heart_rate: 72 },
+      { id: 'e2', patient_id: 'p1', occurred_at: '2026-06-02T09:00:00Z', encounter_type: 'chronic disease review', summary: 'Review.', weight_kg: '73.00', systolic_bp: 146, diastolic_bp: 92, heart_rate: 80 },
+      { id: 'e3', patient_id: 'p1', occurred_at: '2026-02-10T09:00:00Z', encounter_type: 'chronic disease review', summary: 'Baseline.', weight_kg: '75.00', systolic_bp: 158, diastolic_bp: 98, heart_rate: 84 },
+    ],
+    total: 3,
+    limit: 100,
+    offset: 0,
+  };
+  globalThis.fetch = makeFetch({
+    patient: PATIENT,
+    summary: enrichedSummary,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    encounters: outcomeEncounters,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const summary = textOf(document.getElementById('summary-region'));
+  assertContains(summary, 'Last visit', 'last visit block missing');
+  assertContains(summary, '128/78', 'BP summary missing');
+  assertContains(summary, 'Metformin', 'treatment response missing');
+  assertContains(summary, 'HbA1c: 9.4', 'baseline value missing');
+  assertContains(summary, 'Improved', 'trend label missing');
+
+  await document.getElementById('tab-outcomes').dispatch('click');
+  await settle();
+  const outcomes = textOf(document.getElementById('outcomes-region'));
+  assertContains(outcomes, 'Blood pressure', 'BP chart missing');
+  assertContains(outcomes, 'Weight', 'weight chart missing');
+  assertContains(outcomes, 'Medication response', 'response section missing');
+  assertContains(outcomes, 'Recent visits', 'visit history missing');
+  assertContains(outcomes, '158/98', 'BP visit reading missing');
+  assert(document.getElementById('outcomes-region').querySelectorAll('.chart').length >= 2, 'vitals charts missing');
+});
+
 await check('patient detail isolates a 403 lab section from the rest', async () => {
   globalThis.fetch = makeFetch({
     patient: PATIENT,
@@ -1313,6 +1424,7 @@ await check('patient hidden tabs defer their data requests until opened', async 
   assert(!called('/labs'), 'labs must not be fetched before the Labs tab opens');
   assert(!called('/prescriptions'), 'prescriptions must not be fetched before the Prescriptions tab opens');
   assert(!called('/ai/conversations'), 'AI history must not be fetched before the AI Patient tab opens');
+  assert(!called('/encounters'), 'outcomes must not be fetched before the Outcomes tab opens');
 
   await document.getElementById('tab-labs').dispatch('click');
   await settle();
@@ -1322,6 +1434,11 @@ await check('patient hidden tabs defer their data requests until opened', async 
   await document.getElementById('tab-prescriptions').dispatch('click');
   await settle();
   assert(called('/prescriptions'), 'Prescriptions tab must fetch on first open');
+
+  await document.getElementById('tab-outcomes').dispatch('click');
+  await settle();
+  assert(called('/summary'), 'Outcomes tab must reuse the summary response data');
+  assert(called('/encounters'), 'Outcomes tab must fetch encounter vitals on first open');
 
   await document.getElementById('tab-ai-patient').dispatch('click');
   await settle();
@@ -3026,6 +3143,26 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   assertContains(textOf(region), 'Doc Sender', 'inbox sender missing');
   assertContains(textOf(region), 'Rota review', 'inbox subject missing');
   assertContains(textOf(region), 'Unread', 'unread marker missing');
+  assertContains(textOf(document.getElementById('messages-count')), '1 message in your inbox', 'inbox count missing');
+  assertContains(textOf(document.getElementById('messages-unread')), '1 unread', 'unread count missing');
+  assertContains(textOf(document.getElementById('messages-inbox-count')), '1', 'inbox tab count missing');
+
+  document.getElementById('messages-search').value = 'rota';
+  await document.getElementById('messages-search-form').dispatch('submit');
+  await settle();
+  assert(
+    calls.some((call) => call.url.includes('/messages') && call.url.includes('q=rota')),
+    'server-side message search missing',
+  );
+
+  await document.getElementById('messages-sent-tab').dispatch('click');
+  await settle();
+  assert(
+    calls.some((call) => call.url.includes('/messages') && call.url.includes('box=sent')),
+    'sent folder request missing',
+  );
+  await document.getElementById('messages-inbox-tab').dispatch('click');
+  await settle();
 
   const row = region.querySelector('.message-row');
   await row.dispatch('click');
@@ -3033,6 +3170,9 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   assertEqualLocal(readCalls.length, 1, 'mark-read request missing');
   assertContains(textOf(document.getElementById('messages-detail')), 'Please review the rota', 'detail body missing');
   assertContains(textOf(document.getElementById('messages-detail')), 'Read', 'detail read state missing');
+  assertContains(textOf(document.getElementById('messages-detail')), 'Doc Sender', 'detail sender missing');
+  assertContains(textOf(document.getElementById('messages-detail')), 'Cal Admin', 'detail recipient missing');
+  assert(document.getElementById('messages-workspace').classList.contains('is-reading'), 'selected message must open the reading view on mobile');
 
   await document.getElementById('messages-new').dispatch('click');
   await settle();

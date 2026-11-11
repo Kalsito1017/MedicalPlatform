@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import aliased
 
 from app.api.deps import DbSession, Pagination, RequestId, reject_unknown_query
@@ -24,6 +24,7 @@ from app.schemas.common import Page
 from app.schemas.message import (
     MessageBox,
     MessageCreate,
+    MessageCountsOut,
     MessageOut,
     MessageRecipientListOut,
     MessageRecipientOut,
@@ -46,6 +47,11 @@ def _message_out(row) -> MessageOut:
         created_at=message.created_at,
         updated_at=message.updated_at,
     )
+
+
+def _search_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _caller_id(principal: Principal) -> uuid.UUID:
@@ -114,28 +120,86 @@ async def list_message_recipients(
     return MessageRecipientListOut(items=items[:100])
 
 
+@router.get("/messages/counts", response_model=MessageCountsOut)
+async def message_counts(
+    db: DbSession,
+    principal: Principal = Depends(require_permission("message:read")),
+) -> MessageCountsOut:
+    """Caller-private inbox/unread/sent counts for the Messages header."""
+    caller = _caller_id(principal)
+    inbox_total = int(
+        (
+            await db.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.recipient_id == caller)
+            )
+        )
+        or 0
+    )
+    unread_total = int(
+        (
+            await db.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.recipient_id == caller, Message.read_at.is_(None))
+            )
+        )
+        or 0
+    )
+    sent_total = int(
+        (
+            await db.scalar(
+                select(func.count())
+                .select_from(Message)
+                .where(Message.sender_id == caller)
+            )
+        )
+        or 0
+    )
+    return MessageCountsOut(
+        inbox_total=inbox_total,
+        unread_total=unread_total,
+        sent_total=sent_total,
+    )
+
+
 @router.get("/messages", response_model=Page[MessageOut])
 async def list_messages(
     db: DbSession,
     pagination: Pagination,
     box: MessageBox = Query(default="inbox"),
-    _unknown: None = Depends(reject_unknown_query("box", "limit", "offset")),
+    q: str | None = Query(default=None, max_length=100),
+    _unknown: None = Depends(reject_unknown_query("box", "limit", "offset", "q")),
     principal: Principal = Depends(require_permission("message:read")),
 ) -> Page[MessageOut]:
     caller = _caller_id(principal)
+    sender = aliased(StaffUser)
+    recipient = aliased(StaffUser)
     owner_filter = (
         Message.recipient_id == caller if box == "inbox" else Message.sender_id == caller
     )
     filters = [owner_filter]
-    total = (
-        await db.scalar(
-            select(func.count()).select_from(
-                select(Message.id).where(*filters).subquery()
+    search = q.strip() if q else None
+    if search:
+        pattern = _search_pattern(search)
+        filters.append(
+            or_(
+                Message.subject.ilike(pattern, escape="\\"),
+                Message.body.ilike(pattern, escape="\\"),
+                sender.display_name.ilike(pattern, escape="\\"),
+                recipient.display_name.ilike(pattern, escape="\\"),
             )
         )
+    count_base = (
+        select(Message.id)
+        .join(sender, sender.id == Message.sender_id)
+        .join(recipient, recipient.id == Message.recipient_id)
+        .where(*filters)
+    )
+    total = (
+        await db.scalar(select(func.count()).select_from(count_base.subquery()))
     ) or 0
-    sender = aliased(StaffUser)
-    recipient = aliased(StaffUser)
     rows = list(
         (
             await db.execute(

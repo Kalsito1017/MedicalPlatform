@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // messages.html page module — internal staff-to-staff messages.
 //
-// Endpoints: GET /messages?box=inbox|sent, GET /messages/recipients,
-// POST /messages, POST /messages/{id}/read. Only the caller's own inbox/sent
-// items are returned; the backend re-checks message:read/message:write.
-// Message bodies are rendered as text only (never HTML/Markdown).
+// Endpoints: GET /messages?box=inbox|sent&q=, GET /messages/counts,
+// GET /messages/recipients, POST /messages, POST /messages/{id}/read.
+// Only the caller's own inbox/sent items are returned; the backend re-checks
+// message:read/message:write. Message text is rendered as text only.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
@@ -14,6 +14,7 @@ import * as toast from './toast.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 250;
 
 const state = {
   user: null,
@@ -21,7 +22,11 @@ const state = {
   messages: [],
   selectedId: null,
   recipients: null,
+  counts: { inbox_total: 0, unread_total: 0, sent_total: 0 },
+  q: '',
   loading: false,
+  sending: false,
+  searchTimer: null,
 };
 
 function setStatus(message) {
@@ -37,110 +42,239 @@ function setTabs() {
     tab.classList.toggle('is-active', active);
     tab.setAttribute('aria-selected', active ? 'true' : 'false');
   }
+  const inboxCount = document.getElementById('messages-inbox-count');
+  if (inboxCount) {
+    inboxCount.textContent = state.counts.unread_total > 0
+      ? String(state.counts.unread_total)
+      : '';
+  }
+  const sentCount = document.getElementById('messages-sent-count');
+  if (sentCount) {
+    sentCount.textContent = state.counts.sent_total > 0
+      ? String(state.counts.sent_total)
+      : '';
+  }
 }
 
-function messageRows() {
-  const region = document.getElementById('messages-region');
-  ui.clear(region);
-  if (state.messages.length === 0) {
+function updateCounts() {
+  const count = document.getElementById('messages-count');
+  const unread = document.getElementById('messages-unread');
+  if (count) {
+    count.textContent = `${state.counts.inbox_total} message${
+      state.counts.inbox_total === 1 ? '' : 's'
+    } in your inbox`;
+  }
+  if (unread) {
+    unread.textContent = `${state.counts.unread_total} unread`;
+  }
+  setTabs();
+}
+
+function messageCounterpart(message) {
+  return state.box === 'inbox'
+    ? message.sender_display_name || 'Unknown sender'
+    : message.recipient_display_name || 'Unknown recipient';
+}
+
+function fullMessageTime(value) {
+  return ui.formatDateTime(value) || 'Unknown time';
+}
+
+function relativeMessageTime(value) {
+  const timestamp = Date.parse(String(value || ''));
+  if (!Number.isFinite(timestamp)) return 'Unknown time';
+  const elapsed = Date.now() - timestamp;
+  if (elapsed < 0) return fullMessageTime(value);
+  if (elapsed < 60_000) return 'Just now';
+  if (elapsed < 3_600_000) return `${Math.floor(elapsed / 60_000)}m ago`;
+  if (elapsed < 86_400_000) return `${Math.floor(elapsed / 3_600_000)}h ago`;
+  return fullMessageTime(value);
+}
+
+function messagePreview(body) {
+  return String(body || '').replace(/\s+/g, ' ').trim();
+}
+
+function messageEmptyState(region) {
+  if (state.q) {
     ui.renderEmptyState(region, {
-      title: state.box === 'inbox' ? 'Your inbox is empty' : 'No sent messages',
-      message: state.box === 'inbox'
-        ? 'Messages from other staff will appear here.'
-        : 'Messages you send will appear here.',
+      title: 'No messages match your search.',
+      message: 'Try a different sender, subject or phrase.',
       headingTag: 'h3',
     });
     return;
   }
+  ui.renderEmptyState(region, {
+    title: state.box === 'inbox' ? 'Your inbox is empty' : 'No sent messages',
+    message: state.box === 'inbox'
+      ? 'Messages from other staff will appear here.'
+      : 'Messages you send will appear here.',
+    headingTag: 'h3',
+  });
+}
+
+function renderMessageRows() {
+  const region = document.getElementById('messages-region');
+  if (!region) return;
+  ui.clear(region);
+  if (state.messages.length === 0) {
+    messageEmptyState(region);
+    return;
+  }
+
   const list = ui.el('div', { class: 'message-list' });
   for (const message of state.messages) {
     const unread = state.box === 'inbox' && !message.read_at;
-    const counterpart = state.box === 'inbox'
-      ? message.sender_display_name
-      : message.recipient_display_name;
+    const counterpart = messageCounterpart(message);
+    const subject = message.subject?.trim() || '(No subject)';
+    const time = message.created_at;
     const row = ui.el('button', {
       type: 'button',
       class: `message-row${unread ? ' message-row--unread' : ''}${
         state.selectedId === message.id ? ' is-active' : ''
       }`,
       'aria-current': state.selectedId === message.id ? 'true' : null,
+      'aria-label': `${unread ? 'Unread message. ' : ''}${counterpart}: ${subject}`,
       onClick: () => selectMessage(message),
     },
-      ui.el('span', { class: 'message-row__top' },
-        ui.el('span', { class: 'message-row__person', text: counterpart }),
-        ui.el('span', {
-          class: 'message-row__time',
-          text: ui.formatDateTime(message.created_at) || 'Unknown time',
-        }),
+      ui.el('span', { class: 'message-row__avatar' }, ui.avatar(counterpart, { size: 'sm' })),
+      ui.el('span', { class: 'message-row__content' },
+        ui.el('span', { class: 'message-row__top' },
+          ui.el('span', { class: 'message-row__person', text: counterpart }),
+          ui.el('time', {
+            class: 'message-row__time',
+            datetime: time || null,
+            title: fullMessageTime(time),
+            text: relativeMessageTime(time),
+          }),
+        ),
+        ui.el('span', { class: 'message-row__subject', text: subject }),
+        ui.el('span', { class: 'message-row__preview', text: messagePreview(message.body) }),
       ),
-      ui.el('span', {
-        class: 'message-row__subject',
-        text: message.subject || '(No subject)',
-      }),
-      ui.el('span', { class: 'message-row__preview', text: message.body }),
       unread
-        ? ui.el('span', { class: 'message-row__unread', text: 'Unread' })
+        ? ui.el('span', { class: 'message-row__unread', 'aria-hidden': 'true' })
         : null,
+      unread ? ui.el('span', { class: 'visually-hidden', text: 'Unread' }) : null,
     );
     list.append(row);
   }
   region.append(list);
 }
 
+function emptyDetailNode() {
+  return ui.el('div', { class: 'messages-detail__empty' },
+    ui.el('span', { class: 'messages-detail__empty-icon', 'aria-hidden': 'true' }, ui.icon('mail')),
+    ui.el('h2', { class: 'messages-detail__empty-title', text: 'Select a message to read it' }),
+    ui.el('p', { class: 'messages-detail__empty-text', text: 'Choose a message from the list on the left.' }),
+  );
+}
+
 function renderDetail(message) {
   const region = document.getElementById('messages-detail');
+  if (!region) return;
   ui.clear(region);
   if (!message) {
-    region.append(ui.el('p', { class: 'text-muted', text: 'Select a message to read it.' }));
+    region.append(emptyDetailNode());
     return;
   }
+
+  const sender = message.sender_display_name || 'Unknown sender';
+  const recipient = message.recipient_display_name || 'Unknown recipient';
+  const subject = message.subject?.trim() || '(No subject)';
+  const isSent = state.box === 'sent';
+  const timestamp = message.created_at;
   const readState = message.read_at ? 'Read' : 'Unread';
-  const actions = ui.el('div', { class: 'message-detail__actions' },
-    ui.el('button', {
-      class: 'btn btn-secondary btn-sm',
-      type: 'button',
-      onClick: () => openCompose({
-        recipientId: state.box === 'inbox' ? message.sender_id : message.recipient_id,
-        recipientName: state.box === 'inbox'
-          ? message.sender_display_name
-          : message.recipient_display_name,
-        subject: message.subject ? `Re: ${message.subject}` : '',
-      }),
-    }, 'Reply'),
-  );
+
+  const back = ui.el('button', {
+    class: 'link-button message-detail__back',
+    type: 'button',
+    onClick: () => closeDetail(),
+  }, '← Back to inbox');
+
+  const reply = ui.el('button', {
+    class: 'btn btn-primary btn-sm',
+    type: 'button',
+    onClick: () => openCompose({
+      recipientId: isSent ? message.recipient_id : message.sender_id,
+      recipientName: isSent ? recipient : sender,
+      subject: message.subject ? `Re: ${message.subject}` : '',
+    }),
+  }, 'Reply');
+
+  const newMessage = ui.el('button', {
+    class: 'btn btn-secondary btn-sm',
+    type: 'button',
+    onClick: () => openCompose(),
+  }, 'New message');
+
   region.append(
-    ui.el('div', { class: 'message-detail__head' },
-      ui.el('h2', { class: 'message-detail__subject', text: message.subject || '(No subject)' }),
-      ui.el('span', {
-        class: `badge ${message.read_at ? 'badge--neutral' : 'badge--info'}`,
-        text: readState,
-      }),
+    back,
+    ui.el('header', { class: 'message-detail__header' },
+      ui.el('div', { class: 'message-detail__avatar' }, ui.avatar(sender, { size: 'lg' })),
+      ui.el('div', { class: 'message-detail__identity' },
+        ui.el('p', { class: 'message-detail__sender', text: sender }),
+        ui.el('p', { class: 'message-detail__recipient', text: `To: ${recipient}` }),
+      ),
+      ui.el('div', { class: 'message-detail__stamp' },
+        ui.el('time', {
+          datetime: timestamp || null,
+          title: fullMessageTime(timestamp),
+          text: fullMessageTime(timestamp),
+        }),
+        ui.el('span', {
+          class: `badge ${message.read_at ? 'badge--neutral' : 'badge--info'}`,
+          text: readState,
+        }),
+      ),
     ),
-    ui.el('dl', { class: 'message-detail__meta' },
-      ui.el('dt', { text: 'From' }),
-      ui.el('dd', { text: message.sender_display_name }),
-      ui.el('dt', { text: 'To' }),
-      ui.el('dd', { text: message.recipient_display_name }),
-      ui.el('dt', { text: 'Sent' }),
-      ui.el('dd', { text: ui.formatDateTime(message.created_at) || 'Unknown time' }),
-    ),
-    ui.el('p', { class: 'message-detail__body', text: message.body }),
-    actions,
+    ui.el('h2', { class: 'message-detail__subject', text: subject }),
+    ui.el('div', { class: 'message-detail__body', text: message.body }),
+    ui.el('footer', { class: 'message-detail__actions' }, reply, newMessage),
   );
+}
+
+function openDetailOnMobile() {
+  document.getElementById('messages-workspace')?.classList.add('is-reading');
+}
+
+function closeDetail() {
+  state.selectedId = null;
+  document.getElementById('messages-workspace')?.classList.remove('is-reading');
+  renderDetail(null);
+  renderMessageRows();
 }
 
 async function selectMessage(message) {
   state.selectedId = message.id;
+  openDetailOnMobile();
   renderDetail(message);
-  messageRows();
+  renderMessageRows();
   if (state.box !== 'inbox' || message.read_at) return;
   try {
     await api.post(`/messages/${encodeURIComponent(message.id)}/read`, {});
     message.read_at = new Date().toISOString();
     renderDetail(message);
-    messageRows();
+    renderMessageRows();
+    await loadCounts();
   } catch (error) {
     toast.showToast({ message: api.describeApiError(error).message, tone: 'error' });
+  }
+}
+
+async function loadCounts() {
+  try {
+    const counts = await api.get('/messages/counts');
+    state.counts = {
+      inbox_total: Number(counts.inbox_total) || 0,
+      unread_total: Number(counts.unread_total) || 0,
+      sent_total: Number(counts.sent_total) || 0,
+    };
+    updateCounts();
+  } catch {
+    const count = document.getElementById('messages-count');
+    const unread = document.getElementById('messages-unread');
+    if (count) count.textContent = 'Message count unavailable';
+    if (unread) unread.textContent = '';
   }
 }
 
@@ -150,19 +284,29 @@ async function loadMessages() {
   setStatus('Loading messages.');
   setTabs();
   const region = document.getElementById('messages-region');
-  ui.renderLoading(region, { label: state.box === 'inbox' ? 'Loading inbox' : 'Loading sent messages' });
+  ui.renderLoading(region, {
+    label: state.box === 'inbox' ? 'Loading inbox' : 'Loading sent messages',
+  });
   try {
-    const page = await api.get('/messages', { box: state.box, limit: PAGE_SIZE, offset: 0 });
+    const query = { box: state.box, limit: PAGE_SIZE, offset: 0 };
+    if (state.q) query.q = state.q;
+    const page = await api.get('/messages', query);
     state.messages = Array.isArray(page.items) ? page.items : [];
     const selected = state.messages.find((message) => message.id === state.selectedId) || null;
-    if (!selected) state.selectedId = null;
-    messageRows();
+    if (!selected) {
+      state.selectedId = null;
+      document.getElementById('messages-workspace')?.classList.remove('is-reading');
+    }
+    renderMessageRows();
     renderDetail(selected);
-    setStatus(
-      state.messages.length === 0
-        ? (state.box === 'inbox' ? 'Inbox is empty.' : 'No sent messages.')
-        : `${state.messages.length} message${state.messages.length === 1 ? '' : 's'} shown.`,
-    );
+    const total = Number.isFinite(page.total) ? Number(page.total) : state.messages.length;
+    if (total === 0) {
+      setStatus(state.q ? 'No messages match your search.' : (
+        state.box === 'inbox' ? 'Inbox is empty.' : 'No sent messages.'
+      ));
+    } else {
+      setStatus(`${total} message${total === 1 ? '' : 's'} found.`);
+    }
   } catch (error) {
     ui.renderErrorState(region, error, {
       describe: api.describeApiError,
@@ -178,8 +322,30 @@ function setBox(box) {
   if (state.box === box) return;
   state.box = box;
   state.selectedId = null;
+  document.getElementById('messages-workspace')?.classList.remove('is-reading');
   setTabs();
   loadMessages();
+}
+
+function wireSearch() {
+  const form = document.getElementById('messages-search-form');
+  const input = document.getElementById('messages-search');
+  if (!form || !input) return;
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    state.q = input.value.trim();
+    state.selectedId = null;
+    loadMessages();
+  });
+  input.addEventListener('input', () => {
+    if (state.searchTimer) clearTimeout(state.searchTimer);
+    state.searchTimer = setTimeout(() => {
+      state.searchTimer = null;
+      state.q = input.value.trim();
+      state.selectedId = null;
+      loadMessages();
+    }, SEARCH_DEBOUNCE_MS);
+  });
 }
 
 async function ensureRecipients() {
@@ -189,6 +355,11 @@ async function ensureRecipients() {
   return state.recipients;
 }
 
+function recipientLabel(person) {
+  const roles = Array.isArray(person.roles) ? person.roles.map(ui.roleLabel).filter(Boolean) : [];
+  return roles.length > 0 ? `${person.display_name} · ${roles.join(', ')}` : person.display_name;
+}
+
 function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}) {
   if (!state.user || !auth.hasPermission(state.user, 'message:write')) return;
   ensureRecipients().then((recipients) => {
@@ -196,12 +367,11 @@ function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}
       toast.showToast({ message: 'No available staff recipients.', tone: 'error' });
       return;
     }
-    const form = ui.el('div', { class: 'form-grid' });
     const recipient = ui.el('select', { id: 'message-recipient' },
       ui.el('option', { value: '', text: 'Choose a recipient' }),
       recipients.map((person) => ui.el('option', {
         value: person.id,
-        text: person.display_name,
+        text: recipientLabel(person),
       })),
     );
     recipient.value = recipientId || '';
@@ -214,16 +384,17 @@ function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}
     });
     const bodyInput = ui.el('textarea', {
       id: 'message-body',
-      rows: 7,
+      rows: 8,
       maxlength: 5000,
       placeholder: 'Write a message…',
     });
     const errorNode = ui.el('p', { class: 'field-error', id: 'message-compose-error', role: 'alert' });
     errorNode.hidden = true;
-    form.append(
+    const form = ui.el('div', { class: 'form-grid message-compose' },
       ui.el('div', { class: 'field' },
         ui.el('label', { for: 'message-recipient', text: 'Recipient' }),
         recipient,
+        recipientName ? ui.el('p', { class: 'field-hint', text: `Replying to ${recipientName}` }) : null,
       ),
       ui.el('div', { class: 'field' },
         ui.el('label', { for: 'message-subject', text: 'Subject (optional)' }),
@@ -237,17 +408,21 @@ function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}
     const cancel = ui.el('button', { class: 'btn btn-secondary', type: 'button', onClick: () => close() }, 'Cancel');
     const send = ui.el('button', { class: 'btn btn-primary', type: 'button', onClick: () => submit() }, 'Send message');
     const submit = async () => {
+      if (state.sending) return;
       errorNode.hidden = true;
       if (!recipient.value) {
         errorNode.textContent = 'Choose a recipient.';
         errorNode.hidden = false;
+        recipient.focus();
         return;
       }
       if (!bodyInput.value.trim()) {
         errorNode.textContent = 'Enter a message.';
         errorNode.hidden = false;
+        bodyInput.focus();
         return;
       }
+      state.sending = true;
       ui.setBusy(send, true, 'Sending…');
       try {
         await api.post('/messages', {
@@ -258,13 +433,18 @@ function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}
         close();
         toast.showToast({ message: 'Message sent.', tone: 'success' });
         state.box = 'sent';
+        state.q = '';
+        const search = document.getElementById('messages-search');
+        if (search) search.value = '';
         state.selectedId = null;
         setTabs();
-        await loadMessages();
+        await Promise.all([loadMessages(), loadCounts()]);
       } catch (error) {
         errorNode.textContent = api.describeApiError(error).message;
         errorNode.hidden = false;
         ui.setBusy(send, false);
+      } finally {
+        state.sending = false;
       }
     };
     const { close } = ui.openDialog({
@@ -335,6 +515,8 @@ ui.onReady(async () => {
   }
   document.getElementById('messages-inbox-tab')?.addEventListener('click', () => setBox('inbox'));
   document.getElementById('messages-sent-tab')?.addEventListener('click', () => setBox('sent'));
+  wireSearch();
   setTabs();
+  loadCounts();
   loadMessages();
 });

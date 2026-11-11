@@ -215,6 +215,15 @@ else
   fail "patient list shape unexpected (total='$patients_total', expected >= $PATIENTS_FLOOR seeded patients)"
 fi
 
+if [ "$(api_status "$JAR_D" GET "/api/v1/patients/$patient_id/summary" "$WORKDIR/patient_summary.json")" = "200" ] \
+   && grep -q '"last_visit"' "$WORKDIR/patient_summary.json" \
+   && grep -q '"medication_responses"' "$WORKDIR/patient_summary.json" \
+   && grep -q '"systolic_bp"' "$WORKDIR/patient_summary.json"; then
+  pass "patient summary carries visit/vitals/treatment-response data"
+else
+  fail "patient summary missing visit/vitals/treatment-response data"
+fi
+
 for endpoint in "" "/summary" "/encounters" "/labs" "/labs/trends" "/prescriptions"; do
   status=$(api_status "$JAR_D" GET "/api/v1/patients/$patient_id$endpoint" "$WORKDIR/read.json")
   shape=$(json_eval 'sorted(d)[:4]' < "$WORKDIR/read.json" 2>/dev/null || echo "")
@@ -497,10 +506,13 @@ else
 fi
 
 if [ "$(api_status "$JAR_D" GET /api/v1/messages /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_D" GET '/api/v1/messages?q=rota' /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_D" GET /api/v1/messages/counts "$WORKDIR/message_counts.json")" = "200" ] \
+   && grep -q '"unread_total"' "$WORKDIR/message_counts.json" \
    && [ "$(api_status "$JAR_D" GET /api/v1/messages/recipients /dev/null)" = "200" ] \
    && [ "$(api_status "$JAR_A" GET /api/v1/messages /dev/null)" = "200" ] \
    && [ "$(api_status "$JAR_N" GET /api/v1/messages /dev/null)" = "403" ]; then
-  pass "messages: Doctor/Admin 200, Nurse 403, recipient list 200"
+  pass "messages: Doctor/Admin 200, search/counts 200, Nurse 403, recipient list 200"
 else
   fail "messages permission boundary broken"
 fi

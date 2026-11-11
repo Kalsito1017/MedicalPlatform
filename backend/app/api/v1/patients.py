@@ -32,6 +32,7 @@ from app.schemas.patient import (
     PrescriptionOut,
 )
 from app.services import labs as labs_service
+from app.services import outcomes as outcomes_service
 from app.services import patients as patients_service
 from app.services import prescriptions as prescriptions_service
 from app.services.access import check_patient_access
@@ -228,6 +229,8 @@ async def get_patient_summary(
     )
     latest_labs = await patients_service.list_latest_labs(db, patient_id)
     active_prescriptions = await patients_service.list_active_prescriptions(db, patient_id)
+    visit_count = await patients_service.count_encounters(db, patient_id)
+    medication_responses = await outcomes_service.load_treatment_responses(db, patient_id)
     await _audit_read(
         db,
         request=request,
@@ -244,6 +247,9 @@ async def get_patient_summary(
         active_problems=[],  # no problems data source in the synthetic dataset
         latest_labs=[LabResultOut.model_validate(item) for item in latest_labs],
         active_prescriptions=[PrescriptionOut.model_validate(item) for item in active_prescriptions],
+        last_visit=EncounterOut.model_validate(encounters[0]) if encounters else None,
+        visit_count=visit_count,
+        medication_responses=medication_responses,
     )
 
 

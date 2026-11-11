@@ -110,7 +110,7 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 | POST | `/api/v1/patients` | `patient:write` | Creates a synthetic patient. Body `{given_name, family_name, display_name?, date_of_birth?, sex?, blood_type?}`; `sex` is `female|male|other|unknown` (default `unknown`), `blood_type` is the closed ABO/Rh vocabulary or `null`. MRN and `provenance` are server-assigned; the MRN is generated and unique. `201` with `PatientOut`; `400 validation_error` for blank names, future DOB, unknown enum values or extra fields. Audited `patient.create` (metadata only). Doctor/Admin only; Nurse `403`. |
 | DELETE | `/api/v1/patients/{patient_id}` | `patient:delete` | **Admin-only soft delete.** `204` empty body; the patient row gets `deleted_at` and disappears from list/search/detail and appointment reads, while child clinical rows and audit history are retained internally. Unknown/already-deleted id is `404 not_found`. Audited `patient.delete` (metadata only). Doctor/Nurse `403`. |
 | GET | `/api/v1/patients/{patient_id}` | `patient:read` | Demographics. |
-| GET | `/api/v1/patients/{patient_id}/summary` | `patient:read` | Demographics, encounters, active problems, latest labs, active meds **plus the roundup fields below** (additive extension, 2026-10-27). |
+| GET | `/api/v1/patients/{patient_id}/summary` | `patient:read` | Demographics, encounters, active problems, latest labs, active meds **plus** visit/vitals summaries and observed medication-response rows (additive extensions; latest 2026-11-11). |
 | GET | `/api/v1/patients/{patient_id}/encounters` | `patient:read` | Paginated encounter history, newest first; `?limit=`/`?offset=` bounded 1–100; 404 concealment; additive extension, 2026-11-08. |
 | GET | `/api/v1/patients/{patient_id}/labs` | `lab:read` | Paginated. `?limit=` bounded. |
 | GET | `/api/v1/patients/{patient_id}/labs/trends` | `lab:read` | Bounded numeric lab trends; see the 2026-11-04 contract below. |
@@ -125,8 +125,9 @@ By product decision, the UI has no visible demo/synthetic/disclaimer/provenance 
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| GET | `/api/v1/messages` | `message:read` | Own messages only. Query `box=inbox|sent` (default `inbox`), bounded `limit`/`offset`. Newest first. Response is the standard page envelope; each item contains sender/recipient ids and display names, subject, body, `read_at`, and timestamps. |
+| GET | `/api/v1/messages` | `message:read` | Own messages only. Query `box=inbox|sent` (default `inbox`), optional bounded search `q` (1–100 chars; sender/recipient display name, subject or body), and bounded `limit`/`offset`. Newest first. Response is the standard page envelope; each item contains sender/recipient ids and display names, subject, body, `read_at`, and timestamps. Search is always scoped to the caller's own mailbox. |
 | GET | `/api/v1/messages/recipients` | `message:read` | Active, non-deleted Doctor/Admin recipients (the caller is excluded). Returns `{items: [{id, display_name, roles}]}`, bounded to 100. |
+| GET | `/api/v1/messages/counts` | `message:read` | Caller-private counts: `{inbox_total, unread_total, sent_total}`. Never includes another user's mailbox. |
 | POST | `/api/v1/messages` | `message:write` | Body `{recipient_id, subject?, body}`; subject ≤200 chars, body 1–5000 chars. Recipient must be an active Doctor/Admin and cannot be self. `201` with the message; audited `message.send` (metadata only — never subject/body). |
 | POST | `/api/v1/messages/{message_id}/read` | `message:read` | Recipient-only mark-read; `204`, idempotent, another user's/unknown id is `404`. Audited `message.read` (metadata only). |
 
@@ -134,7 +135,9 @@ Messages are internal staff-to-staff records: no attachments, no patient payload
 
 ### Synthetic patient summary payload (`GET /patients/{patient_id}/summary`)
 
-**Change record:** additive extension, 2026-10-27 (wave W, doctor-panel tools).
+**Change record:** additive extension, 2026-10-27 (wave W, doctor-panel tools);
+2026-11-11 adds per-visit BP/vitals, `last_visit`, `visit_count` and bounded
+`medication_responses` (derived observed changes, no new outcome table).
 No existing key was removed or renamed; every list stays bounded by
 `app.services.patients` constants. The MCP `get_patient_summary` tool returns
 the **same keys** (its text strings additionally carry `[truncated]` markers at
@@ -145,9 +148,15 @@ the tool bounds) so the UI and the AI report identical facts.
   "patient": { "id", "mrn", "display_name", "given_name", "family_name",
                "date_of_birth", "sex", "blood_type", "age_years",
                "created_at", "updated_at" },
-  "encounters": [ { …, "weight_kg", "height_cm" } ],
+  "encounters": [ { …, "weight_kg", "height_cm", "systolic_bp",
+                    "diastolic_bp", "heart_rate", "temperature_c",
+                    "oxygen_saturation" } ],
   "vitals": { "weight_kg", "height_cm", "measured_at",
-              "previous_weight_kg", "previous_measured_at" },
+              "previous_weight_kg", "previous_measured_at",
+              "systolic_bp", "diastolic_bp", "heart_rate",
+              "temperature_c", "oxygen_saturation",
+              "previous_systolic_bp", "previous_diastolic_bp",
+              "previous_heart_rate" },
   "diagnoses": [ { "code", "name", "status", "onset_date" } ],
   "active_problems": [ { "code", "display_name", "status", "onset_date" } ],
   "problems": [ … same as active_problems … ],
@@ -157,7 +166,17 @@ the tool bounds) so the UI and the AI report identical facts.
                               "items": [ { "sequence_no", "medication",
                                            "dose_amount", "dose_unit" } ] } ],
   "latest_labs": [ … ],
-  "active_prescriptions": [ { …, "items": [ … ] } ]
+  "active_prescriptions": [ { …, "items": [ … ] } ],
+  "last_visit": { "id", "occurred_at", "encounter_type", "summary", "weight_kg",
+                  "height_cm", "systolic_bp", "diastolic_bp", "heart_rate",
+                  "temperature_c", "oxygen_saturation" },
+  "visit_count": 8,
+  "medication_responses": [ { "prescription_id", "medication", "status",
+                               "started_on", "metric_code", "metric_name", "unit",
+                               "baseline": { "measured_at", "value" },
+                               "follow_up": { "measured_at", "value" },
+                               "current": { "measured_at", "value" },
+                               "delta", "trend", "points": [ … ] } ]
 }
 ```
 
@@ -166,10 +185,18 @@ Semantics of the added fields:
 - `blood_type`: closed ABO/Rh vocabulary (`A+` … `O-`, `unknown`); `null` = not
   recorded. `age_years`: integer **derived from `date_of_birth` on every read**
   (never stored); `null` when no date of birth is recorded.
-- `vitals`: the latest per-visit vitals snapshot (`weight_kg`/`height_cm` are
-  encounter-level, they may drift between visits) plus the previous weight so
-  a trend is visible; `null` when no visit recorded vitals. Per-visit values
-  also appear on each `encounters[]` entry.
+- `vitals`: the latest per-visit vitals snapshot (`weight_kg`, `height_cm`,
+  `systolic_bp`, `diastolic_bp`, `heart_rate`, `temperature_c`,
+  `oxygen_saturation`) plus previous weight/BP/HR readings. Values are
+  encounter-level and may drift between visits; `null` when no visit recorded
+  vitals. Per-visit values also appear on each `encounters[]` entry.
+- `last_visit` / `visit_count`: the newest encounter preview and total
+  non-deleted encounter count. `encounters` is bounded to the newest 8 rows.
+- `medication_responses`: bounded observed before/after values derived from
+  prescriptions plus recorded labs or BP. `trend` is one of `improved`,
+  `worsened`, `stable`, `monitor`, `insufficient_data`; it describes the
+  observed synthetic-data direction and is **not a causal claim**. No new
+  stored outcome table exists.
 - `diagnoses`: the problem list, **active entries first**, then most recent;
   `active_problems`/`problems` are the active subset. `symptoms`/`assessment`/
   `proposed_plan` come from the **most recent clinical note** (`null` when the
@@ -179,6 +206,9 @@ Semantics of the added fields:
   treatment with their `items` (what was actually prescribed, e.g. taper
   steps); `active_prescriptions` keeps the raw rows. Decimal values serialize
   as JSON strings, timestamps as ISO-8601 UTC `Z`.
+- The MCP `get_patient_summary` response carries the same clinical facts plus
+  the compact `last_visit`, `visit_count` and up to three
+  `medication_responses`; it does not add a new MCP tool.
 
 ### Encounter history (`GET /patients/{patient_id}/encounters`)
 
@@ -187,8 +217,10 @@ history for one authorized patient in the standard `Page` envelope
 `{ "items", "total", "limit", "offset" }`. `limit` is 1–100 (default 20),
 `offset` ≥ 0; unknown query parameters are `400 validation_error`. Encounters
 are newest first (`occurred_at DESC, id`), soft-deleted rows are excluded, and
-each item is the existing `EncounterOut` shape (no new fields). Unknown,
-soft-deleted, and inaccessible patient ids are `404 not_found` (concealment).
+each item is the existing `EncounterOut` shape plus the 2026-11-11 vitals
+extension (`systolic_bp`, `diastolic_bp`, `heart_rate`, `temperature_c`,
+`oxygen_saturation`; all nullable for older rows). Unknown, soft-deleted, and
+inaccessible patient ids are `404 not_found` (concealment).
 Requires `patient:read`; each read is audited with the existing `patient.read`
 action and resource type `patient`.
 

@@ -1270,6 +1270,33 @@ Append one dated entry after every completed phase:
 - Verification: frontend smoke **225/225**; render-path **96/96** (including sender portrait resolution, history/filter/clear/role-denial behavior); Docker image rebuilt; live E2E **ALL STEPS PASSED**; served page, chat JS and chat CSS verified; app/db/speech healthy. No backend code or API contract changed.
 - Limitation: the staff directory is fetched in one bounded page (100 accounts); actors beyond that page fall back to initials, and the page never displays staff emails.
 
-## Final instruction to the coding agent
+### 2026-11-11 — Longitudinal patient data, vitals and Outcomes view
+- Status: DONE.
+- Implemented:
+  1. **Schema:** additive nullable `patients.encounter` vitals fields `systolic_bp`, `diastolic_bp`, `heart_rate`, `temperature_c`, `oxygen_saturation` with bounded CHECK constraints; migration `b6c7d8e9f0a1`.
+  2. **Synthetic data:** a deterministic longitudinal seed pass adds six more visits per patient (8–12 total), repeated key-lab panels, explicit baseline/follow-up lab points around mapped prescriptions, and BP/HR/temperature/SpO2 for every visit. Existing rows and prior ids are preserved; the seed remains idempotent and backfills NULL vitals/practitioners.
+  3. **Observed response read model:** `app/services/outcomes.py` derives baseline, follow-up, current, delta and trend from existing prescriptions plus labs or BP. It does not add a duplicate outcome table and explicitly avoids causal claims.
+  4. **API:** the summary adds `last_visit`, `visit_count`, BP/vitals and bounded `medication_responses`; encounters expose the new vitals fields. The MCP `get_patient_summary` surface carries the same compact facts without adding an eighth tool.
+  5. **Frontend:** Summary now shows Last visit, Vitals and an observed treatment-response preview. A new Outcomes tab shows BP/weight/heart-rate charts, full treatment responses and recent visits, using the existing accessible Graphify line-chart primitive; lazy-loaded like the other hidden tabs.
+  6. **Tests/docs:** seed idempotence/counts/backfill, outcomes derivation, summary/MCP shapes, frontend render coverage for the new tab and charts, API/architecture/design docs and this plan entry.
+- Files (primary): `backend/app/models/patient.py`, `backend/migrations/versions/b6c7d8e9f0a1_add_encounter_vitals.py`, `backend/app/schemas/patient.py`, `backend/app/services/outcomes.py`, `backend/app/services/patients.py`, `backend/app/api/v1/patients.py`, `backend/app/mcp/tools.py`, `scripts/seed_demo_data.py`, `backend/tests/test_seed.py`, `backend/tests/test_outcomes.py`, `backend/tests/test_clinical_api.py`, `backend/tests/test_mcp.py`, `frontend/patient.html`, `frontend/assets/js/patient.js`, `frontend/assets/css/styles.css`, `frontend/tests/render-smoke.mjs`, `docs/API.md`, `docs/ARCHITECTURE.md`, `frontend/DESIGN.md`.
+- Verification: backend **614 passed, 5 skipped**; frontend smoke **225/225**, render **97/97**, Graphify **4/4**, Markdown **21/21**, print **8/8**; Docker migration at `b6c7d8e9f0a1`; live seed created **270 visits / 1,016 lab results** and backfilled **167** visits with vitals; live sampled patient showed **12 visits, 6 treatment responses, BP/HR charts**; Docker E2E **ALL STEPS PASSED**; security scan **PASS**.
+- Limitation: treatment response is an observed synthetic-data comparison, not causal evidence; periods with no baseline/follow-up are labelled insufficient/awaiting data.
+
+### 2026-11-11 — Internal Messages UI/UX redesign
+- Status: DONE.
+- Implemented: a dark, responsive two-pane Messages workspace matching the professional MediCore design system:
+  - Header count sourced from caller-private backend totals and unread counts.
+  - Inbox/Sent tabs with real badges, bounded server-side search, message cards with initials, sender/recipient, subject, preview, relative time and unread dots.
+  - Detail pane with sender/recipient header, full timestamp, safe pre-wrapped body, Reply and New message actions.
+  - Mobile reading view with Back to inbox; selected-message state and desktop split layout preserved.
+  - Composer improved with role-labelled recipients, validation, send guard, success/error feedback and no duplicate submission.
+- Backend: added `GET /messages/counts` (caller-private inbox/unread/sent counts) and optional bounded `q` search on `GET /messages` (sender/recipient name, subject or body). Search and counts remain scoped to the authenticated caller; no ownership/API privacy rules changed.
+- Preserved: existing message model, sender derivation from the authenticated session, recipient validation, CSRF, read-only audit metadata, own-inbox/own-sent privacy, and no delete/archive/thread features that the backend does not support.
+- Tests: backend **619 passed, 5 skipped**; frontend smoke **225/225**; render-path **97/97**; live Docker E2E **ALL STEPS PASSED** including message counts/search; security scan **PASS**. Backend message tests cover privacy-scoped counts/search and the full suite remains green.
+- Files (primary): `frontend/messages.html`, `frontend/assets/js/messages.js`, `frontend/assets/css/styles.css`, `frontend/tests/render-smoke.mjs`, `backend/app/api/v1/messages.py`, `backend/app/schemas/message.py`, `backend/tests/test_messages.py`, `docs/API.md`, `frontend/DESIGN.md`.
+- Limitation: messages remain independent records (no threads), unread/mark-read is recipient-only, and there is no archive/delete action because those backend capabilities do not exist. Search is bounded to the caller's own mailbox and page size.
+
+## Final instruction to the coding agent## Final instruction to the coding agent## Final instruction to the coding agent
 
 Start with **Phase 0 only**. Inspect the repository, establish the baseline, and update this file with findings. Then proceed phase by phase. Do not attempt the public deployment before the core application, authorization, synthetic data, tests, and Docker workflow are functioning. Never use real patient data for the public demo, and never claim deployment succeeded without checking the actual public URL.

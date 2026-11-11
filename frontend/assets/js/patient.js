@@ -39,6 +39,7 @@ const state = {
 const tabDataState = {
   labs: false,
   prescriptions: false,
+  outcomes: false,
   aiHistory: null, // Promise | null
 };
 
@@ -273,6 +274,72 @@ function renderDemographics(patient) {
   }
 }
 
+function displayValue(value, suffix = '') {
+  if (value === null || value === undefined || value === '') return 'Not recorded';
+  return `${value}${suffix}`;
+}
+
+function responseTrendLabel(trend) {
+  switch (trend) {
+    case 'improved': return 'Improved';
+    case 'worsened': return 'Worsened';
+    case 'stable': return 'Stable';
+    case 'monitor': return 'Monitoring';
+    default: return 'Awaiting data';
+  }
+}
+
+function responseTrendTone(trend) {
+  if (trend === 'improved') return 'ok';
+  if (trend === 'worsened') return 'alert';
+  if (trend === 'monitor') return 'warn';
+  return 'neutral';
+}
+
+function responseSummaryText(response) {
+  const baseline = response && response.baseline ? response.baseline.value : null;
+  const current = response && response.current ? response.current.value : null;
+  const metric = firstValue(response, ['metric_name', 'metric_code']);
+  return `${metric || 'Lab'}: ${displayValue(baseline)} → ${displayValue(current)}${response && response.unit ? ` ${response.unit}` : ''}`;
+}
+
+function vitalsSummaryNode(vitals) {
+  const value = vitals || {};
+  const items = [
+    ['Weight', value.weight_kg, value.weight_kg ? ' kg' : ''],
+    ['BP', value.systolic_bp != null && value.diastolic_bp != null
+      ? `${value.systolic_bp}/${value.diastolic_bp}`
+      : null, ' mmHg'],
+    ['Heart rate', value.heart_rate, ' bpm'],
+    ['SpO₂', value.oxygen_saturation, '%'],
+  ].filter(([, raw]) => raw !== null && raw !== undefined && raw !== '');
+  if (items.length === 0) return ui.el('p', { class: 'text-muted', text: 'No vitals recorded.' });
+  return ui.el('dl', { class: 'outcome-vitals' }, items.flatMap(([label, raw, suffix]) => [
+    ui.el('dt', { text: label }),
+    ui.el('dd', { text: displayValue(raw, suffix) }),
+  ]));
+}
+
+function responseListNode(responses, { compact = true } = {}) {
+  const rows = asList(responses);
+  if (rows.length === 0) {
+    return ui.el('p', { class: 'text-muted', text: 'No comparable before/after values recorded.' });
+  }
+  return ui.el('div', { class: 'outcome-response-list' }, rows.map((response) => {
+    const trend = firstValue(response, ['trend']) || 'insufficient_data';
+    return ui.el('div', { class: `outcome-response${compact ? ' outcome-response--compact' : ''}` },
+      ui.el('div', { class: 'outcome-response__head' },
+        ui.el('strong', { text: firstValue(response, ['medication']) || 'Medication' }),
+        ui.el('span', { class: `badge badge--${responseTrendTone(trend)}`, text: responseTrendLabel(trend) }),
+      ),
+      ui.el('p', { class: 'outcome-response__values', text: responseSummaryText(response) }),
+      !compact && response.started_on
+        ? ui.el('p', { class: 'field-hint', text: `Started ${ui.displayDate(response.started_on)}` })
+        : null,
+    );
+  }));
+}
+
 function renderSummary(summary) {
   const region = document.getElementById('summary-region');
   ui.clear(region);
@@ -286,6 +353,10 @@ function renderSummary(summary) {
     firstValue(summary, ['active_prescriptions', 'active_medications', 'active_meds', 'medications']) ||
       summary.active_medications
   );
+  const lastVisit = firstValue(summary, ['last_visit']);
+  const vitals = firstValue(summary, ['vitals']);
+  const responses = asList(firstValue(summary, ['medication_responses']));
+  const visitCount = Number.isFinite(Number(summary.visit_count)) ? Number(summary.visit_count) : encounters.length;
 
   const block = (title, contentNode) =>
     ui.el('section', { class: 'summary-block', 'aria-label': title },
@@ -310,8 +381,22 @@ function renderSummary(summary) {
     ? ui.el('ul', { class: 'compact-list' }, activeMeds.map((entry) => ui.el('li', { text: medLabel(entry) })))
     : ui.el('p', { class: 'text-muted', text: 'No active medications recorded.' });
 
+  const lastVisitNode = lastVisit && typeof lastVisit === 'object'
+    ? ui.el('div', { class: 'last-visit' },
+        ui.el('p', { class: 'last-visit__date', text: ui.displayDate(firstValue(lastVisit, ['occurred_at', 'date'])) || 'Date not recorded' }),
+        ui.el('p', { class: 'last-visit__type', text: firstValue(lastVisit, ['encounter_type', 'type']) || 'Visit' }),
+        firstValue(lastVisit, ['summary', 'description'])
+          ? ui.el('p', { class: 'text-muted', text: firstValue(lastVisit, ['summary', 'description']) })
+          : null,
+        ui.el('p', { class: 'field-hint', text: `${visitCount} recorded visit${visitCount === 1 ? '' : 's'}` }),
+      )
+    : ui.el('p', { class: 'text-muted', text: 'No visits recorded.' });
+
   region.append(
     ui.el('div', { class: 'summary-grid' },
+      block('Last visit', lastVisitNode),
+      block('Vitals', vitalsSummaryNode(vitals)),
+      block('Observed treatment response', responseListNode(responses)),
       block('Active problems', problemsNode),
       block('Latest labs', labsNode),
       block('Active medications', medsNode),
@@ -394,6 +479,151 @@ async function renderLabTrends(payload) {
       text: 'Showing the most recent points for each test; older points are outside the chart window.',
     }));
   }
+}
+
+async function renderOutcomes(payload) {
+  const region = document.getElementById('outcomes-region');
+  if (!region) return;
+  ui.clear(region);
+  const summary = payload && payload.summary ? payload.summary : {};
+  const encounterPage = payload && payload.encounters ? payload.encounters : {};
+  const encounters = asList(encounterPage.items);
+  const chronological = [...encounters].reverse();
+  const responses = asList(firstValue(summary, ['medication_responses']));
+
+  const graphify = await loadGraphify();
+  const chartGrid = ui.el('div', { class: 'outcome-chart-grid' });
+  const addChart = (title, description, series, ariaLabel) => {
+    if (!series.length) return;
+    const host = ui.el('div', { class: 'outcome-chart-host' });
+    graphify.renderLineChart(host, {
+      series,
+      ariaLabel,
+      tableCaption: title,
+      valueFormatter: (value) => String(value),
+      dateFormatter: (value) => ui.displayDate(value),
+    });
+    chartGrid.append(
+      ui.el('section', { class: 'outcome-chart' },
+        ui.el('h3', { class: 'outcome-section__title', text: title }),
+        ui.el('p', { class: 'field-hint', text: description }),
+        host,
+      ),
+    );
+  };
+
+  addChart(
+    'Blood pressure',
+    'Systolic and diastolic readings recorded at visits (mmHg).',
+    [
+      {
+        key: 'systolic',
+        label: 'Systolic',
+        className: 'outcome-line outcome-line--systolic',
+        points: chronological
+          .filter((entry) => entry.systolic_bp != null)
+          .map((entry) => ({ x: entry.occurred_at, y: entry.systolic_bp })),
+      },
+      {
+        key: 'diastolic',
+        label: 'Diastolic',
+        className: 'outcome-line outcome-line--diastolic',
+        points: chronological
+          .filter((entry) => entry.diastolic_bp != null)
+          .map((entry) => ({ x: entry.occurred_at, y: entry.diastolic_bp })),
+      },
+    ].filter((series) => series.points.length > 0),
+    'Blood pressure trend across recorded visits',
+  );
+
+  addChart(
+    'Weight',
+    'Per-visit weight snapshot (kg).',
+    [{
+      key: 'weight',
+      label: 'Weight',
+      className: 'outcome-line outcome-line--weight',
+      points: chronological
+        .filter((entry) => entry.weight_kg != null)
+        .map((entry) => ({ x: entry.occurred_at, y: entry.weight_kg })),
+    }].filter((series) => series.points.length > 0),
+    'Weight trend across recorded visits',
+  );
+
+  addChart(
+    'Heart rate',
+    'Per-visit heart rate (bpm).',
+    [{
+      key: 'heart-rate',
+      label: 'Heart rate',
+      className: 'outcome-line outcome-line--heart',
+      points: chronological
+        .filter((entry) => entry.heart_rate != null)
+        .map((entry) => ({ x: entry.occurred_at, y: entry.heart_rate })),
+    }].filter((series) => series.points.length > 0),
+    'Heart rate trend across recorded visits',
+  );
+
+  const visitNode = encounters.length > 0
+    ? ui.el('ol', { class: 'timeline' }, encounters.slice(0, 10).map((encounter) => {
+        const vitals = [
+          encounter.systolic_bp != null && encounter.diastolic_bp != null
+            ? `BP ${encounter.systolic_bp}/${encounter.diastolic_bp}`
+            : null,
+          encounter.weight_kg != null ? `Weight ${encounter.weight_kg} kg` : null,
+          encounter.heart_rate != null ? `HR ${encounter.heart_rate}` : null,
+        ].filter(Boolean).join(' · ');
+        return ui.el('li', { class: 'timeline__item' },
+          ui.el('p', { class: 'timeline__meta' },
+            ui.el('span', { text: ui.formatDate(firstValue(encounter, ['occurred_at'])) || 'Date not recorded' }),
+            firstValue(encounter, ['encounter_type'])
+              ? ui.el('span', { class: 'badge badge--neutral', text: String(firstValue(encounter, ['encounter_type'])) })
+              : null,
+          ),
+          firstValue(encounter, ['summary'])
+            ? ui.el('p', { class: 'timeline__text', text: firstValue(encounter, ['summary']) })
+            : null,
+          vitals ? ui.el('p', { class: 'field-hint', text: vitals }) : null,
+        );
+      }))
+    : ui.el('p', { class: 'text-muted', text: 'No visits recorded.' });
+
+  region.append(
+    ui.el('div', { class: 'outcome-layout' },
+      ui.el('section', { class: 'outcome-section' },
+        ui.el('h3', { class: 'outcome-section__title', text: 'Vitals trend' }),
+        chartGrid,
+      ),
+      ui.el('section', { class: 'outcome-section' },
+        ui.el('h3', { class: 'outcome-section__title', text: 'Medication response' }),
+        ui.el('p', { class: 'field-hint', text: 'Observed change in the recorded values. Not a causal or treatment-efficacy claim.' }),
+        responseListNode(responses, { compact: false }),
+      ),
+      ui.el('section', { class: 'outcome-section' },
+        ui.el('h3', { class: 'outcome-section__title', text: 'Recent visits' }),
+        visitNode,
+      ),
+    ),
+  );
+}
+
+function loadOutcomes() {
+  const region = document.getElementById('outcomes-region');
+  if (!region) return;
+  const id = encodeURIComponent(state.patientId);
+  loadSection(
+    region,
+    cache.keyFor(`/patients/${id}/outcomes`),
+    async () => {
+      const [summary, encounters] = await Promise.all([
+        api.get(`/patients/${id}/summary`),
+        api.get(`/patients/${id}/encounters`, { limit: 100, offset: 0 }),
+      ]);
+      return { summary, encounters };
+    },
+    renderOutcomes,
+    { loadingLabel: 'Loading outcomes' },
+  );
 }
 
 function renderLabs(page) {
@@ -737,6 +967,13 @@ function ensureTabData(tab) {
     if (!tabDataState.prescriptions) {
       tabDataState.prescriptions = true;
       loadPrescriptions();
+    }
+    return;
+  }
+  if (id === 'tab-outcomes') {
+    if (!tabDataState.outcomes) {
+      tabDataState.outcomes = true;
+      loadOutcomes();
     }
     return;
   }

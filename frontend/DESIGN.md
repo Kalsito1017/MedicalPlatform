@@ -1013,20 +1013,28 @@ With JavaScript, the stored/system choice wins and updates live.
 - CSV/print analytics was deferred: it needs its own authorization, audit and
   aggregate-redaction review rather than reusing the patient print path.
 
-## 16. Internal messages (2026-11-09)
+## 16. Internal messages (redesigned 2026-11-11)
 
 - The **Messages** sidebar item appears for Doctor/Admin only, after AI
   Assistant and before Admin. Nurse has no navigation item and receives a
   friendly denial on a direct page visit; every message endpoint re-checks
   `message:read`/`message:write`.
-- The page has Inbox/Sent folder buttons, a message list with sender/recipient,
-  subject, timestamp and unread marker, and a readable detail panel. Selecting
-  an inbox message marks it read through the dedicated endpoint; message bodies
-  render as plain text with preserved line breaks.
-- **New message** opens a compose dialog with an active Doctor/Admin recipient
-  list. The caller cannot message themselves; subject is optional (≤200 chars),
-  body is required (≤5000 chars). No attachments, external delivery, or
-  patient payload fields. Errors preserve the compose input.
+- The Messages content area is a dark, two-pane professional inbox: tabs with
+  real unread counts, a server-backed search field, compact message cards with
+  initials, subject, preview, relative timestamp and unread dot, plus a spacious
+  reading panel with sender/recipient header, full timestamp, safe pre-wrapped
+  body and Reply/New message actions.
+- The header count (`N messages in your inbox`, `N unread`) comes from the
+  caller-private `GET /messages/counts` endpoint; search uses bounded
+  server-side `q` filtering and never downloads the mailbox for browser search.
+- Selecting an inbox message marks it read through the recipient-only endpoint.
+  On mobile the list becomes the first view and selection opens a full-width
+  reading view with a Back to inbox action; desktop keeps both panes.
+- **New message** opens a compose dialog with active Doctor/Admin recipients
+  including role labels. The caller cannot message themselves; subject is
+  optional (≤200 chars), body is required (≤5000 chars). No attachments,
+  external delivery, or patient payload fields. Errors preserve the compose
+  input and sending is guarded against duplicate submission.
 - Only the caller's own inbox/sent items are returned. Message subjects/bodies
   are never written to the audit trail; audit records only sender/recipient
   metadata and the message resource id.
@@ -1092,3 +1100,23 @@ With JavaScript, the stored/system choice wins and updates live.
   neutralizes spreadsheet formulas in text fields.
 - **Hard boundary:** read-only. No command input, shell, SQL console, file or
   environment browser exists, and the footer states the boundary explicitly.
+
+
+## 19. Patient vitals and observed outcomes (2026-11-11)
+
+- **Summary additions:** the summary now opens with Last visit, latest Vitals
+  (weight, BP, heart rate, SpO2), and an “Observed treatment response” preview
+  alongside the existing problems/labs/medications blocks. A response shows a
+  medication, baseline → current value, delta and an Improved/Worsened/Stable/
+  Monitoring/Awaiting-data badge.
+- **Outcomes tab:** a new patient-record tab combines BP, weight and heart-rate
+  line charts with the full observed-response list and recent visits. Charts
+  reuse Graphify’s accessible line primitive: legend toggles, keyboard-focusable
+  points, readout, and a visually hidden table. The tab loads only when opened.
+- **Clinical wording:** values are derived from recorded synthetic labs and
+  vitals. The UI says “observed change” and explicitly avoids claiming that a
+  medication caused the change or that it is treatment advice.
+- **Data growth:** the seed gains six additional visits per patient, repeated
+  key-lab panels, explicit baseline/follow-up points around mapped
+  prescriptions, and per-visit BP/HR/temperature/SpO2. Existing seeded rows are
+  preserved; new rows use a separate longitudinal ID namespace.

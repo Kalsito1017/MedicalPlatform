@@ -66,3 +66,13 @@ class MessageRecipientListOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     items: list[MessageRecipientOut] = Field(max_length=100)
+
+
+class MessageCountsOut(BaseModel):
+    """Caller-private mailbox counts; never includes another user's messages."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    inbox_total: int = Field(ge=0)
+    unread_total: int = Field(ge=0)
+    sent_total: int = Field(ge=0)

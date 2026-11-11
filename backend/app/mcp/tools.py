@@ -93,8 +93,10 @@ from app.schemas.patient import (
     PatientOut,
     PrescriptionOut,
     ProblemOut,
+    TreatmentResponseOut,
 )
 from app.services import labs as labs_service
+from app.services import outcomes as outcomes_service
 from app.services import patients as patients_service
 from app.services import prescriptions as prescriptions_service
 from app.services.access import check_patient_access
@@ -116,6 +118,11 @@ ENCOUNTER_FIELDS = {
     "summary",
     "weight_kg",
     "height_cm",
+    "systolic_bp",
+    "diastolic_bp",
+    "heart_rate",
+    "temperature_c",
+    "oxygen_saturation",
 }
 LAB_FIELDS = {
     "id",
@@ -255,18 +262,26 @@ def _problem_from_diagnosis(diagnosis: Diagnosis) -> ProblemOut:
 
 
 def _vitals_dict(encounters: list[Encounter]) -> dict[str, Any] | None:
-    """Latest per-visit vitals + previous weight from newest-first encounters."""
-    measured = [row for row in encounters if row.weight_kg is not None]
+    """Latest per-visit vitals + previous readings from newest-first encounters."""
+    measured = [row for row in encounters if row.weight_kg is not None or row.systolic_bp is not None]
     if not measured:
         return None
     latest = measured[0]
     previous = measured[1] if len(measured) > 1 else None
     return {
-        "weight_kg": str(latest.weight_kg),
+        "weight_kg": str(latest.weight_kg) if latest.weight_kg is not None else None,
         "height_cm": str(latest.height_cm) if latest.height_cm is not None else None,
         "measured_at": _iso_utc(latest.occurred_at),
-        "previous_weight_kg": str(previous.weight_kg) if previous is not None else None,
+        "previous_weight_kg": str(previous.weight_kg) if previous is not None and previous.weight_kg is not None else None,
         "previous_measured_at": _iso_utc(previous.occurred_at) if previous is not None else None,
+        "systolic_bp": latest.systolic_bp,
+        "diastolic_bp": latest.diastolic_bp,
+        "heart_rate": latest.heart_rate,
+        "temperature_c": str(latest.temperature_c) if latest.temperature_c is not None else None,
+        "oxygen_saturation": latest.oxygen_saturation,
+        "previous_systolic_bp": previous.systolic_bp if previous is not None else None,
+        "previous_diastolic_bp": previous.diastolic_bp if previous is not None else None,
+        "previous_heart_rate": previous.heart_rate if previous is not None else None,
     }
 
 
@@ -379,10 +394,12 @@ async def get_patient_summary(
     """Get the clinical summary for one patient the current user may read.
 
     Includes demographics (blood type, derived age), recent encounters with the
-    per-visit vitals snapshot (weight/height, previous weight for trend),
-    problem-list diagnoses (active first), the latest clinical note's symptoms /
-    assessment / proposed plan, prescribed treatment (active prescriptions with
-    their items), latest lab results per test, and active prescriptions.
+    per-visit vitals snapshot (weight/height plus BP/HR/temperature/SpO2 and
+    previous readings), visit count and last visit, problem-list diagnoses
+    (active first), the latest clinical note's symptoms / assessment / proposed
+    plan, prescribed treatment (active prescriptions with their items), a
+    compact observed treatment-response list, latest lab results per test, and
+    active prescriptions.
     Missing sections are returned as empty lists or null - absence of data is
     real and must be reported as absent, never invented. Proposed treatment is
     what the RECORD says was proposed - never advice.
@@ -408,6 +425,8 @@ async def get_patient_summary(
     encounters = await patients_service.list_encounters(ctx.db, pid, limit=limit)
     latest_labs = await patients_service.list_latest_labs(ctx.db, pid)
     active_prescriptions = await patients_service.list_active_prescriptions(ctx.db, pid)
+    visit_count = await patients_service.count_encounters(ctx.db, pid)
+    medication_responses = await outcomes_service.load_treatment_responses(ctx.db, pid, limit=3)
     diagnoses: list[Diagnosis] = list(getattr(patient, "diagnoses", []) or [])
     latest_note = getattr(patient, "latest_note", None)
     citations = [_citation("patient", patient.id)]
@@ -440,6 +459,12 @@ async def get_patient_summary(
             "proposed_plan": truncate_text(latest_note.proposed_plan) if latest_note is not None else None,
             "prescribed_treatment": [
                 _treatment_dict(row) for row in active_prescriptions
+            ],
+            "last_visit": _dump(EncounterOut, encounters[0], ENCOUNTER_FIELDS) if encounters else None,
+            "visit_count": visit_count,
+            "medication_responses": [
+                _truncate_strings(TreatmentResponseOut.model_validate(item).model_dump(mode="json"))
+                for item in medication_responses
             ],
             "latest_labs": [_dump(LabResultOut, row, LAB_FIELDS) for row in latest_labs],
             "active_prescriptions": [

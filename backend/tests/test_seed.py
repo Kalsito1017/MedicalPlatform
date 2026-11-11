@@ -181,9 +181,10 @@ async def test_seed_is_idempotent(db_engine) -> None:
     assert second["working_hours"] == 10
     assert second["time_off"] == 0
     assert second["appointments"] == 3
-    # Every patient has 2-6 encounters, 6-12 lab results, and 0-5 prescriptions.
-    assert 2 * PATIENT_COUNT <= second["encounters"] <= 6 * PATIENT_COUNT
-    assert 6 * PATIENT_COUNT <= second["lab_results"] <= 12 * PATIENT_COUNT
+    # Every patient has 8-12 encounters (base + longitudinal expansion), 16-40
+    # lab results (repeated panels + response points), and 0-5 prescriptions.
+    assert 8 * PATIENT_COUNT <= second["encounters"] <= 12 * PATIENT_COUNT
+    assert 16 * PATIENT_COUNT <= second["lab_results"] <= 40 * PATIENT_COUNT
     assert 0 < second["prescriptions"] <= 5 * PATIENT_COUNT
     assert "0 created" in stdout
 

@@ -123,6 +123,11 @@
                   <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/></svg>
                   Encounters
                 </button>
+                <button class="tab" type="button" role="tab" id="tab-outcomes"
+                        aria-selected="false" aria-controls="panel-outcomes" tabindex="-1">
+                  <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg>
+                  Outcomes
+                </button>
                 <button class="tab" type="button" role="tab" id="tab-ai-patient"
                         aria-selected="false" aria-controls="panel-ai-patient" tabindex="-1">
                   <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v3"/><path d="M12 18v3"/><path d="M3 12h3"/><path d="M18 12h3"/><path d="m5.6 5.6 2.1 2.1"/><path d="m16.3 16.3 2.1 2.1"/><path d="m18.4 5.6-2.1 2.1"/><path d="m7.7 16.3-2.1 2.1"/></svg>
@@ -136,7 +141,7 @@
                   <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6"/><path d="M9 14h6"/></svg>
                   <div>
                     <h2 class="panel__title">Summary</h2>
-                    <p class="panel__subtitle">Active problems, latest labs, and active medications.</p>
+                    <p class="panel__subtitle">Last visit, vitals, observed treatment response, problems, labs and medications.</p>
                   </div>
                 </div>
                 <div class="panel__body">
@@ -216,6 +221,27 @@
                       <div class="heart-loader heart-loader--md">
                         <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
                         <p class="heart-loader__label">Loading encounters&hellip;</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section class="card panel tab-panel" id="panel-outcomes" role="tabpanel"
+                       aria-labelledby="tab-outcomes" tabindex="0" hidden>
+                <div class="panel__head">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg>
+                  <div>
+                    <h2 class="panel__title">Vitals &amp; outcomes</h2>
+                    <p class="panel__subtitle">Observed BP, weight and treatment-response trends from the record.</p>
+                  </div>
+                </div>
+                <div class="panel__body">
+                  <div id="outcomes-region">
+                    <div class="loading-block">
+                      <div class="heart-loader heart-loader--md">
+                        <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+                        <p class="heart-loader__label">Loading outcomes&hellip;</p>
                       </div>
                     </div>
                   </div>

@@ -331,9 +331,15 @@ async def test_patient_summary_shape_is_bounded_and_typed(
         "assessment",
         "proposed_plan",
         "prescribed_treatment",
+        "last_visit",
+        "visit_count",
+        "medication_responses",
     }
     assert body["patient"]["id"] == str(clinical_data.patient_id)
     assert body["active_problems"] == [] and body["problems"] == []
+    assert body["visit_count"] == 2
+    assert body["last_visit"]["id"] == str(clinical_data.encounter_id)
+    assert body["medication_responses"] == []
 
     # Encounters: newest first, soft-deleted excluded, bounded list.
     assert [e["id"] for e in body["encounters"]] == [
@@ -504,6 +510,14 @@ async def test_summary_extension_fields_are_additive_and_typed(
         "measured_at": "2026-10-01T09:30:00Z",
         "previous_weight_kg": "72.00",
         "previous_measured_at": "2026-09-01T14:00:00Z",
+        "systolic_bp": None,
+        "diastolic_bp": None,
+        "heart_rate": None,
+        "temperature_c": None,
+        "oxygen_saturation": None,
+        "previous_systolic_bp": None,
+        "previous_diastolic_bp": None,
+        "previous_heart_rate": None,
     }
     assert body["encounters"][0]["weight_kg"] == "70.50"
     assert body["encounters"][1]["weight_kg"] == "72.00"

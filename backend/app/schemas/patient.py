@@ -150,6 +150,11 @@ class EncounterOut(BaseModel):
     summary: str
     weight_kg: Decimal | None = None  # per-visit vitals snapshot
     height_cm: Decimal | None = None
+    systolic_bp: int | None = None
+    diastolic_bp: int | None = None
+    heart_rate: int | None = None
+    temperature_c: Decimal | None = None
+    oxygen_saturation: int | None = None
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -242,13 +247,50 @@ class ProblemOut(BaseModel):
 
 
 class VitalsOut(BaseModel):
-    """Latest per-visit vitals snapshot plus the previous weight (trend)."""
+    """Latest per-visit vitals snapshot plus previous readings for trend cues."""
 
     weight_kg: Decimal | None = None
     height_cm: Decimal | None = None
     measured_at: Timestamp | None = None
     previous_weight_kg: Decimal | None = None
     previous_measured_at: Timestamp | None = None
+    systolic_bp: int | None = None
+    diastolic_bp: int | None = None
+    heart_rate: int | None = None
+    temperature_c: Decimal | None = None
+    oxygen_saturation: int | None = None
+    previous_systolic_bp: int | None = None
+    previous_diastolic_bp: int | None = None
+    previous_heart_rate: int | None = None
+
+
+class TreatmentResponsePointOut(BaseModel):
+    """One observed value in a medication-response series."""
+
+    measured_at: Timestamp
+    value: Decimal
+
+
+class TreatmentResponseOut(BaseModel):
+    """Observed before/after values for one prescription/metric pair.
+
+    This is a read-model derivation, not a stored clinical outcome and not a
+    causal claim. ``trend`` describes the direction of the observed values.
+    """
+
+    prescription_id: UUID
+    medication: str
+    status: str
+    started_on: date
+    metric_code: str
+    metric_name: str
+    unit: str | None = None
+    baseline: TreatmentResponsePointOut | None = None
+    follow_up: TreatmentResponsePointOut | None = None
+    current: TreatmentResponsePointOut | None = None
+    delta: Decimal | None = None
+    trend: Literal["improved", "worsened", "stable", "monitor", "insufficient_data"]
+    points: list[TreatmentResponsePointOut] = Field(default_factory=list)
 
 
 class TreatmentItemOut(BaseModel):
@@ -302,6 +344,9 @@ class PatientSummaryOut(BaseModel):
     assessment: str | None = None
     proposed_plan: str | None = None
     prescribed_treatment: list[TreatmentOut] = Field(default_factory=list)
+    last_visit: EncounterOut | None = None
+    visit_count: int = 0
+    medication_responses: list[TreatmentResponseOut] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _derive_sections(self) -> PatientSummaryOut:
@@ -369,7 +414,10 @@ class PatientSummaryOut(BaseModel):
 
 def _vitals_from_encounters(encounters: list[EncounterOut]) -> VitalsOut | None:
     """Latest vitals snapshot + previous weight from newest-first encounters."""
-    measured = [item for item in encounters if item.weight_kg is not None]
+    measured = [
+        item for item in encounters
+        if item.weight_kg is not None or item.systolic_bp is not None
+    ]
     if not measured:
         return None
     latest = measured[0]
@@ -380,4 +428,12 @@ def _vitals_from_encounters(encounters: list[EncounterOut]) -> VitalsOut | None:
         measured_at=latest.occurred_at,
         previous_weight_kg=previous.weight_kg if previous is not None else None,
         previous_measured_at=previous.occurred_at if previous is not None else None,
+        systolic_bp=latest.systolic_bp,
+        diastolic_bp=latest.diastolic_bp,
+        heart_rate=latest.heart_rate,
+        temperature_c=latest.temperature_c,
+        oxygen_saturation=latest.oxygen_saturation,
+        previous_systolic_bp=previous.systolic_bp if previous is not None else None,
+        previous_diastolic_bp=previous.diastolic_bp if previous is not None else None,
+        previous_heart_rate=previous.heart_rate if previous is not None else None,
     )

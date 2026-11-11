@@ -33,7 +33,7 @@ from app.services.prescriptions import list_prescription_items
 
 # Bounds (docs/API.md: "filter parameters are bounded and validated").
 SEARCH_QUERY_MAX_LENGTH = 100
-SUMMARY_ENCOUNTER_LIMIT = 5
+SUMMARY_ENCOUNTER_LIMIT = 8
 SUMMARY_LATEST_LABS_PER_TEST = 2
 SUMMARY_LATEST_LABS_LIMIT = 20
 SUMMARY_ACTIVE_PRESCRIPTIONS_LIMIT = 20
@@ -207,6 +207,20 @@ async def list_encounters(db: AsyncSession, patient_id: uuid.UUID, *, limit: int
                 .limit(limit)
             )
         ).all()
+    )
+
+
+async def count_encounters(db: AsyncSession, patient_id: uuid.UUID) -> int:
+    """Total non-deleted encounters for the summary's visit-count label."""
+    return int(
+        (
+            await db.scalar(
+                select(func.count())
+                .select_from(Encounter)
+                .where(Encounter.patient_id == patient_id, Encounter.not_deleted())
+            )
+        )
+        or 0
     )
 
 

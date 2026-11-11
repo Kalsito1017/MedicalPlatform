@@ -12,10 +12,11 @@ blood group is a closed clinical vocabulary and AI lookups ("what blood type is
 patient X") need unambiguous values. A rare group outside the vocabulary (e.g.
 Bombay phenotype) must be introduced by a migration that widens the CHECK.
 
-Encounter vitals (`weight_kg`, `height_cm`) are a PER-VISIT snapshot, not a
-patient-level attribute: they record what was measured at that visit and so may
-drift slightly between visits. They use Numeric (never float) like every other
-clinical number.
+Encounter vitals (`weight_kg`, `height_cm`, `systolic_bp`, `diastolic_bp`,
+`heart_rate`, `temperature_c`, `oxygen_saturation`) are a PER-VISIT snapshot,
+not patient-level attributes: they record what was measured at that visit and
+so may drift slightly between visits. Clinical numeric values use Numeric
+(never float); BP/HR/SpO2 use bounded SmallInteger columns.
 
 `ClinicalNote` design decision: ONE ROW PER COMPLETE SOAP-STYLE RECORD (not one
 row per SOAP section). Each note carries first-class `symptoms`, `assessment`
@@ -37,6 +38,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Numeric,
+    SmallInteger,
     Text,
     UniqueConstraint,
     Uuid,
@@ -91,6 +93,26 @@ class Encounter(TimestampMixin, SoftDeleteMixin, Base):
         Index("ix_encounter_patient_id_occurred_at", "patient_id", "occurred_at"),
         CheckConstraint("weight_kg IS NULL OR (weight_kg > 0 AND weight_kg < 600)", name="ck_encounter_weight_range"),
         CheckConstraint("height_cm IS NULL OR (height_cm > 0 AND height_cm < 300)", name="ck_encounter_height_range"),
+        CheckConstraint(
+            "systolic_bp IS NULL OR (systolic_bp BETWEEN 60 AND 260)",
+            name="ck_encounter_systolic_bp",
+        ),
+        CheckConstraint(
+            "diastolic_bp IS NULL OR (diastolic_bp BETWEEN 30 AND 160)",
+            name="ck_encounter_diastolic_bp",
+        ),
+        CheckConstraint(
+            "heart_rate IS NULL OR (heart_rate BETWEEN 20 AND 250)",
+            name="ck_encounter_heart_rate",
+        ),
+        CheckConstraint(
+            "temperature_c IS NULL OR (temperature_c BETWEEN 30 AND 45)",
+            name="ck_encounter_temperature",
+        ),
+        CheckConstraint(
+            "oxygen_saturation IS NULL OR (oxygen_saturation BETWEEN 50 AND 100)",
+            name="ck_encounter_oxygen_saturation",
+        ),
         {"schema": SCHEMA},
     )
 
@@ -110,6 +132,11 @@ class Encounter(TimestampMixin, SoftDeleteMixin, Base):
     )
     weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     height_cm: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
+    systolic_bp: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    diastolic_bp: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    heart_rate: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    temperature_c: Mapped[Decimal | None] = mapped_column(Numeric(4, 1), nullable=True)
+    oxygen_saturation: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
 
 
 class Diagnosis(TimestampMixin, SoftDeleteMixin, Base):
