@@ -33,16 +33,27 @@ data:
   CSRF_COOKIE_NAME: "csrf_token"
 
   # --- LLM (optional; the app runs fully without it) ---
-  # The AI features degrade gracefully while LLM_ENABLED=false. To enable:
+  # LLM_ENABLED is omitted: the provider auto-enables when LLM_API_KEY is
+  # present. Set it to "false" only as an explicit kill switch. To enable:
   #   1. put LLM_API_KEY in k8s/secret.yaml (see k8s/secret.example.yaml),
-  #   2. set LLM_ENABLED: "true" here,
-  #   3. kubectl --context docker-desktop apply -f k8s/configmap.yaml
+  #   2. apply this ConfigMap and restart deployment/app.
+  #      kubectl --context docker-desktop apply -f k8s/configmap.yaml
   #      kubectl --context docker-desktop rollout restart deployment/app -n clinical
-  LLM_ENABLED: "false"
   LLM_API_BASE_URL: "https://opencode.ai/inference/go"
-  LLM_MODEL: "mimo-v2.6-pro"
+  LLM_MODEL: "deepseek-v4.1-flash"
   LLM_MAX_TOOL_CALLS: "4"
+  LLM_MAX_TOOL_CALLS_GENERAL: "10"
   LLM_REQUEST_TIMEOUT_SECONDS: "45"
+
+  # --- Appointments / optional voice transcription ---
+  CLINIC_TIMEZONE: "Europe/Sofia"
+  # Empty disables voice (503 on the transcription route); manual scheduling
+  # still works. Point this at a private speech service to enable it.
+  WHISPER_BASE_URL: ""
+  WHISPER_AUTH_MODE: "none"
+  VOICE_MAX_UPLOAD_BYTES: "4194304"
+  VOICE_MAX_DURATION_SECONDS: "60"
+  VOICE_FFMPEG_TIMEOUT_SECONDS: "30"
 
   # --- CORS / transport ---
   # 8081 = the LoadBalancer port on localhost (compose holds :8000; 8080 is

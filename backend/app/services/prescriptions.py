@@ -1,4 +1,4 @@
-"""Prescription data access (synthetic demo data only).
+"""Prescription data access (synthetic data only).
 
 Parameterized, bounded, soft-delete aware. Dose amounts stay `Decimal`
 through serialization (JSON strings — never floats).

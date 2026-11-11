@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Page not found — MediCore Clinical Platform</title>
+  <meta name="description" content="The requested MediCore page could not be found.">
+  <link rel="icon" href="assets/images/favicon.svg">
+  <script>
+    /* Deployment override — see assets/js/config.js. Example:
+       window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
+    window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
+  </script>
+  <script src="assets/js/theme-init.js"></script>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <link rel="modulepreload" href="assets/js/ui.js">
+  <link rel="modulepreload" href="assets/js/theme.js">
+</head>
+<body class="error-page">
+  <div class="error-shell">
+    <header class="error-header">
+      <a class="brand brand--lg" href="dashboard.html" aria-label="MediCore Clinical Platform">
+        <span class="brand__mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 32 32" focusable="false"><path d="M16 7v18M7 16h18" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand__text">
+          <span class="brand__name">MediCore</span>
+          <span class="brand__tag">Clinical Platform</span>
+        </span>
+      </a>
+    </header>
+
+    <main id="main" class="error-main">
+      <section class="error-card" aria-labelledby="error-heading">
+        <img class="error-card__art" src="assets/images/error-404.svg" alt="" aria-hidden="true">
+        <p class="error-card__code">404</p>
+        <h1 id="error-heading">Page not found</h1>
+        <p class="error-card__text">
+          The page you requested does not exist, has moved, or the link is incomplete.
+          Check the address or return to your workspace.
+        </p>
+        <div class="error-card__actions">
+          <a class="btn btn-primary" href="dashboard.html">Go to dashboard</a>
+          <a class="btn btn-secondary" href="index.html">Sign in</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="error-footer">
+      <p class="error-footer__brand">MediCore — Clinical Platform.</p>
+      <button type="button" class="link-button" data-open-about>About</button>
+      <a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a>
+    </footer>
+  </div>
+
+  <script type="module" src="assets/js/error-page.js"></script>
+</body>
+</html>

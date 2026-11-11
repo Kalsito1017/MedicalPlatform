@@ -1,16 +1,17 @@
 // ---------------------------------------------------------------------------
-// patients.html page module — synthetic patient list, search, pagination.
+// patients.html page module — patient list, search, pagination.
 // Endpoint: GET /api/v1/patients?q=&limit=&offset= -> { items, total, limit,
 // offset } (docs/API.md). Empty and missing results are friendly states, never
 // raw errors. Results render as patient cards carrying only real fields:
-// display name, MRN, date of birth, sex, provenance.
+// display name, MRN, date of birth, sex.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
-import * as commandMenu from './command-menu.js';
+import * as commandMenu from './command-menu.js?v=20261109j';
 import * as prefetch from './prefetch.js';
+import { openCreatePatientDialog } from './patient-create.js';
 import * as ui from './ui.js';
 
 const PAGE_SIZE = 20;
@@ -46,7 +47,7 @@ function renderCards(items) {
   return ui.el('div', {
     class: 'patient-cards',
     role: 'region',
-    'aria-label': 'Synthetic patient list',
+    'aria-label': 'Patient list',
     tabindex: '0',
   }, items.map((patient) => ui.renderPatientCard(patient)));
 }
@@ -58,10 +59,10 @@ function renderResults(page) {
 
   if (items.length === 0) {
     ui.renderEmptyState(region, {
-      title: 'No synthetic patients match your search',
+      title: 'No patients match your search',
       message: state.query
-        ? `Nothing in the fictional dataset matches \u201c${state.query}\u201d. Try a shorter term, or clear the search to see everyone.`
-        : 'The fictional dataset is empty for your account. Seed the demo data and reload.',
+        ? `Nothing matches \u201c${state.query}\u201d. Try a shorter term, or clear the search to see everyone.`
+        : 'No patients are recorded for your account yet.',
     });
   } else {
     ui.clear(region);
@@ -75,7 +76,7 @@ function renderResults(page) {
       limit: PAGE_SIZE,
       offset: state.offset,
       count: items.length,
-      itemLabel: 'synthetic patients',
+      itemLabel: 'patients',
       onChange: (nextOffset) => {
         state.offset = nextOffset;
         syncUrl();
@@ -87,8 +88,8 @@ function renderResults(page) {
   const status = document.getElementById('patients-status');
   if (status) {
     status.textContent = state.total === 1
-      ? '1 synthetic patient found.'
-      : `${state.total} synthetic patients found.`;
+      ? '1 patient found.'
+      : `${state.total} patients found.`;
   }
 }
 
@@ -101,8 +102,8 @@ function load() {
   // the background; a cold cache keeps the original loader -> data flow.
   const cached = cache.peek(key);
   if (!cached) {
-    if (status) status.textContent = 'Loading synthetic patients.';
-    ui.renderLoading(region, { label: 'Loading synthetic patients', rows: 6, variant: 'cards' });
+    if (status) status.textContent = 'Loading patients.';
+    ui.renderLoading(region, { label: 'Loading patients', rows: 6, variant: 'cards' });
   }
 
   cache.swr(key, () => api.get('/patients', { q: state.query, limit: PAGE_SIZE, offset: state.offset }), {
@@ -168,20 +169,34 @@ ui.onReady(async () => {
     const user = await auth.initAuthChrome({ active: 'patients' });
     if (!user) return;
     currentUser = user;
-    commandMenu.initCommandMenu({
-      user,
-      commands: [{
-        id: 'search-patients',
-        title: 'Search synthetic patients',
-        hint: 'Focus the patient search box on this page',
-        keywords: 'find filter search patients mrn',
+    const createButton = document.getElementById('patient-new');
+    const canCreate = auth.hasPermission(user, 'patient:write');
+    if (createButton) {
+      createButton.hidden = !canCreate;
+      if (canCreate) createButton.addEventListener('click', () => openCreatePatientDialog());
+    }
+    const commands = [{
+      id: 'search-patients',
+      title: 'Search patients',
+      hint: 'Focus the patient search box on this page',
+      keywords: 'find filter search patients mrn',
+      group: 'Actions',
+      run: () => {
+        const input = document.getElementById('patient-search');
+        if (input && typeof input.focus === 'function') input.focus();
+      },
+    }];
+    if (canCreate) {
+      commands.push({
+        id: 'add-patient',
+        title: 'Add patient',
+        hint: 'Create a new patient record',
+        keywords: 'new create register patient',
         group: 'Actions',
-        run: () => {
-          const input = document.getElementById('patient-search');
-          if (input && typeof input.focus === 'function') input.focus();
-        },
-      }],
-    });
+        run: openCreatePatientDialog,
+      });
+    }
+    commandMenu.initCommandMenu({ user, commands });
   } catch (error) {
     ui.renderErrorState(document.getElementById('patients-region'), error, {
       describe: api.describeApiError,

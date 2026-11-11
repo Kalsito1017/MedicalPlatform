@@ -361,7 +361,7 @@ async def test_bad_arguments_are_controlled_and_never_echo_input(
 
 
 @pytest.mark.postgres
-async def test_tool_call_without_context_is_denied_and_audited() -> None:
+async def test_tool_call_without_context_is_denied_and_audited(migrated_test_db) -> None:
     from app.mcp.server import mcp_server
 
     result = await mcp_server.call_tool(
@@ -428,7 +428,6 @@ async def test_patient_tools_return_bounded_synthetic_data(
     assert summary.ok is True
     data = summary.model_payload["data"]
     assert data["patient"]["id"] == patient_id
-    assert data["patient"]["provenance"] == "synthetic"
     assert "created_at" not in data["patient"]
     assert {item["id"] for item in data["encounters"]} == {
         str(clinical_data.encounter_id),
@@ -671,7 +670,7 @@ async def _add_patients_and_labs(db_engine, clinical_data, token: str):
         session.add(
             Patient(
                 id=gamma_id,
-                mrn=f"DEMO-T{token}G",
+                mrn=f"MRN-T{token}G",
                 display_name=f"Fixture Gamma {token}",
                 given_name="Fixture",
                 family_name=f"Gamma {token}",
@@ -734,7 +733,7 @@ async def test_find_patients_by_lab_abnormal_only_uses_reference_ranges(
     assert rows[1]["matched"] == f"LookupTest {token} 5.8 mmol/L high, 2026-10-02"
     for row in rows:
         assert set(row) == {"patient_id", "display_name", "mrn", "matched"}
-        assert row["mrn"].startswith("DEMO-")
+        assert row["mrn"].startswith("MRN-")
     # Gamma (normal only) and the soft-deleted patient are never listed.
     listed = {row["patient_id"] for row in rows}
     assert str(gamma_id) not in listed
@@ -1038,7 +1037,7 @@ async def test_lookup_tools_permission_denial_and_identity_args(
 
 
 @pytest.mark.postgres
-async def test_lookup_tools_without_context_are_denied_and_audited() -> None:
+async def test_lookup_tools_without_context_are_denied_and_audited(migrated_test_db) -> None:
     from app.mcp.server import mcp_server
     from app.mcp.tools import find_patients_by_lab, find_patients_by_medication
 
@@ -1234,7 +1233,7 @@ async def _add_panel_data(db_engine, *, me_id, other_id, token):
     def patient(key, display, sex, *, dob=None, blood=None, deleted=False):
         return Patient(
             id=ids[key],
-            mrn=f"DEMO-P{token}{key[:2].upper()}",
+            mrn=f"MRN-P{token}{key[:2].upper()}",
             display_name=display,
             given_name="Panel",
             family_name=display,
@@ -1613,7 +1612,7 @@ async def test_panel_row_shape_values_truncation_and_totals(
     alpha = rows[str(patients["alpha"])]
     assert set(alpha) == PANEL_ROW_KEYS
     assert alpha["display_name"].startswith("Panel Alpha ")
-    assert alpha["mrn"].startswith("DEMO-")
+    assert alpha["mrn"].startswith("MRN-")
     assert alpha["age_years"] == 46  # dob 1980-01-15 at the frozen 2026-10-27
     assert alpha["sex"] == "female"
     assert alpha["blood_type"] == "A+"
@@ -1691,7 +1690,6 @@ async def test_summary_extension_fields_are_typed_and_additive(
     # Existing sections are kept (additive-only extension).
     assert {"patient", "encounters", "active_problems", "latest_labs", "active_prescriptions"} <= set(payload)
     assert payload["patient"]["id"] == patient_id
-    assert payload["patient"]["provenance"] == "synthetic"
     assert "created_at" not in payload["patient"]
 
     # New fields: typed and correct against the fixture.
@@ -1703,7 +1701,6 @@ async def test_summary_extension_fields_are_typed_and_additive(
         "measured_at": "2026-10-24T12:00:00Z",
         "previous_weight_kg": "72.00",
         "previous_measured_at": "2026-10-07T12:00:00Z",
-        "provenance": "synthetic",
     }
     # Per-visit vitals also ride on the encounters (trend across visits).
     by_id = {item["id"]: item for item in payload["encounters"]}
@@ -1719,7 +1716,6 @@ async def test_summary_extension_fields_are_typed_and_additive(
         "name": "Type 2 diabetes mellitus",
         "status": "active",
         "onset_date": "2024-05-01",
-        "provenance": "synthetic",
     }
     assert [item["display_name"] for item in payload["active_problems"]] == ["Type 2 diabetes mellitus"]
 
@@ -1740,7 +1736,6 @@ async def test_summary_extension_fields_are_typed_and_additive(
             "medication": "Metformin",
             "dose_amount": "500.000",
             "dose_unit": "mg",
-            "provenance": "synthetic",
         }
     ]
     # Raw prescriptions keep their own items (what was actually prescribed).

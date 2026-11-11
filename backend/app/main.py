@@ -6,7 +6,9 @@ structured logging. Feature routers are registered as later phases land.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import mimetypes
@@ -22,6 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -30,9 +33,15 @@ from app.api.v1 import api_v1
 from app.auth.csrf import CsrfProtectionMiddleware
 from app.auth.identity import resolve_principal
 from app.authorization import policy
-from app.config import Settings, get_settings, setup_logging
+from app.config import (
+    VOICE_MAX_UPLOAD_HARD_LIMIT,
+    Settings,
+    get_settings,
+    setup_logging,
+)
 from app.db.base import dispose_engine
 from app.errors import AppError, RateLimited
+from app.services.voice import VOICE_TRANSCRIPTION_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -113,35 +122,77 @@ class RequestContextMiddleware:
             )
 
 
+class FrontendGZipMiddleware:
+    """GZip static frontend responses only (HTML/CSS/JS/SVG), never API JSON.
+
+    Static assets are the large compressible payloads (the stylesheet alone is
+    ~96 KB); compressing authenticated JSON adds observable CPU latency on the
+    API path and is unnecessary for the small payloads. Paths under /api and
+    /health bypass compression entirely.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+        self.gzip = GZipMiddleware(app, minimum_size=500, compresslevel=3)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            path = scope.get("path", "")
+            if not path.startswith(("/api/", "/health/")):
+                await self.gzip(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
 class BodyTooLarge(Exception):
     """Raised internally when a request body exceeds the configured limit."""
 
 
 class BodySizeLimitMiddleware:
-    """Rejects request bodies larger than max_bytes with the standard envelope.
+    """Rejects request bodies larger than the configured limit.
+
+    The global limit stays at 1 MiB. A strictly bounded per-route allowance
+    exists only for the voice transcription upload: the configured value is
+    clamped to `VOICE_MAX_UPLOAD_HARD_LIMIT` and the match is exact on method +
+    path, so no other route can inherit it.
 
     Oversized input is reported as 400 validation_error so the status/code pair
     stays within the frozen docs/API.md table.
     """
 
-    def __init__(self, app: ASGIApp, max_bytes: int = 1_048_576) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int = 1_048_576,
+        *,
+        route_limits: dict[tuple[str, str], int] | None = None,
+    ) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.route_limits = {
+            (method.upper(), path): min(int(limit), VOICE_MAX_UPLOAD_HARD_LIMIT)
+            for (method, path), limit in (route_limits or {}).items()
+        }
+
+    def _limit_for(self, scope: Scope) -> int:
+        key = (str(scope.get("method", "")).upper(), str(scope.get("path", "")))
+        return self.route_limits.get(key, self.max_bytes)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        limit = self._limit_for(scope)
         headers = Headers(scope=scope)
         content_length = headers.get("content-length")
         if content_length is not None:
             try:
-                if int(content_length) > self.max_bytes:
-                    await self._reject(scope, send)
+                if int(content_length) > limit:
+                    await self._reject(scope, send, limit=limit)
                     return
             except ValueError:
-                await self._reject(scope, send)
+                await self._reject(scope, send, limit=limit)
                 return
 
         received = 0
@@ -151,21 +202,21 @@ class BodySizeLimitMiddleware:
             message = await receive()
             if message["type"] == "http.request":
                 received += len(message.get("body", b""))
-                if received > self.max_bytes:
+                if received > limit:
                     raise BodyTooLarge()
             return message
 
         try:
             await self.app(scope, counting_receive, send)
         except BodyTooLarge:
-            await self._reject(scope, send)
+            await self._reject(scope, send, limit=limit)
 
-    async def _reject(self, scope: Scope, send: Send) -> None:
+    async def _reject(self, scope: Scope, send: Send, *, limit: int) -> None:
         request_id = scope.get("state", {}).get("request_id", "") or str(uuid.uuid4())
         body = {
             "error": {
                 "code": "validation_error",
-                "message": f"Request body exceeds the maximum allowed size of {self.max_bytes} bytes.",
+                "message": f"Request body exceeds the maximum allowed size of {limit} bytes.",
                 "request_id": request_id,
                 "details": {},
             }
@@ -178,11 +229,12 @@ class BodySizeLimitMiddleware:
 # Security headers (Phase 11)
 # ---------------------------------------------------------------------------
 
-# Deny-by-default feature policy: the demo uses no camera, microphone,
-# geolocation, payment, or sensor APIs.
+# Deny-by-default feature policy. The ONLY exception is microphone access for
+# the same origin: the appointment voice recorder uses getUserMedia explicitly
+# after a user action. Camera, geolocation, payment, and sensor APIs stay off.
 PERMISSIONS_POLICY = (
     "accelerometer=(), autoplay=(), camera=(), display-capture=(), encrypted-media=(), "
-    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), "
+    "fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(self), midi=(), "
     "payment=(), picture-in-picture=(), usb=(), xr-spatial-tracking=()"
 )
 
@@ -338,6 +390,7 @@ _MEDIA_TYPES = {
     ".json": "application/json",
     ".svg": "image/svg+xml",
     ".png": "image/png",
+    ".webp": "image/webp",
     ".ico": "image/vnd.microsoft.icon",
     ".webmanifest": "application/manifest+json",
     ".txt": "text/plain; charset=utf-8",
@@ -358,9 +411,9 @@ def frontend_response(request: Request) -> Response | None:
 
     - Existing files are served with explicit media types (extension-less paths
       map to ``<name>.html``, so ``/dashboard`` == ``/dashboard.html``).
-    - Unknown extension-less paths fall back to ``index.html`` for browser
-      navigations (``Accept: text/html``) only — the SPA-safe fallback. API and
-      JSON clients keep the frozen ``404 not_found`` envelope.
+    - Unknown extension-less paths serve the custom ``404.html`` page with a
+      real 404 status for browser navigations (``Accept: text/html``) only. API
+      and JSON clients keep the frozen ``404 not_found`` envelope.
     - Unknown paths with a file extension (assets) are never shadowed: 404.
     - Traversal outside the frontend directory and API/health/docs paths never
       resolve to files.
@@ -390,15 +443,26 @@ def frontend_response(request: Request) -> Response | None:
         html_alias = target.with_suffix(".html")
         if html_alias.is_file():
             return _file_response(html_alias)
-        if _wants_html_navigation(request):
-            return _file_response(root / "index.html")
+        not_found_page = root / "404.html"
+        if _wants_html_navigation(request) and not_found_page.is_file():
+            return _file_response(not_found_page, status_code=404)
     return None
 
 
-def _file_response(path: Path) -> FileResponse:
+def _file_response(path: Path, *, status_code: int = 200) -> FileResponse:
     media_type = _MEDIA_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0]
-    cache_control = "no-cache" if path.suffix.lower() == ".html" else "public, max-age=3600"
-    return FileResponse(path, media_type=media_type, headers={"Cache-Control": cache_control})
+    # Buildless app: HTML, JS and CSS must revalidate so a normal reload picks
+    # up a fix. Images/fonts keep the bounded public cache.
+    suffix = path.suffix.lower()
+    cache_control = (
+        "no-cache" if suffix in {".html", ".js", ".css"} else "public, max-age=3600"
+    )
+    return FileResponse(
+        path,
+        media_type=media_type,
+        status_code=status_code,
+        headers={"Cache-Control": cache_control},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +472,31 @@ def _file_response(path: Path) -> FileResponse:
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", None) or str(uuid.uuid4())
+
+
+async def _record_api_failure(request: Request, *, status: int, code: str) -> None:
+    """Best-effort operational log for a failing request (never the payload).
+
+    Only the method, route template, status and safe error code are recorded;
+    query strings, headers, bodies and exception text never enter the store.
+    """
+    from app.logs.service import record_operational_event
+
+    principal = getattr(request.state, "principal", None)
+    route = request.scope.get("route")
+    route_path = getattr(route, "path", None) or request.url.path
+    await record_operational_event(
+        event_type="system.rate_limited" if status == 429 else "system.api_error",
+        actor_id=getattr(principal, "user_uuid", None),
+        request_id=_request_id(request),
+        outcome="warning" if status == 429 else "error",
+        metadata={
+            "method": request.method,
+            "route": str(route_path)[:120],
+            "http_status": status,
+            "error_code": code,
+        },
+    )
 
 
 def _security_headers(request: Request) -> dict[str, str]:
@@ -447,6 +536,8 @@ def register_exception_handlers(app: FastAPI) -> None:
         headers: dict[str, str] = {}
         if isinstance(exc, RateLimited) and exc.retry_after is not None:
             headers["Retry-After"] = str(exc.retry_after)
+        if exc.status_code >= 500 or isinstance(exc, RateLimited):
+            await _record_api_failure(request, status=exc.status_code, code=exc.code)
         return JSONResponse(
             status_code=exc.status_code,
             content=_envelope(exc.code, exc.message, _request_id(request), exc.details),
@@ -505,6 +596,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         # explicitly.)
         request_id = _request_id(request)
         logger.exception("unhandled exception", extra={"request_id": request_id})
+        await _record_api_failure(request, status=500, code="internal_error")
         return JSONResponse(
             status_code=500,
             content=_envelope("internal_error", "An unexpected error occurred.", request_id),
@@ -517,6 +609,16 @@ def register_exception_handlers(app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _record_startup_event() -> None:
+    from app.logs.service import record_operational_event
+
+    await record_operational_event(
+        event_type="system.startup",
+        outcome="success",
+        metadata={"status": "started"},
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the FastAPI application. Raises ConfigurationError on bad config."""
     settings = settings or get_settings()
@@ -525,13 +627,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("application starting", extra={"app_env": settings.app_env})
+        # Fire-and-forget so an unavailable database can never delay startup.
+        startup_event = asyncio.create_task(
+            _record_startup_event()
+        )
         yield
+        startup_event.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await startup_event
         await dispose_engine()
         logger.info("application stopped")
 
     app = FastAPI(
-        title="Clinical AI Platform (synthetic demo)",
-        description="Synthetic demo data only. Not for clinical use.",
+        title="Clinical AI Platform",
+        description="Clinical records and AI assistant API.",
         version="0.1.0",
         docs_url="/docs" if settings.docs_enabled else None,
         redoc_url="/redoc" if settings.docs_enabled else None,
@@ -555,7 +664,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # runs just inside it so the Phase 11 headers cover every response below.
     # CSRF runs inside CORS so preflight requests are answered before it and so
     # browsers can read the CSRF rejection envelope.
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.request_max_body_bytes)
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        max_bytes=settings.request_max_body_bytes,
+        route_limits={
+            ("POST", VOICE_TRANSCRIPTION_PATH): settings.voice_max_upload_bytes,
+        },
+    )
     app.add_middleware(CsrfProtectionMiddleware, settings=settings)
     app.add_middleware(
         CORSMiddleware,
@@ -567,6 +682,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_age=600,
     )
     app.add_middleware(SecurityHeadersMiddleware, settings=settings, hashes=hashes)
+    # Compress the static frontend (HTML/CSS/JS/SVG) when the client asks for
+    # it; /api and /health responses are deliberately left uncompressed.
+    app.add_middleware(FrontendGZipMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
     app.include_router(health.router)

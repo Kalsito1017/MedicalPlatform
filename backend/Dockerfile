@@ -34,6 +34,12 @@ ENV PYTHONUNBUFFERED=1 \
     PATH="/app/backend/.venv/bin:$PATH" \
     PYTHONPATH=/app/backend
 
+# FFmpeg/FFprobe are required only for the bounded voice transcription route;
+# they run as subprocesses with fixed arguments and timeouts (app/services/voice.py).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 # Non-root process user (no login shell, no sudo).
 RUN groupadd --system --gid 10001 app \
     && useradd --system --uid 10001 --gid app --home-dir /app --no-create-home app

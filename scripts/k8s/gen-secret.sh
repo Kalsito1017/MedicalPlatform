@@ -25,7 +25,7 @@ if [ -e "${OUT}" ] && [ "${FORCE:-0}" != "1" ]; then
 fi
 
 APP_SECRET_KEY="$(openssl rand -base64 48)"
-DB_PASSWORD="$(openssl rand -hex 24)"
+DB_PASSWORD="$(openssl rand -hex 24)" # security-check-allow: random local value generated at runtime, never a literal secret
 DEMO_ADMIN_PASSWORD="$(openssl rand -base64 12)"
 DEMO_DOCTOR_PASSWORD="$(openssl rand -base64 12)"
 DEMO_NURSE_PASSWORD="$(openssl rand -base64 12)"

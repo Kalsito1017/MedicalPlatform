@@ -1,4 +1,4 @@
-"""Patient/encounter data access (synthetic demo data only).
+"""Patient/encounter data access (synthetic data only).
 
 All queries are parameterized ORM statements, bounded, and exclude soft-deleted
 rows. Search terms are matched with escaped ILIKE patterns (wildcards in user
@@ -25,6 +25,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.errors import Conflict
 from app.models.lab import LabResult
 from app.models.medication import Prescription
 from app.models.patient import ClinicalNote, Diagnosis, Encounter, Patient, PatientAssignment
@@ -71,6 +72,69 @@ def like_pattern(term: str) -> str:
     return f"%{escaped}%"
 
 
+PATIENT_MRN_ATTEMPTS = 5
+
+
+def generate_patient_mrn() -> str:
+    """A unique-looking synthetic MRN; the DB unique constraint is the guard."""
+    return f"MRN-{uuid.uuid4().hex[:12].upper()}"
+
+
+async def create_patient(
+    db: AsyncSession,
+    *,
+    given_name: str,
+    family_name: str,
+    display_name: str | None,
+    date_of_birth: date | None,
+    sex: str,
+    blood_type: str | None,
+) -> Patient:
+    """Create one synthetic patient with a server-generated MRN.
+
+    The caller has already validated fields and authorization. Provenance is
+    always set to `synthetic`; it is database-internal and never serialized.
+    """
+    mrn = ""
+    for _ in range(PATIENT_MRN_ATTEMPTS):
+        candidate = generate_patient_mrn()
+        exists = await db.scalar(select(Patient.id).where(Patient.mrn == candidate))
+        if exists is None:
+            mrn = candidate
+            break
+    else:
+        raise Conflict("A unique medical record number could not be allocated.")
+    patient = Patient(
+        id=uuid.uuid4(),
+        mrn=mrn,
+        display_name=display_name or f"{given_name} {family_name}",
+        given_name=given_name,
+        family_name=family_name,
+        date_of_birth=date_of_birth,
+        sex=sex,
+        blood_type=blood_type,
+        provenance="synthetic",
+    )
+    db.add(patient)
+    await db.flush()
+    patient.age_years = age_in_years(patient.date_of_birth)
+    return patient
+
+
+async def soft_delete_patient(db: AsyncSession, patient: Patient) -> bool:
+    """Soft-delete a patient row (Admin-only at the API layer).
+
+    Clinical child rows are retained for audit/history; patient access checks
+    and list/detail queries exclude the row, and appointment joins hide its
+    scheduling entries. No hard delete and no PHI payload in the audit event.
+    """
+    if patient.deleted_at is not None:
+        return False
+    patient.deleted_at = utc_now()
+    await db.flush()
+    return True
+
+
 async def list_patients(
     db: AsyncSession, *, q: str | None, limit: int, offset: int
 ) -> tuple[list[Patient], int]:
@@ -92,6 +156,19 @@ async def list_patients(
     return rows, int(total)
 
 
+async def get_patient_base(db: AsyncSession, patient_id: uuid.UUID) -> Patient | None:
+    """Patient by id (soft-deleted excluded) without summary enrichment.
+
+    The REST demographics endpoint only serializes the patient columns plus the
+    derived `age_years`; the MCP summary and the REST summary need the enriched
+    read model below.
+    """
+    patient = await db.scalar(select(Patient).where(Patient.id == patient_id, Patient.not_deleted()))
+    if patient is not None:
+        patient.age_years = age_in_years(patient.date_of_birth)  # derived, never stored
+    return patient
+
+
 async def get_patient(db: AsyncSession, patient_id: uuid.UUID) -> Patient | None:
     """Patient by id, excluding soft-deleted rows, with summary enrichment.
 
@@ -100,10 +177,9 @@ async def get_patient(db: AsyncSession, patient_id: uuid.UUID) -> Patient | None
     MCP `get_patient_summary`) serializes the same derived facts from one
     source. Unknown/soft-deleted ids return None (concealment).
     """
-    patient = await db.scalar(select(Patient).where(Patient.id == patient_id, Patient.not_deleted()))
+    patient = await get_patient_base(db, patient_id)
     if patient is None:
         return None
-    patient.age_years = age_in_years(patient.date_of_birth)  # derived, never stored
     patient.diagnoses = await list_diagnoses(db, patient_id, limit=SUMMARY_DIAGNOSIS_LIMIT)
     patient.latest_note = await get_latest_note(db, patient_id)
     return patient
@@ -132,6 +208,28 @@ async def list_encounters(db: AsyncSession, patient_id: uuid.UUID, *, limit: int
             )
         ).all()
     )
+
+
+async def list_encounters_page(
+    db: AsyncSession, patient_id: uuid.UUID, *, limit: int, offset: int
+) -> tuple[list[Encounter], int]:
+    """Paginated encounter history for one patient, newest first.
+
+    Used by the printable-record workflow, which must retrieve every available
+    encounter instead of the summary's bounded five-row preview.
+    """
+    base = select(Encounter).where(Encounter.patient_id == patient_id, Encounter.not_deleted())
+    total = (await db.scalar(select(func.count()).select_from(base.subquery()))) or 0
+    rows = list(
+        (
+            await db.scalars(
+                base.order_by(Encounter.occurred_at.desc(), Encounter.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+    )
+    return rows, int(total)
 
 
 async def list_diagnoses(

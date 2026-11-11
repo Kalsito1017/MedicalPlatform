@@ -1,16 +1,17 @@
 """Analytics read API (docs/API.md "Analytics"): one bounded operational overview.
 
 `GET /api/v1/analytics/summary` (analytics:read — Admin only) returns REAL
-aggregates over the synthetic demo dataset computed by
+aggregates over the seeded dataset computed by
 `app.services.analytics` (grouped queries, no N+1, no fabricated numbers). It
-accepts NO query parameters (one call; unknown query parameters are a
-`400 validation_error` like everywhere else) and writes exactly one
-`analytics.read` audit event per request (metadata only — no clinical
-payloads, no secrets).
+accepts optional inclusive UTC `start`/`end` dates (both or neither; default
+last 30 days, maximum 366 days) and writes exactly one `analytics.read` audit
+event per request (metadata only — no clinical payloads, no secrets).
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from datetime import date
+
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.deps import DbSession, RequestId, reject_unknown_query
 from app.audit.logger import write_audit_event
@@ -27,11 +28,13 @@ async def get_analytics_summary(
     request: Request,
     db: DbSession,
     request_id: RequestId,
-    _unknown: None = Depends(reject_unknown_query()),
+    start: date | None = Query(default=None),
+    end: date | None = Query(default=None),
+    _unknown: None = Depends(reject_unknown_query("start", "end")),
     principal: Principal = Depends(require_permission("analytics:read")),
 ) -> AnalyticsSummaryOut:
-    """Aggregated counts, 30-day activity, lab/prescription/staff mixes, AI usage."""
-    payload = await build_summary(db)
+    """Aggregated activity, encounters, appointments, labs, prescriptions, security and AI."""
+    payload = await build_summary(db, start=start, end=end)
     await write_audit_event(
         db,
         actor_user_id=principal.user_uuid,

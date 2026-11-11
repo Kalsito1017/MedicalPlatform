@@ -8,6 +8,7 @@
 import * as overlayHistory from './overlay-history.js';
 import * as prefetch from './prefetch.js';
 import * as sheet from './sheet.js';
+import * as theme from './theme.js';
 
 /* ------------------------------------------------------------------ utils */
 
@@ -31,12 +32,26 @@ export function el(tag, props = {}, ...children) {
     if (key === 'class') node.className = value;
     else if (key === 'text') node.textContent = value;
     else if (key === 'html') node.innerHTML = value; // trusted, app-authored markup only
-    else if (key.startsWith('on') && typeof value === 'function') {
+    else if (key === 'value' && 'value' in node) {
+      // Form controls: keep the live property and the initial attribute in
+      // sync (the Node DOM shim has no default-value reflection).
+      node.value = value === null || value === undefined ? '' : String(value);
+      node.setAttribute('value', node.value);
+    } else if (key.startsWith('on') && typeof value === 'function') {
       node.addEventListener(key.slice(2).toLowerCase(), value);
     } else if (key === 'dataset') {
       for (const [dataKey, dataValue] of Object.entries(value)) {
         node.dataset[dataKey] = dataValue;
       }
+    } else if (BOOLEAN_ATTRIBUTES.has(key)) {
+      // Boolean attributes are true by presence: `disabled="false"` would
+      // still disable the control. Set the property and remove the attribute
+      // when false.
+      const enabled = Boolean(value);
+      const attribute = key === 'readOnly' ? 'readonly' : key;
+      if (enabled) node.setAttribute(attribute, '');
+      else node.removeAttribute(attribute);
+      if (key in node) node[key] = enabled;
     } else {
       node.setAttribute(key, value === true ? '' : String(value));
     }
@@ -141,6 +156,16 @@ export function roleBadge(role) {
 // Inline SVG line icons (24x24, stroke = currentColor). App-authored markup
 // only: no icon fonts, no external sprite sheets, no CDN requests.
 
+const BOOLEAN_ATTRIBUTES = new Set([
+  'disabled',
+  'hidden',
+  'checked',
+  'selected',
+  'required',
+  'multiple',
+  'readOnly',
+]);
+
 const SVG_OPEN =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">';
 
@@ -169,6 +194,7 @@ export const ICONS = {
   calendar: `${SVG_OPEN}<rect x="4" y="5" width="16" height="16" rx="2"/><path d="M8 3v4"/><path d="M16 3v4"/><path d="M4 10h16"/></svg>`,
   mail: `${SVG_OPEN}<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 7 8.5 6 8.5-6"/></svg>`,
   chart: `${SVG_OPEN}<path d="M4 20h16"/><path d="M7 16v-5"/><path d="M12 16V6"/><path d="M17 16v-8"/></svg>`,
+  terminal: `${SVG_OPEN}<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/></svg>`,
 };
 
 /** Inline SVG icon element. Decorative: names are always adjacent text. */
@@ -202,10 +228,73 @@ export function avatarTone(name) {
   return `avatar--${(hash % 6) + 1}`;
 }
 
+const DOCTOR_PORTRAITS = [
+  'assets/images/doctors/doctor-1.jpg',
+  'assets/images/doctors/doctor-2.jpg',
+  'assets/images/doctors/doctor-3.jpg',
+  'assets/images/doctors/doctor-4.jpg',
+];
+
+function stablePortraitIndex(seed) {
+  const text = String(seed || 'doctor');
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) % 9973;
+  }
+  return hash % DOCTOR_PORTRAITS.length;
+}
+
+/** A stable local demo portrait for a doctor identity. */
+export function doctorPortrait(seed) {
+  const text = String(seed || '').toLowerCase();
+  // Keep the seeded demo doctor's portrait aligned with the seeded persona.
+  if (text.includes('георги иванов') || text.includes('georgi ivanov')) {
+    return DOCTOR_PORTRAITS[0];
+  }
+  return DOCTOR_PORTRAITS[stablePortraitIndex(seed)];
+}
+
+/**
+ * Avatar for a staff/user identity. Only users holding the doctor role get a
+ * demo profile picture; nurses/admins keep the initials circle.
+ */
+export function avatarForUser(user, { size = '', label = '' } = {}) {
+  const name = user && (user.display_name || user.email || '?');
+  const isDoctor = Boolean(
+    user && Array.isArray(user.roles) && user.roles.includes('doctor')
+  );
+  return avatar(name, {
+    size,
+    label,
+    photo: isDoctor ? doctorPortrait(`${user.id || ''}|${name}`) : null,
+  });
+}
+
+/** Avatar for a known doctor (e.g. an appointment's doctor display record). */
+export function doctorAvatar(seed, { size = '', label = '' } = {}) {
+  return avatar(seed, { size, label, photo: doctorPortrait(seed) });
+}
+
 /** Colored initials circle (decorative; the display name is always nearby). */
-export function avatar(name, { size = '', label = '' } = {}) {
+export function avatar(name, { size = '', label = '', photo = null } = {}) {
+  const sizeClass = size ? ` avatar--${size}` : '';
+  if (photo) {
+    return el('span', {
+      class: `avatar avatar--photo${sizeClass}`,
+      'aria-hidden': label ? null : 'true',
+      'aria-label': label || null,
+    },
+    el('img', {
+      class: 'avatar__img',
+      src: photo,
+      alt: '',
+      width: '128',
+      height: '128',
+      decoding: 'async',
+    }));
+  }
   return el('span', {
-    class: `avatar ${avatarTone(name)}${size ? ` avatar--${size}` : ''}`.trim(),
+    class: `avatar ${avatarTone(name)}${sizeClass}`.trim(),
     'aria-hidden': label ? null : 'true',
     'aria-label': label || null,
     text: initials(name),
@@ -416,7 +505,7 @@ export function patientName(patient) {
   return (
     firstValueOf(patient, ['display_name', 'name', 'full_name']) ||
     [patient.first_name, patient.last_name].filter(Boolean).join(' ') ||
-    'Synthetic patient'
+    'Patient'
   );
 }
 
@@ -441,8 +530,8 @@ export function patientId(patient) {
 
 /**
  * Dashboard/search patient card: initials avatar, bold name, MRN, date of
- * birth + sex, provenance badge, chevron. Real fields only — no invented
- * vitals, insurers, or visit dates. The whole card is the patient link.
+ * birth + sex, chevron. Real fields only — no invented vitals, insurers, or
+ * visit dates. The whole card is the patient link.
  */
 export function renderPatientCard(patient) {
   const id = patientId(patient);
@@ -457,9 +546,6 @@ export function renderPatientCard(patient) {
     el('p', { class: 'patient-card__name', text: name }),
     el('p', { class: 'patient-card__mrn mono', text: `MRN: ${patientMrn(patient) || 'Not recorded'}` }),
     meta ? el('p', { class: 'patient-card__meta', text: meta }) : null,
-    el('div', { class: 'badge-list' },
-      el('span', { class: 'badge badge--synthetic', text: 'Synthetic demo data' }),
-    ),
   ];
 
   const inner = [
@@ -546,13 +632,35 @@ export function renderErrorState(container, error, { title, onRetry, describe, h
     : { title: 'Something went wrong', message: 'Please try again.', retryable: true };
 
   clear(container);
-  const panel = el('div', { class: 'state-panel state-panel--error', role: 'alert' },
-    el(headingTag, { class: 'state-panel__title', text: title || info.title }),
-    el('p', { class: 'state-panel__text', text: info.message }),
+  const status = error && typeof error === 'object' ? error.status : null;
+  const art =
+    status === 404
+      ? 'assets/images/error-404.svg'
+      : status === 0 || (typeof status === 'number' && status >= 500)
+        ? 'assets/images/error-connection.svg'
+        : null;
+  const body = el('div', { class: 'state-panel__body' },
+    art
+      ? el('img', {
+          class: 'state-panel__art',
+          src: art,
+          alt: '',
+          'aria-hidden': 'true',
+          loading: 'lazy',
+          decoding: 'async',
+        })
+      : null,
+    el('div', { class: 'state-panel__copy' },
+      el(headingTag, { class: 'state-panel__title', text: title || info.title }),
+      el('p', { class: 'state-panel__text', text: info.message }),
+    ),
   );
+  const panel = el('div', {
+    class: `state-panel state-panel--error${art ? ' state-panel--with-art' : ''}`,
+    role: 'alert',
+  }, body);
 
   const actions = el('div', { class: 'state-panel__actions' });
-  const status = error && typeof error === 'object' ? error.status : null;
 
   if (status === 401) {
     actions.append(el('a', { class: 'btn btn-primary', href: 'index.html' }, 'Go to sign in'));
@@ -574,7 +682,7 @@ export function renderErrorState(container, error, { title, onRetry, describe, h
   if (status === 0) {
     showGlobalBanner({
       tone: 'danger',
-      message: 'Backend unreachable — the demo backend did not respond.',
+      message: 'Backend unreachable — the service did not respond.',
       actionLabel: 'Retry',
       onAction: onRetry || null,
     });
@@ -780,7 +888,7 @@ function bindDialogOverlay(dialog) {
   dialog.addEventListener('close', done);
 }
 
-/** Sets the dialog head icon tone (default informational shield). */
+/** Sets the dialog head icon tone (default shield). */
 function setDialogIcon(dialog, { danger = false, glyph = 'shield' } = {}) {
   const iconNode = dialog.querySelector('#app-dialog-icon');
   if (!iconNode) return;
@@ -791,7 +899,9 @@ function setDialogIcon(dialog, { danger = false, glyph = 'shield' } = {}) {
 function closeDialog(dialog, value) {
   // The close is wrapped in a view transition so overlays dismiss with the
   // shared exit transition where the browser supports it (instant fallback).
-  withViewTransition(() => {
+  // Return the transition handle: callers that immediately reuse the same
+  // dialog must wait for its close event (openDialog's close() resolves then).
+  return withViewTransition(() => {
     if (typeof dialog.close === 'function' && dialog.open) dialog.close(value);
     else dialog.removeAttribute('open');
   });
@@ -879,6 +989,11 @@ export function confirmDialog({
  * on open and returns to the opener on close. Body and actions are cleared on
  * close (including Escape) so transient content such as a one-time password
  * never lingers in the DOM. onClose receives the close value.
+ *
+ * The returned `close()` resolves after the native close event, not merely
+ * after scheduling it: callers can safely reuse the shared dialog for a
+ * follow-up modal (e.g. appointment detail -> reschedule form/confirmation)
+ * without the deferred close event clearing the new content.
  */
 export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClose = null, icon: iconGlyph = 'info', danger = false } = {}) {
   if (typeof document === 'undefined') return { dialog: null, close: () => {} };
@@ -905,15 +1020,36 @@ export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClo
       : null;
 
   let finished = false;
+  let resolveClosed;
+  const closed = new Promise((resolve) => {
+    resolveClosed = resolve;
+  });
   const finish = (value) => {
-    if (finished) return;
+    if (finished) return closed;
     finished = true;
     dialog.removeEventListener('close', onCloseEvent);
     clear(body);
     clear(actions);
-    closeDialog(dialog, value);
+    const markClosed = () => {
+      dialog.removeEventListener('close', markClosed);
+      resolveClosed();
+    };
+    if (dialog.open) dialog.addEventListener('close', markClosed);
+    else markClosed();
+    const transition = closeDialog(dialog, value);
+    // Older browsers without <dialog>.close() have no close event; resolve
+    // when the fallback update callback has removed the open attribute.
+    if (
+      typeof dialog.close !== 'function'
+      && transition
+      && transition.updateCallbackDone
+      && typeof transition.updateCallbackDone.finally === 'function'
+    ) {
+      transition.updateCallbackDone.finally(markClosed);
+    }
     if (opener) opener.focus();
     if (typeof onClose === 'function') onClose(value);
+    return closed;
   };
   const onCloseEvent = () => finish(dialog.returnValue);
   dialog.addEventListener('close', onCloseEvent);
@@ -927,8 +1063,8 @@ export function openDialog({ title = '', bodyNodes = [], actionNodes = [], onClo
   return { dialog, close: finish };
 }
 
-/** Read-only informational dialog ("About this demo"). */
-export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
+/** Read-only dialog ("About"). */
+export function infoDialog({ title = 'About', bodyHTML = '' } = {}) {
   if (typeof document === 'undefined') return;
   const dialog = ensureDialogHost();
   dialog.querySelector('#app-dialog-title').textContent = title;
@@ -955,30 +1091,22 @@ export function infoDialog({ title = 'About this demo', bodyHTML = '' } = {}) {
   }
 }
 
-const ABOUT_DEMO_HTML = `
-  <p>This is a public demonstration of a clinical AI platform. It runs entirely on
-  <strong>synthetic, fictional patient data</strong> generated for the demo.</p>
-  <ul>
-    <li>Not clinically validated and not a medical device.</li>
-    <li>No real patient data is used, stored, or displayed anywhere.</li>
-    <li>Nothing here is a diagnosis, treatment recommendation, or clinical decision support.</li>
-    <li>AI-generated answers (when enabled) are labelled as such and may be incomplete.</li>
-    <li>Demo accounts are shared and public; never enter real credentials or real health information.</li>
-  </ul>
+const ABOUT_HTML = `
+  <p><strong>MediCore Clinical Platform</strong> &middot; version 1.0.</p>
   <p>Use the "Report an issue" link in the footer to flag problems. Please do not include
   any personal or health information in a report.</p>
 `;
 
-export function openAboutDemo() {
-  infoDialog({ title: 'About this demo', bodyHTML: ABOUT_DEMO_HTML });
+export function openAbout() {
+  infoDialog({ title: 'About', bodyHTML: ABOUT_HTML });
 }
 
-/** Wires every "About this demo" control in the page footer. */
+/** Wires every "About" control in the page chrome. */
 export function wireFooterDialogs(root) {
   const scope = root || (typeof document !== 'undefined' ? document : null);
   if (!scope) return;
   for (const button of scope.querySelectorAll('[data-open-about]')) {
-    button.addEventListener('click', openAboutDemo);
+    button.addEventListener('click', openAbout);
   }
 }
 
@@ -987,9 +1115,12 @@ export function wireFooterDialogs(root) {
 const NAV_ICONS = {
   dashboard: 'home',
   patients: 'users',
+  appointments: 'calendar',
   ai: 'sparkles',
+  messages: 'mail',
   admin: 'shield',
   analytics: 'chart',
+  logs: 'terminal',
 };
 
 function renderNav(navNode, navItems, activeKey) {
@@ -1010,7 +1141,9 @@ function renderNav(navNode, navItems, activeKey) {
 
 function renderUserArea(host, user, onLogout) {
   clear(host);
+  const themeSwitcher = theme.mountSwitcher();
   if (!user) {
+    if (themeSwitcher) host.append(themeSwitcher);
     host.append(
       el('div', { class: 'user-chip' },
         el('span', { class: 'user-chip__name', text: 'Not signed in' }),
@@ -1023,13 +1156,14 @@ function renderUserArea(host, user, onLogout) {
   const roles = Array.isArray(user.roles) ? user.roles : [];
   const roleText = roles.length > 0 ? roles.map(roleLabel).join(', ') : 'No role assigned';
 
+  if (themeSwitcher) host.append(themeSwitcher);
   host.append(
     el('div', { class: 'role-chip' },
       icon('flask', 'icon--sm'),
       el('span', { text: roleText }),
     ),
     el('div', { class: 'user-chip' },
-      avatar(user.display_name || user.email || '?', { size: 'sm' }),
+      avatarForUser(user, { size: 'sm' }),
       el('div', { class: 'user-chip__text' },
         el('span', { class: 'user-chip__name', text: user.display_name || user.email || 'Signed in' }),
         el('span', { class: 'user-chip__role', text: roleText }),
@@ -1041,7 +1175,7 @@ function renderUserArea(host, user, onLogout) {
       onClick: async () => {
         const confirmed = await confirmDialog({
           title: 'Sign out',
-          message: 'Sign out of the demo? Your session ends and protected pages will require signing in again.',
+          message: 'Sign out? Your session ends and protected pages will require signing in again.',
           confirmLabel: 'Sign out',
           danger: false,
         });

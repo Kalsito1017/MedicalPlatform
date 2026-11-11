@@ -60,7 +60,7 @@ function shortcutsDialog() {
       ui.el('ul', { class: 'shortcut-list' }, shortcuts),
       ui.el('p', {
         class: 'field-hint',
-        text: 'These are all of the keyboard shortcuts in this demo. There are no others.',
+        text: 'These are all of the keyboard shortcuts in this app. There are no others.',
       }),
     ],
     actionNodes: [
@@ -201,7 +201,8 @@ function allCommands() {
       // Destinations keep "Go to …" except when the nav source declares an
       // action-style command label (auth.js: "Open Analytics").
       title: item.commandLabel || `Go to ${item.label}`,
-      hint: item.href,
+      // Navigation entries deliberately omit the destination filename: the
+      // palette is for actions, not for exposing buildless page paths.
       keywords: `navigation page ${item.label}`,
       group: 'Navigation',
       run: () => window.location.assign(item.href),
@@ -214,7 +215,7 @@ function allCommands() {
     commands.push({
       id: `patient-${ui.patientId(patient)}`,
       title: `Go to patient ${name}`,
-      hint: mrn ? `MRN ${mrn}` : 'Synthetic demo data',
+      hint: mrn ? `MRN ${mrn}` : 'Patient record',
       keywords: `patient record ${name} ${mrn || ''}`,
       group: 'Patients',
       patientId: ui.patientId(patient) != null ? String(ui.patientId(patient)) : null,
@@ -229,7 +230,7 @@ function allCommands() {
   commands.push({
     id: 'keyboard-shortcuts',
     title: 'Keyboard shortcuts',
-    hint: 'List every keybinding in this demo',
+    hint: 'List every keybinding in this app',
     keywords: 'help keys keyboard shortcuts',
     group: 'Help',
     run: shortcutsDialog,
@@ -364,7 +365,7 @@ async function loadPatientCommands() {
       const total = Number.isFinite(page && page.total) ? page.total : items.length;
       state.patients = items.slice(0, PATIENT_LIMIT);
       state.patientsNote = total > items.length
-        ? `Showing the first ${items.length} of ${total} synthetic patients \u2014 open the Patients page to search the rest.`
+        ? `Showing the first ${items.length} of ${total} patients \u2014 open the Patients page to search the rest.`
         : '';
       const dialog = document.getElementById('command-menu');
       if (dialog && dialog.open) {

@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>System Logs — MediCore Clinical Platform</title>
+  <meta name="description" content="Admin-only live operational system logs for the MediCore Clinical Platform.">
+  <link rel="icon" href="assets/images/favicon.svg">
+  <script src="assets/js/theme-init.js"></script>
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
+       resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
+  <link rel="modulepreload" href="assets/js/ui.js">
+  <link rel="modulepreload" href="assets/js/api.js">
+  <link rel="modulepreload" href="assets/js/cache.js">
+  <link rel="modulepreload" href="assets/js/auth.js">
+  <link rel="modulepreload" href="assets/js/command-menu.js?v=20261109j">
+  <script>
+    /* Deployment override — see assets/js/config.js. Example:
+       window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
+    window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
+  </script>
+</head>
+<body>
+
+
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar__head">
+        <a class="brand" href="dashboard.html">
+          <span class="brand__mark" aria-hidden="true">
+            <svg width="18" height="18" viewBox="0 0 32 32" focusable="false"><path d="M16 7v18M7 16h18" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+          </span>
+          <span class="brand__text">
+            <span class="brand__name">MediCore</span>
+            <span class="brand__tag">Clinical Platform</span>
+          </span>
+        </a>
+        <button class="nav-toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="site-nav">Menu</button>
+      </div>
+      <nav class="site-nav" id="site-nav" aria-label="Main"></nav>
+      <div class="sidebar__foot">
+        <div class="help-card">
+          <p class="help-card__head">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
+            Need help?
+          </p>
+          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
+          <ul class="help-card__links">
+            <li><button type="button" class="link-button" data-open-about>About</button></li>
+            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
+          </ul>
+        </div>
+      </div>
+    </aside>
+
+    <div class="app-column">
+      <header class="topbar">
+        <button class="btn btn-secondary btn-sm command-trigger" type="button" id="command-menu-button">
+          <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/></svg>
+          Search &amp; commands
+          <kbd class="kbd" data-command-shortcut>Ctrl/&#8984; K</kbd>
+        </button>
+        <div class="user-area" id="user-area"></div>
+      </header>
+
+      <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
+
+      <main id="main" class="container main">
+        <div class="page-header toolbar">
+          <div>
+            <h1>System Logs</h1>
+            <p class="lede">Live application activity and operational event monitoring.</p>
+          </div>
+        </div>
+
+        <div id="page-body">
+          <div class="loading-block" id="logs-loading">
+            <div class="heart-loader heart-loader--md">
+              <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+              <p class="heart-loader__label">Loading system logs&hellip;</p>
+            </div>
+          </div>
+          <div id="logs-status" class="status-region" role="status" aria-live="polite"></div>
+
+          <section class="logs-stats" aria-label="Selected period event counts">
+            <article class="logs-stat"><span class="logs-stat__label">All events</span><strong class="logs-stat__value" id="logs-stat-total">0</strong></article>
+            <article class="logs-stat"><span class="logs-stat__label">Info</span><strong class="logs-stat__value logs-stat__value--info" id="logs-stat-info">0</strong></article>
+            <article class="logs-stat"><span class="logs-stat__label">Success</span><strong class="logs-stat__value logs-stat__value--success" id="logs-stat-success">0</strong></article>
+            <article class="logs-stat"><span class="logs-stat__label">Warning</span><strong class="logs-stat__value logs-stat__value--warning" id="logs-stat-warning">0</strong></article>
+            <article class="logs-stat"><span class="logs-stat__label">Error</span><strong class="logs-stat__value logs-stat__value--error" id="logs-stat-error">0</strong></article>
+            <article class="logs-stat"><span class="logs-stat__label">Security</span><strong class="logs-stat__value logs-stat__value--security" id="logs-stat-security">0</strong></article>
+          </section>
+
+          <section class="card logs-filters" aria-labelledby="logs-filters-heading">
+            <h2 id="logs-filters-heading">Filters</h2>
+            <form id="logs-filter-form" class="logs-filter-form" novalidate>
+              <div class="field"><label for="logs-severity">Severity</label><select id="logs-severity">
+                <option value="">All severities</option><option value="info">Info</option><option value="success">Success</option><option value="warning">Warning</option><option value="error">Error</option><option value="security">Security</option>
+              </select></div>
+              <div class="field"><label for="logs-category">Category</label><select id="logs-category">
+                <option value="">All categories</option><option value="auth">Authentication</option><option value="security">Security</option><option value="patients">Patients</option><option value="encounters">Encounters</option><option value="labs">Laboratories</option><option value="prescriptions">Prescriptions</option><option value="appointments">Appointments</option><option value="ai">AI</option><option value="mcp">MCP</option><option value="voice">Voice</option><option value="administration">Administration</option><option value="system">System</option>
+              </select></div>
+              <div class="field"><label for="logs-range">Period</label><select id="logs-range">
+                <option value="15m">Last 15 minutes</option><option value="1h">Last hour</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="custom">Custom range</option>
+              </select></div>
+              <div class="logs-custom" id="logs-custom" hidden>
+                <div class="field"><label for="logs-start">Start</label><input type="datetime-local" id="logs-start"></div>
+                <div class="field"><label for="logs-end">End</label><input type="datetime-local" id="logs-end"></div>
+              </div>
+              <div class="field"><label for="logs-actor">Actor user ID</label><input id="logs-actor" type="text" autocomplete="off" maxlength="36" placeholder="UUID (optional)"></div>
+              <div class="field"><label for="logs-event-type">Event name</label><input id="logs-event-type" type="text" autocomplete="off" maxlength="100" placeholder="e.g. patient.read"></div>
+              <div class="field"><label for="logs-request-id">Request ID</label><input id="logs-request-id" type="text" autocomplete="off" maxlength="64"></div>
+              <div class="field"><label for="logs-outcome">Outcome</label><select id="logs-outcome"><option value="">All outcomes</option><option value="success">Success</option><option value="denied">Denied</option><option value="error">Error</option><option value="info">Info</option><option value="warning">Warning</option></select></div>
+              <div class="field logs-filter-search"><label for="logs-search">Search approved metadata</label><input id="logs-search" type="search" autocomplete="off" maxlength="100" placeholder="Event, resource type/reference, request ID"></div>
+              <div class="logs-filter-actions">
+                <button class="btn btn-primary btn-sm" type="submit" id="logs-apply">Apply filters</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-reset">Reset</button>
+              </div>
+            </form>
+            <p class="field-error" id="logs-filter-error" role="alert" hidden></p>
+            <p class="text-muted logs-stat-note">Counters reflect all backend events matching the selected period and filters, not just the visible page.</p>
+          </section>
+
+          <section class="card logs-chat" aria-labelledby="logs-terminal-heading">
+            <header class="logs-chat__head">
+              <div class="logs-chat__identity">
+                <span class="logs-chat__avatar" aria-hidden="true">
+                  <img src="assets/images/doctors/doctor-1.jpg" alt="" width="128" height="128" decoding="async">
+                  <img src="assets/images/doctors/doctor-2.jpg" alt="" width="128" height="128" decoding="async">
+                </span>
+                <div class="logs-chat__titles">
+                  <h2 id="logs-terminal-heading">MediCore Activity</h2>
+                  <p class="logs-chat__presence">
+                    <span id="logs-connection" class="logs-connection logs-connection--disconnected">Disconnected</span>
+                    <span id="logs-last-connected">Last connected: not yet</span>
+                    <span class="logs-chat__tz" id="logs-timezone">UTC</span>
+                  </p>
+                </div>
+              </div>
+              <div class="logs-chat__actions">
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-pause" aria-pressed="false">Pause</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-autoscroll" aria-pressed="true">Auto-scroll: on</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-copy-visible">Copy chat</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-export">Export CSV</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="logs-clear">Clear view</button>
+              </div>
+            </header>
+            <div class="chat-feed" id="logs-terminal" role="log" aria-live="polite" aria-relevant="additions text" tabindex="0">
+              <p class="chat-empty" id="logs-empty">Waiting for incoming events&hellip;</p>
+            </div>
+            <footer class="logs-chat__foot">
+              <span id="logs-last-event">Last event: none</span>
+              <button class="link-button" type="button" id="logs-new-indicator" hidden></button>
+              <span class="logs-chat__hint">Read-only monitoring &middot; no shell or command execution</span>
+            </footer>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script type="module" src="assets/js/system-logs.js?v=20261110a"></script>
+</body>
+</html>

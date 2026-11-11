@@ -3,16 +3,16 @@
 `POST /api/v1/ai/ask` accepts two modes over ONE endpoint:
 
 * patient-scoped: body `{"patient_id", "question"}` - one bounded question
-  about one synthetic patient the caller may read,
+  about one patient the caller may read,
 * general lookup: body `{"question"}` - a bounded question across the
-  synthetic patients the caller is authorized to read.
+  patients the caller is authorized to read.
 
 Both modes respond with exactly `{"answer", "used_tools", "citations", "model",
-"ai_generated": true, "disclaimer"}`. `used_tools` lists the MCP tools actually
-called; `citations` reference the synthetic records used
+"ai_generated": true}`. `used_tools` lists the MCP tools actually
+called; `citations` reference the records used
 (patient/encounter/lab/prescription ids) and may span multiple patients in
-general mode; `disclaimer` is the non-clinical-use notice. `question` is always
-1..QUESTION_MAX_CHARS characters and never blank.
+general mode. `question` is always 1..QUESTION_MAX_CHARS characters and never
+blank.
 
 History (`GET/DELETE /api/v1/ai/conversations`) returns the caller's own
 persisted exchanges in the standard pagination envelope
@@ -31,16 +31,11 @@ from app.schemas.common import Timestamp
 
 QUESTION_MAX_CHARS = 2000
 
-DISCLAIMER = (
-    "AI-generated answer based on synthetic demo data. Not a diagnosis, treatment "
-    "recommendation, or validated clinical decision - and not for clinical use."
-)
-
 CitationType = Literal["patient", "encounter", "clinical_note", "lab_result", "prescription"]
 
 
 class Citation(BaseModel):
-    """Reference to one synthetic record used to build the answer."""
+    """Reference to one record used to build the answer."""
 
     type: CitationType
     id: str
@@ -61,14 +56,13 @@ class AskRequest(BaseModel):
 
 
 class AskResponse(BaseModel):
-    """Exact frozen response shape (docs/API.md). Six keys, nothing else."""
+    """Exact frozen response shape (docs/API.md). Five keys, nothing else."""
 
     answer: str
     used_tools: list[str]
     citations: list[Citation]
     model: str
     ai_generated: Literal[True] = True
-    disclaimer: str
 
 
 class ConversationOut(BaseModel):

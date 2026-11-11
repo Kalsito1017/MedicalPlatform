@@ -176,22 +176,27 @@ async def test_duplicate_mrn_rejected(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        session.add(_new_patient("DEMO-DUP-0001"))
+        session.add(_new_patient("MRN-DUP-0001"))
         await session.commit()
-        session.add(_new_patient("DEMO-DUP-0001"))
+        session.add(_new_patient("MRN-DUP-0001"))
         with pytest.raises(IntegrityError):
             await session.commit()
         await session.rollback()
-        await session.execute(sa.delete(Patient).where(Patient.mrn == "DEMO-DUP-0001"))
+        await session.execute(sa.delete(Patient).where(Patient.mrn == "MRN-DUP-0001"))
         await session.commit()
 
 
 @pytest.mark.postgres
-async def test_non_synthetic_mrn_rejected(db_engine) -> None:
+async def test_invalid_mrn_prefix_rejected(db_engine) -> None:
+    """Only the neutral MRN- scheme is accepted; other prefixes are rejected."""
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         session.add(_new_patient("REAL-0001"))
+        with pytest.raises(IntegrityError):
+            await session.commit()
+        await session.rollback()
+        session.add(_new_patient("DEMO-0001"))
         with pytest.raises(IntegrityError):
             await session.commit()
         await session.rollback()
@@ -202,20 +207,20 @@ async def test_soft_delete_filter_excludes_deleted_rows(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        session.add(_new_patient("DEMO-SOFT-0001"))
-        session.add(_new_patient("DEMO-SOFT-0002"))
+        session.add(_new_patient("MRN-SOFT-0001"))
+        session.add(_new_patient("MRN-SOFT-0002"))
         await session.commit()
 
-        deleted = await session.scalar(sa.select(Patient).where(Patient.mrn == "DEMO-SOFT-0001"))
+        deleted = await session.scalar(sa.select(Patient).where(Patient.mrn == "MRN-SOFT-0001"))
         deleted.deleted_at = datetime.now(timezone.utc)
         await session.commit()
 
         visible = (await session.scalars(sa.select(Patient).where(Patient.not_deleted()))).all()
         visible_mrns = {patient.mrn for patient in visible}
-        assert "DEMO-SOFT-0001" not in visible_mrns
-        assert "DEMO-SOFT-0002" in visible_mrns
+        assert "MRN-SOFT-0001" not in visible_mrns
+        assert "MRN-SOFT-0002" in visible_mrns
 
-        await session.execute(sa.delete(Patient).where(Patient.mrn.in_(["DEMO-SOFT-0001", "DEMO-SOFT-0002"])))
+        await session.execute(sa.delete(Patient).where(Patient.mrn.in_(["MRN-SOFT-0001", "MRN-SOFT-0002"])))
         await session.commit()
 
 
@@ -226,7 +231,7 @@ async def test_patient_delete_blocked_when_clinical_rows_exist(db_engine) -> Non
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-FK-0001")
+        patient = _new_patient("MRN-FK-0001")
         session.add(patient)
         await session.flush()
         patient_id = patient.id
@@ -418,7 +423,7 @@ def _new_encounter(patient_id: uuid.UUID, occurred_at: datetime | None = None) -
         patient_id=patient_id,
         occurred_at=occurred_at or datetime(2026, 10, 1, 9, 0, tzinfo=timezone.utc),
         encounter_type="outpatient visit",
-        summary="Synthetic demo encounter for constraint tests. Fictional data, not for clinical use.",
+        summary="Fixture encounter for constraint tests.",
     )
 
 
@@ -427,18 +432,18 @@ async def test_blood_type_check_accepts_abo_and_rejects_free_text(db_engine) -> 
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-BT-0001")
+        patient = _new_patient("MRN-BT-0001")
         patient.blood_type = "A+"
         session.add(patient)
         await session.commit()
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        stored = await session.scalar(sa.select(Patient).where(Patient.mrn == "DEMO-BT-0001"))
+        stored = await session.scalar(sa.select(Patient).where(Patient.mrn == "MRN-BT-0001"))
         assert stored is not None and stored.blood_type == "A+"
-        await session.execute(sa.delete(Patient).where(Patient.mrn == "DEMO-BT-0001"))
+        await session.execute(sa.delete(Patient).where(Patient.mrn == "MRN-BT-0001"))
         await session.commit()
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-BT-0002")
+        patient = _new_patient("MRN-BT-0002")
         patient.blood_type = "O"  # not a valid ABO/Rh combination
         session.add(patient)
         with pytest.raises(IntegrityError):
@@ -451,7 +456,7 @@ async def test_diagnosis_status_check_and_soft_delete_filter(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-DX-0001")
+        patient = _new_patient("MRN-DX-0001")
         session.add(patient)
         await session.commit()
         patient_id = patient.id
@@ -508,7 +513,7 @@ async def test_patient_assignment_uniqueness_and_role_check(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-AS-0001")
+        patient = _new_patient("MRN-AS-0001")
         staff = _new_staff("assignment-test@example.com")
         session.add_all([patient, staff])
         await session.commit()
@@ -549,7 +554,7 @@ async def test_prescription_item_sequence_constraints(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-RX-0001")
+        patient = _new_patient("MRN-RX-0001")
         session.add(patient)
         await session.commit()
         patient_id = patient.id
@@ -604,7 +609,7 @@ async def test_reference_range_sex_check_and_test_code_fk(db_engine) -> None:
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         catalog_row = LabTestCatalog(
-            id=uuid.uuid4(), code="DEMO-TST-X", name="Fictional test", unit="aU",
+            id=uuid.uuid4(), code="MRN-TST-X", name="Fictional test", unit="aU",
             ref_low=Decimal("1"), ref_high=Decimal("2"), category="chemistry",
         )
         session.add(catalog_row)
@@ -612,7 +617,7 @@ async def test_reference_range_sex_check_and_test_code_fk(db_engine) -> None:
         catalog_id = catalog_row.id
         session.add(
             ReferenceRange(
-                id=uuid.uuid4(), test_code="DEMO-TST-X", sex="other",  # not a sex value
+                id=uuid.uuid4(), test_code="MRN-TST-X", sex="other",  # not a sex value
                 ref_low=Decimal("1"), ref_high=Decimal("2"),
             )
         )
@@ -621,7 +626,7 @@ async def test_reference_range_sex_check_and_test_code_fk(db_engine) -> None:
         await session.rollback()
         session.add(
             ReferenceRange(
-                id=uuid.uuid4(), test_code="DEMO-NOPE", sex="any",  # unknown test code
+                id=uuid.uuid4(), test_code="MRN-NOPE", sex="any",  # unknown test code
                 ref_low=Decimal("1"), ref_high=Decimal("2"),
             )
         )
@@ -637,7 +642,7 @@ async def test_specimen_type_check_and_time_coherence(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-SP-0001")
+        patient = _new_patient("MRN-SP-0001")
         session.add(patient)
         await session.commit()
         patient_id = patient.id
@@ -687,7 +692,7 @@ async def test_staff_attribution_set_null_on_staff_delete(db_engine) -> None:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
-        patient = _new_patient("DEMO-ATTR-0001")
+        patient = _new_patient("MRN-ATTR-0001")
         staff = _new_staff("attribution-test@example.com")
         session.add_all([patient, staff])
         await session.flush()
@@ -705,5 +710,5 @@ async def test_staff_attribution_set_null_on_staff_delete(db_engine) -> None:
         stored = await session.scalar(sa.select(Encounter).where(Encounter.id == encounter_id))
         assert stored is not None and stored.practitioner_id is None
         await session.execute(sa.delete(Encounter).where(Encounter.id == encounter_id))
-        await session.execute(sa.delete(Patient).where(Patient.mrn == "DEMO-ATTR-0001"))
+        await session.execute(sa.delete(Patient).where(Patient.mrn == "MRN-ATTR-0001"))
         await session.commit()

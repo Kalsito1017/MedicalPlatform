@@ -11,7 +11,8 @@
 // a touch-events fallback. The drag only starts on the dedicated grab handle
 // (`.sheet-grabber`), so scrolling the command-menu list or typing in the
 // palette input is never hijacked. Vertical drags only: a horizontal-first
-// gesture cancels the drag.
+// gesture cancels the drag. Upward movement past the resting position is
+// rubber-banded with diminishing resistance, then snaps back on release.
 //
 // STYLE-WRITE EXCEPTION (lead pre-authorization, wave UI-B — documented in
 // DESIGN.md and allowlisted in tests/smoke.mjs):
@@ -27,6 +28,12 @@
 // ---------------------------------------------------------------------------
 
 const DISMISS_THRESHOLD_PX = 120;
+const UPWARD_RUBBER_BAND_PX = 28;
+
+/** Diminishing return when the sheet is pulled above its resting position. */
+function rubberBand(distance) {
+  return Math.min(UPWARD_RUBBER_BAND_PX, Math.pow(distance, 0.72));
+}
 
 function supportsPointerEvents() {
   return typeof window !== 'undefined' && typeof window.PointerEvent === 'function';
@@ -83,7 +90,9 @@ export function attachSwipeToDismiss(sheet, { close, handle = null, threshold = 
       if (Math.abs(deltaY) < 4) return;
       axis = 'vertical';
     }
-    dy = deltaY < 0 ? 0 : deltaY;
+    // Upward movement past the resting position gets a rubber-band
+    // resistance; downward movement follows the finger 1:1.
+    dy = deltaY < 0 ? -rubberBand(-deltaY) : deltaY;
     setSheetOffset(dy);
   };
 

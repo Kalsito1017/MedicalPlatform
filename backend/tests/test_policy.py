@@ -21,6 +21,11 @@ from app.errors import Forbidden, Unauthenticated
 # `analytics:read` is declared now for the upcoming analytics page.
 EXPECTED_MATRIX: dict[str, dict[str, bool]] = {
     "patient:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "patient:write": {"doctor": True, "nurse": False, "clinical_admin": True},
+    "patient:delete": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "message:read": {"doctor": True, "nurse": False, "clinical_admin": True},
+    "message:write": {"doctor": True, "nurse": False, "clinical_admin": True},
+    "logs:read": {"doctor": False, "nurse": False, "clinical_admin": True},
     "lab:read": {"doctor": True, "nurse": True, "clinical_admin": True},
     "prescription:read": {"doctor": True, "nurse": True, "clinical_admin": True},
     "staff:read": {"doctor": False, "nurse": False, "clinical_admin": True},
@@ -28,6 +33,13 @@ EXPECTED_MATRIX: dict[str, dict[str, bool]] = {
     "role:assign": {"doctor": False, "nurse": False, "clinical_admin": True},
     "audit:read": {"doctor": False, "nurse": False, "clinical_admin": True},
     "analytics:read": {"doctor": False, "nurse": False, "clinical_admin": True},
+    "appointment:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "appointment:write": {"doctor": True, "nurse": False, "clinical_admin": True},
+    "appointment:manage_availability": {
+        "doctor": True,
+        "nurse": False,
+        "clinical_admin": True,
+    },
 }
 
 
@@ -65,8 +77,23 @@ def test_role_permission_matrix(role: str, permission: str) -> None:
 
 def test_matrix_exactly_matches_expected_sets() -> None:
     expected_sets = {
-        "doctor": {"patient:read", "lab:read", "prescription:read"},
-        "nurse": {"patient:read", "lab:read", "prescription:read"},
+        "doctor": {
+            "patient:read",
+            "patient:write",
+            "message:read",
+            "message:write",
+            "lab:read",
+            "prescription:read",
+            "appointment:read",
+            "appointment:write",
+            "appointment:manage_availability",
+        },
+        "nurse": {
+            "patient:read",
+            "lab:read",
+            "prescription:read",
+            "appointment:read",
+        },
         "clinical_admin": set(EXPECTED_MATRIX),
     }
     assert {role: set(perms) for role, perms in ROLE_PERMISSIONS.items()} == expected_sets

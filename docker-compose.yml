@@ -3,6 +3,7 @@
 # Usage:
 #   docker compose up -d db                 # database only (local uv workflow)
 #   docker compose up --build               # full stack: app on http://localhost:8000
+#   docker compose --profile speech up --build   # + private whisper.cpp speech
 #   docker compose run --rm app python /app/scripts/seed_demo_data.py   # demo seed
 #   docker compose down                    # stop (data persists in postgres_data)
 #   docker compose down -v                 # reset: delete the database volume
@@ -56,6 +57,10 @@ services:
       # false positive for scripts/security_check.py).
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-clinical_demo} # security-check-allow: env-substituted dev-only defaults, no literal secret
       MIGRATION_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-clinical_demo} # security-check-allow: env-substituted dev-only defaults, no literal secret
+      # Optional speech profile. Without it the voice endpoint fails closed
+      # with 503 and manual scheduling keeps working. Override in repo-root
+      # .env when pointing at a different private speech origin.
+      WHISPER_BASE_URL: ${WHISPER_BASE_URL:-http://speech:8080}
     ports:
       - "${APP_PORT:-8000}:8000"
     # Real readiness gating (not just start order): the app container only
@@ -77,6 +82,29 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+      start_period: 20s
+
+  # Optional private speech-to-text service. Start it with
+  #   docker compose --profile speech up --build
+  # and set WHISPER_BASE_URL=http://speech:8080 for the app (see
+  # docs/SPEECH_RECOGNITION.md). No published port: only this compose network
+  # can reach it. The image bakes the checksum-verified Tiny multilingual model.
+  speech:
+    profiles: ["speech"]
+    build:
+      context: .
+      dockerfile: speech/Dockerfile
+    restart: unless-stopped
+    environment:
+      WHISPER_THREADS: ${WHISPER_THREADS:-2}
+      WHISPER_PORT: "8080"
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 6
       start_period: 20s
 
 volumes:

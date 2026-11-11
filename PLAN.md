@@ -62,7 +62,7 @@ Follow these rules throughout the project:
 7. **Do not trust the frontend.** Every protected action must be authorized in the backend.
 8. **Do not trust the LLM with authority.** The model may request a tool call, but the server must independently authenticate, authorize, validate, and audit it.
 9. **Never expose arbitrary SQL tools to the LLM.** MCP tools must be narrow, typed, read-only by default, and restricted to approved operations.
-10. **Use synthetic data only.** Seed data must be fictional and obviously marked as demo data.
+10. **Use synthetic data only.** Seed data must be fictional. The origin marker is database-internal (`provenance`); the visible demo-labeling requirement was superseded by the 2026-10-30 de-marking decision.
 11. **No false completion.** If a command cannot be run, a credential is unavailable, or a test fails, report that fact and give the exact next action.
 12. **No silent skipping.** If a phase is blocked, document the blocker and stop before dependent phases.
 13. **Keep dependencies minimal.** Add packages only when they solve a concrete requirement; pin or lock dependencies appropriately.
@@ -150,11 +150,12 @@ clinical-ai-platform/
 ├── docker-compose.yml
 ├── frontend/
 │   ├── index.html
-│   ├── login.html
 │   ├── dashboard.html
 │   ├── patients.html
 │   ├── patient.html
 │   ├── admin.html
+│   ├── ai.html
+│   ├── analytics.html
 │   ├── assets/
 │   │   ├── css/
 │   │   ├── js/
@@ -199,8 +200,9 @@ Implement the smallest practical role model. Roles do not automatically imply th
 ### Role intent
 
 - **Doctor:** View patient records and clinical data permitted by the configured demo policy; use clinical summary and query workflows.
-- **Nurse:** LEAST PRIVILEGE — clinical read only (`patient:read`, `lab:read`, `prescription:read`). No admin panel, no staff/role/audit access (403 server-side).
-- **Admin:** FULL ACCESS — all permissions: clinical reads plus `staff:read`, `staff:manage`, `role:assign`, `audit:read`, `analytics:read`. Role changes are confirmed, audited, and self-assignment is refused.
+- **Doctor:** clinical reads, patient creation and internal messages (`patient:read`, `patient:write`, `message:read`, `message:write`, `lab:read`, `prescription:read`, `appointment:read`, `appointment:write`, `appointment:manage_availability`).
+- **Nurse:** LEAST PRIVILEGE — clinical read plus read-only clinic appointments (`patient:read`, `lab:read`, `prescription:read`, `appointment:read`). No patient creation, appointment writes/availability, no admin panel, no staff/role/audit access (403 server-side).
+- **Admin:** FULL ACCESS — all permissions: clinical reads, patient/message management, staff/role/audit/analytics, and appointment management. Role changes are confirmed, audited, and self-assignment is refused.
 - ~~**Technical administrator**~~ **REMOVED** (owner decision, 2026-10-26): the role was deleted from the system — policy, database (migration `e8c2a91f4d77`), seed, UI, and docs. *(The original intent — technical settings without clinical access — is superseded by the three-role model above.)*
 
 ### Authorization requirements
@@ -229,10 +231,10 @@ Update the status after each phase. Use `NOT STARTED`, `IN PROGRESS`, `BLOCKED`,
 | 4 | Backend foundation and API conventions | DONE | 2026-10-26 | Error envelope, request-id middleware, pagination bounds, CORS allowlist, body limit, log redaction, 88 tests passing |
 | 5 | Authentication and role authorization | DONE | 2026-10-26 | DB-backed sessions (hashed tokens), argon2id, CSRF bootstrap, rate limiting, principal wiring, 401/403 verified at API layer over full role×endpoint matrix |
 | 6 | Synthetic data and clinical-data APIs | DONE | 2026-10-26 | patients/summary/labs/prescriptions/encounters + staff/roles/audit APIs, audit writer, check_patient_access seam, IDOR/concealment tested, 242 tests passing |
-| 7 | MCP server and tool authorization | DONE | 2026-10-26 | Official mcp SDK Tool/ToolManager in-process (no transport), 4 read-only tools, identity via server-injected ToolContext, per-call re-authorization, audit `mcp.*`, argument-tampering tests pass |
+| 7 | MCP server and tool authorization | DONE | 2026-10-26 | Official mcp SDK Tool/ToolManager in-process (no transport), 4 read-only tools at this phase (7 today), identity via server-injected ToolContext, per-call re-authorization, audit `mcp.*`, argument-tampering tests pass |
 | 8 | LLM integration and safe response handling | DONE | 2026-10-26 | OpenCode OpenAI-compatible provider + NullProvider (503 when off), bounded tool loop with server-side allowlist, prompt-injection labeling, rate limit, mocked-provider tests, no key in browser |
-| 9 | Frontend experience | NOT STARTED | — | |
-| 10 | Admin panel and staff management | NOT STARTED | — | |
+| 9 | Frontend experience | DONE | 2026-11-07 | Landing/sign-in, dashboard, patients, patient detail tabs (including AI Patient), Graphify analytics/lab charts, responsive + accessible states; frontend suites 160 static + 4 Graphify + 21 Markdown + 75 render |
+| 10 | Admin panel and staff management | DONE | 2026-11-07 | Staff table, role grant/revoke with confirmations, activation/deactivation, one-time password modal, audit view, analytics page; role-gated UI backed by server-side authorization |
 | 11 | Audit, privacy, and security hardening | DONE | 2026-10-26 | Security headers + hash-based strict CSP (no unsafe-inline), HSTS-on-HTTPS, audit inventory proven complete (18/18 events), log redaction integration-tested, dependency audit green |
 | 12 | Automated tests and CI | DONE | 2026-10-26 | 310 tests (0 failed) + 74/26 frontend checks; 3-job GH Actions w/ no secrets to fork PRs; dependency audit green after security bumps; live CI run on push verified in Phase 14/15 |
 | 13 | Docker and local end-to-end validation | DONE | 2026-10-26 | Non-root image (292MB, no secrets baked), compose app+db with healthchecks, migrations-on-start, scripts/e2e_smoke.sh 10-step acceptance ALL PASSED incl. log secret scan + restart persistence |
@@ -441,7 +443,7 @@ Names may change to match the repository, but keep behavior clear.
 - [ ] Add not-found behavior that does not leak protected resource existence where policy requires concealment.
 - [ ] Avoid placing patient identifiers or clinical content in URLs beyond what the application design requires; never put them in analytics or third-party logs.
 - [ ] Add deterministic synthetic fixtures for tests.
-- [ ] Add data provenance/demo labels so the UI makes clear the records are fictional.
+- [x] Add data provenance/demo labels so the records' origin is traceable. **Superseded 2026-10-30:** provenance is database-internal and deliberately not shown in the UI.
 
 ## Acceptance criteria
 - [ ] Authorized demo users can search/list synthetic patients.
@@ -525,30 +527,30 @@ Connect the model to approved MCP tools while treating generated output as untru
 Deliver a cohesive, responsive website rather than a set of disconnected test pages.
 
 ## Pages and components
-- [ ] Landing/login page with product name and demo-only notice.
-- [ ] Authenticated dashboard with a clear navigation system.
-- [ ] Patient list/search with loading, empty, error, and pagination states.
-- [ ] Patient detail page with summary, encounters, labs, and prescriptions.
-- [ ] AI assistant panel for questions about the current synthetic patient, if authorized.
-- [ ] User profile/session/logout control.
-- [ ] Admin navigation visible only to authorized roles; backend still enforces all permissions.
-- [ ] Responsive layouts for desktop, tablet, and narrow mobile widths.
-- [ ] Accessible labels, keyboard navigation, visible focus, semantic headings, and sufficient contrast.
-- [ ] Consistent typography, spacing, colors, buttons, tables, cards, and feedback messages.
-- [ ] Confirmation for destructive or high-impact admin actions.
-- [ ] Friendly 401/403/404/500 and offline/backend-unavailable states.
-- [x] Display “Synthetic demo data — not for clinical use” prominently in the app. **DEVIATION (user decision, 2026-10-26): the persistent header banner was removed from all pages at the owner's request.** Disclosure remains in the footer, the "About this demo" dialog, per-record provenance badges, and all documentation; this decision is recorded in the progress log.
-- [ ] Avoid third-party analytics, trackers, and external scripts unless explicitly justified and reviewed.
-- [ ] Do not put clinical data in local storage, analytics events, or browser console logs.
+- [x] Landing/sign-in page (`index.html`) with product name and a dark split hero/sign-in layout; no demo notice (2026-10-30 de-marking).
+- [x] Authenticated dashboard with a clear navigation system.
+- [x] Patient list/search with loading, empty, error, and pagination states.
+- [x] Patient detail page with summary, encounters, labs, prescriptions, and the AI Patient tab.
+- [x] AI Patient tab for questions about the current patient, if authorized.
+- [x] User profile/session/logout control.
+- [x] Admin navigation visible only to authorized roles; backend still enforces all permissions.
+- [x] Responsive layouts for desktop, tablet, and narrow mobile widths.
+- [x] Accessible labels, keyboard navigation, visible focus, semantic headings, and sufficient contrast.
+- [x] Consistent typography, spacing, colors, buttons, tables, cards, and feedback messages.
+- [x] Confirmation for destructive or high-impact admin actions.
+- [x] Friendly 401/403/404/500 and offline/backend-unavailable states.
+- [x] Display “Synthetic demo data — not for clinical use” prominently in the app. **DEVIATION (user decision, 2026-10-26): the persistent header banner was removed from all pages at the owner's request.** **SUPERSEDED (2026-10-30): all remaining product-surface origin labelling and disclaimer copy was removed; disclosure now lives in internal documentation and database provenance only.**
+- [x] Avoid third-party analytics, trackers, and external scripts unless explicitly justified and reviewed.
+- [x] Do not put clinical data in local storage, analytics events, or browser console logs.
 
 ## Acceptance criteria
-- [ ] A user can log in, navigate, search a patient, and inspect permitted synthetic data.
-- [ ] The frontend calls the backend, not the database.
-- [ ] Every interactive control works; no decorative fake buttons.
-- [ ] Layout remains usable on mobile.
-- [ ] Keyboard-only navigation supports primary workflows.
-- [ ] No secrets are bundled into JavaScript.
-- [ ] Unauthorized navigation does not expose protected data even if a user manually opens a page.
+- [x] A user can log in, navigate, search a patient, and inspect permitted synthetic data.
+- [x] The frontend calls the backend, not the database.
+- [x] Every interactive control works; no decorative fake buttons.
+- [x] Layout remains usable on mobile.
+- [x] Keyboard-only navigation supports primary workflows.
+- [x] No secrets are bundled into JavaScript.
+- [x] Unauthorized navigation does not expose protected data even if a user manually opens a page.
 
 ---
 
@@ -596,7 +598,7 @@ Prepare the synthetic demo for public exposure without implying production clini
 - [ ] Verify `.env`, private keys, dumps, and credentials are ignored by git.
 - [ ] Configure safe database network access and least-privilege credentials.
 - [ ] Configure backups if supported; document free-tier persistence and restore limitations.
-- [ ] Add a privacy/demo notice and contact/issue-reporting path appropriate to the project.
+- [ ] Add an issue-reporting/contact path; privacy/demo disclosure is documentation-only (2026-10-30 de-marking).
 - [ ] Document data retention and demo-data reset procedure.
 - [ ] Review the provider's current terms, data location, logs, backups, and LLM provider data policies before sending any non-synthetic information.
 - [ ] Clearly state that real patient data requires a separate security, privacy, legal, clinical, and regulatory review.
@@ -704,7 +706,7 @@ Free-tier conditions can change. Verify current terms at deployment time. Expect
 - [ ] Set API usage limits or a safe feature-off switch to reduce unexpected provider charges.
 - [ ] Configure a custom domain only if the user already owns one or accepts its cost; otherwise use the free provider subdomain.
 - [ ] Review public repository contents and git history for secrets before publishing.
-- [ ] Add a public demo notice and a support/issue-reporting link.
+- [ ] Add a support/issue-reporting link; no public demo notice (2026-10-30 de-marking).
 - [ ] Prepare rollback instructions.
 
 ## Acceptance criteria
@@ -764,7 +766,7 @@ Run this checklist against the **public deployed URL**, not only localhost:
 12. Reload the website and verify data remains available.
 13. Inspect network requests to ensure no database credential, LLM key, or privileged secret reaches the browser.
 14. Check logs and audit events.
-15. Verify the visible synthetic-data and non-clinical-use notice. *(Adjusted for the 2026-10-26 user decision: the header banner is gone; verify the footer + "About this demo" dialog disclosures and per-record provenance badges instead.)*
+15. Verify the visible synthetic-data and non-clinical-use notice. *(Superseded 2026-10-30: verify that no in-app notice exists by design; disclosure is documentation-only.)*
 
 ## Final completion report
 
@@ -964,6 +966,309 @@ Append one dated entry after every completed phase:
 - Acceptance criteria: PASS — owner's presentation rules implemented end-to-end (prompt + renderer); data is Bulgarian with stable identifiers; responsive targets phone/TV/reduced covered and the arrow bug fixed with regression tests.
 - Security notes: markdown renderer treats model output as untrusted (every byte a text node; attribute allowlist value-checked; XSS suite green); localization kept the prompt-injection trigger texts as clearly-fictional Bulgarian untrusted data.
 - Blockers: none. Remaining: the owner's real-browser pass (pixel/contrast/zoom/notch checks), and Phases 14–15 (deployment) per the standing deferral.
+
+### 2026-10-30 — Product de-marking (owner decision)
+- Status: DONE
+- Implemented: removed visible demo/synthetic origin labelling and disclaimer copy from the product surface: provenance badges/pills, `(демо)` display suffixes, footer/About/login/dashboard disclosure copy, AI disclaimer keys/panels, and clinical payload `provenance` keys. The only content-origin label retained is the small **AI-generated** badge on assistant answers. Synthetic origin remains honest and traceable in the database (`patients.patient.provenance`) and internal docs.
+- Files changed: frontend/** (pages, JS renderers, tests, DESIGN.md), backend schemas/serializers, migration `f3b9c2a7e4d1` (MRN prefix `DEMO-`→`MRN-` + seeded-content de-marking), tests.
+- Acceptance criteria: PASS — `frontend/tests/smoke.mjs` enforces the no-demo/no-disclaimer surface rule; frontend render tests verify no origin badge/disclaimer renders while legacy extra API keys are ignored.
+- Security notes: this is presentation/contract reconciliation, not a security control. DB constraints still force `MRN-` identifiers and `provenance = 'synthetic'`; docs retain non-claims and real-data warnings.
+
+### 2026-11-02 — Neutral MRN/de-mark migration
+- Status: DONE
+- Implemented: migration `f3b9c2a7e4d1_rename_mrn_prefix_and_de_mark_content` moves the synthetic-only MRN scheme from `DEMO-` to the neutral `MRN-` prefix, follows the DB CHECK constraint, and de-marks seeded display/note text in place. Stable patient row IDs remain key-derived and do not churn on the rename.
+- Files changed: `backend/migrations/versions/f3b9c2a7e4d1_rename_mrn_prefix_and_de_mark_content.py`, seed/model/tests.
+- Acceptance criteria: PASS — model and seed tests cover the neutral prefix, synthetic provenance invariant, and idempotent re-seed behavior.
+
+### 2026-11-04 — Graphify charts + bounded lab trends + focused AI guardrails
+- Status: DONE
+- Implemented:
+  1. **Graphify** (`frontend/assets/js/graphify.js`): dependency-free interactive SVG primitives (grouped bars, line charts, donut, horizontal bars) with hover/focus readouts, keyboard navigation, legend toggles, `role="img"` summaries, and visually hidden data tables. Used by the admin audit chart and the patient lab-trend chart. No CDN/npm, no `innerHTML`, no style writes (CSP/static-hygiene tests intact).
+  2. **Patient lab trends**: additive `GET /api/v1/patients/{patient_id}/labs/trends?days=365&tests=K,GLU` — `lab:read`, `check_patient_access`, 404 concealment, one metadata-only `labs.read` audit event. Numeric non-deleted labs only; max 5 series and 50 most-recent points per series returned ascending; decimal strings; per-point `high|low|normal|unclassified` flag from the point's own ref bounds; `truncated` reports point/series bounds. No name/MRN/DOB/free text in the response.
+  3. **Focused AI guardrails** (`backend/app/llm/guardrails.py` + `llm/loop.py` + `api/v1/ai.py`): deterministic input blocks for prompt/credential/SQL/shell/filesystem/database/bypass requests; patient mode restricted to the three single-patient tools with the exact verified patient_id; model-facing payload minimization (drops MRN/DOB/unnecessary FKs, retains clinical facts and citation IDs); output blocks secrets/DSNs/tokens/private keys, external URLs, raw HTML/script/event handlers, internal prompt/config text, and unauthorized citation IDs. Blocks are fail-closed generic `403 forbidden`, metadata-only `ai.ask` denial, no history/idempotency persistence, no prompt/answer logging.
+  4. Docs reconciled to tested code: seven MCP tools, `LLM_MAX_TOOL_CALLS_GENERAL=10` clamp1..20, five-key AI response (no `disclaimer`), database-internal provenance, and `docs/AI_GUARDRAILS.md` maps the focused controls to the patient-data guardrail baseline without compliance claims.
+- Files changed: `frontend/assets/js/{graphify,analytics,patient}.js`, `frontend/patient.html`, `frontend/assets/css/styles.css`, `frontend/tests/{graphify.test.mjs,render-smoke.mjs,domshim.mjs}`, `.github/workflows/ci.yml`, `backend/app/services/labs.py`, `backend/app/schemas/patient.py`, `backend/app/api/v1/patients.py`, `backend/app/llm/{guardrails,loop}.py`, `backend/app/api/v1/ai.py`, `backend/tests/{test_lab_trends,test_llm_guardrails,test_ai_api,test_llm,test_mcp,test_seed,test_permissions_api}.py`, `docs/{API,ARCHITECTURE,SECURITY,BACKLOG,CONCEPT,DEPLOYMENT,KUBERNETES,TROUBLESHOOTING}.md`, `docs/AI_GUARDRAILS.md`, `README.md`, `.env.example`, `k8s/configmap.yaml`, `scripts/e2e_smoke.sh`, `scripts/k8s/gen-secret.sh`, `PLAN.md`.
+- Commands run: `uv run pytest -q` → **146 passed, 302 skipped** (Postgres-backed cases skip because no local DB/Docker daemon); `uv run ruff check .` clean; frontend **160/160** static + **3/3** Graphify + **21/21** Markdown + **74/74** render scenarios; `python3 scripts/security_check.py` → **PASS (6 sections, 0 findings)**; `bash -n` on edited shell scripts clean. Docker/live e2e not run because the Docker daemon is unavailable in this environment.
+- Acceptance criteria: PASS for locally verifiable behavior — charts are interactive/accessible and CSP-safe; trend data is bounded/minimized and uses the existing abnormal rule; guardrails fail closed and cannot widen the seven-tool read-only MCP boundary; success response shape remains frozen.
+- Security notes: guardrails are supplementary deterministic controls, not the security boundary. Patient mode cannot call cross-patient lookup tools; general mode remains unchanged. No prompt/question/answer/clinical payload is logged or audited. Real-data release gates (care-relationship policy, RLS/DB identities, retention/deletion, incident response, provider/legal review, penetration/clinical validation) remain open in `docs/AI_GUARDRAILS.md`/`docs/BACKLOG.md`.
+- Blockers: local Postgres/Docker unavailable, so DB-backed integration and `scripts/e2e_smoke.sh` must run in CI or an environment with the documented stack before production claims.
+
+### 2026-11-07 — AI Patient tab, per-test lab summary, landing redesign
+- Status: DONE
+- Implemented:
+  1. **AI Patient tab** (`frontend/patient.html`, `patient.js`, `styles.css`): moved the patient AI assistant out of the right-hand rail into a fifth patient-record tab after Encounters, labelled **AI Patient**. The tab shows a patient context line (name + MRN), keeps the existing patient-scoped `ai/ask` request, patient-filtered history, quick actions, composer, loading/cancel/503/429/error states, and permission gating. The old two-column patient layout and sticky rail styles were removed. Command-menu actions ("Summarize this patient", "Ask AI about this patient", suggestion chips) now activate the AI Patient tab before filling/focusing/sending.
+  2. **Lab Results Summary** (`frontend/assets/js/graphify.js`, `patient.js`, `styles.css`, `patient.html`): replaced the single mixed-unit trend chart with a responsive grid of per-test chart cards. Each card has its own Y scale and unit, a green shaded recorded-reference band (`ref_low`–`ref_high`), a target note derived from those bounds, value labels on data points, clean date ticks, flag-coloured points, hover/focus readouts, and a hidden data table. Dense series label the latest and abnormal points; the full paginated lab table remains below the summary. No backend/API change.
+  3. **Landing page** (`frontend/index.html`, `assets/js/login.js`, `styles.css`): rebuilt the sign-in page as a full-viewport dark hero with a CSP-safe ambient clinical background (layered gradients/light streaks; no external asset requests), MediCore brand lockup, large "MediCore — Clinical Platform" headline, value proposition, translucent sign-in card with email/password field icons, an accessible show/hide-password button, full-width Sign in action, footer "About MediCore"/"Report an issue", and the honest security line "Role-based access with server-side audit logging." No HIPAA/compliance claim was added. The image generator was unavailable (account funds), so the background is CSS-only rather than a generated photo.
+- Files changed: `frontend/patient.html`, `frontend/index.html`, `frontend/assets/js/{patient,graphify,login}.js`, `frontend/assets/css/styles.css`, `frontend/tests/{graphify.test.mjs,smoke.mjs,render-smoke.mjs}`, `frontend/DESIGN.md`, `README.md`, `docs/{SECURITY,BACKLOG,ARCHITECTURE,CONCEPT}.md`, `backend/tests/{test_ai_api,test_clinical_api,test_mcp,test_seed}.py`, `PLAN.md`.
+- Commands run: `node tests/smoke.mjs` → **160/160**; `node tests/graphify.test.mjs` → **4/4**; `node tests/markdown.test.mjs` → **21/21**; `node tests/render-smoke.mjs` → **75/75**; `uv run pytest -q` → **447 passed, 1 skipped** against a live PostgreSQL test database; `uv run ruff check .` clean.
+- Test reconciliation: the now-runnable Postgres suite exposed stale de-marking expectations that had been skipped before. Updated DB-backed tests to the shipped contract: removed serialized `provenance` assertions (provenance remains database-internal), changed test MRNs to the `MRN-` constraint, fixed the patient-scope tool-call assertion (the mismatched call is blocked before MCP), and replaced the removed note-body disclaimer expectation with an absence check.
+- Acceptance criteria: PASS for locally verifiable behavior — AI Patient is a real fifth tab and remains scoped to the URL patient; each lab test gets its own chart, unit, reference band, target note, and value labels; the landing page matches the requested split-hero/sign-in composition without external requests or compliance claims.
+- Notes: Purely frontend/presentation work. The backend contract, seven-tool MCP boundary, and patient-scoped AI guardrails are unchanged.
+
+### 2026-11-07 — Clinical motion system
+- Status: DONE
+- Implemented: a shared motion layer in `frontend/assets/css/styles.css` with `--motion-fast/base/exit/stagger`, `--ease-out`, and `--ease-in-out` tokens. Applied ease-out entrances, 200ms dropdown/palette timing, 30ms list-row staggering, 0.97 press scale (0.985 for large cards), 12% chart/loader stretch, detail-settle cascades, success pulse for restore toasts, ease-in-out moves, 0.95 popover origin, trigger-anchored palette/nav/sheet entrances, explicit shorter exits, overlapping view transitions for record panels and the command palette, a masked tab-underline reveal, blurred icon crossfade for the password toggle, and rubber-band resistance when a bottom sheet is pulled above rest. No bounce, no held-state tweening, and the only animated properties are transform/opacity/filter (the mobile nav disclosure is the one isolated layout transition). All motion is disabled under `prefers-reduced-motion`, and the `--sheet-dy` style-write exception remains the only inline style write.
+- Intentional omission: no arc movement. The only draggable object is the sheet grabber, which must track the finger directly; adding an arc would break direct manipulation. There is no progress-slider knob, so the 12% stretch is applied to the existing heart loader and Graphify marks.
+- Files changed: `frontend/assets/css/styles.css`, `frontend/assets/js/{sheet,toast,admin}.js`, `frontend/tests/{smoke.mjs,render-smoke.mjs}`, `frontend/DESIGN.md`, `PLAN.md`.
+- Commands run: `node tests/smoke.mjs` → **161/161**; `node tests/graphify.test.mjs` → **4/4**; `node tests/markdown.test.mjs` → **21/21**; `node tests/render-smoke.mjs` → **75/75**; `git diff --check` clean.
+- Acceptance criteria: PASS — the motion is short, professional, accessible, and transform-only where possible; the new sheet rubber-band test and the password-toggle crossfade test are covered.
+
+### 2026-11-07 — Performance pass (frontend, API, PostgreSQL)
+- Status: DONE
+- Baseline method: authenticated `httpx` loop against the Docker app (`http://localhost:8000`, 30 measured requests per endpoint after warm-up), plus an in-process ASGI harness with a SQLAlchemy `before_cursor_execute` counter, plus `EXPLAIN (ANALYZE, BUFFERS)` on the hot queries. Dataset: 45 patients / 167 encounters / 415 labs / 104 prescriptions.
+- Implemented:
+  1. **Selective static GZip** (`backend/app/main.py`): `FrontendGZipMiddleware` compresses HTML/CSS/JS/SVG under `/` with level 3; `/api` and `/health` deliberately bypass compression. Measured: CSS 96,251 → 23,338 bytes (-75.8%), patient HTML 17,406 → 3,734 (-78.5%), `patient.js` 43,442 → 13,254 (-69.5%), patient JS module graph ~184 KB → ~52 KB compressed. Security headers remain on every response.
+  2. **One auth query instead of three** (`backend/app/auth/sessions.py`, `identity.py`): a single session/user/roles join (`load_session_with_roles`) replaces the session + staff + roles trio on every authenticated request. Query counts fell from 6→4 (patient list), 8→4 (detail), 11→9 (summary), 7→5 (labs), 9→7 (trends), 8→6 (prescriptions), 5→3 (AI history), 6→4 (staff), 5→3 (audit), 14→12 (analytics).
+  3. **Detail endpoint skips summary enrichment** (`backend/app/services/patients.py`, `api/v1/patients.py`): `get_patient_base` keeps the derived `age_years` but avoids the diagnoses + latest-note reads that only the summary/MCP read model needs. Detail dropped from 8 to 4 queries including audit.
+  4. **Lazy patient-tab data + dynamic Graphify** (`frontend/assets/js/patient.js`, tests): initial patient page now issues 3 API requests (session, demographics, summary) instead of 6-7. Labs (`labs` + `labs/trends`), prescriptions, and AI history load on first tab activation; `graphify.js` is dynamically imported only when the Labs tab is opened, removing 23.5 KB from the initial patient module graph.
+- Rejected/deferred: adding PostgreSQL indexes (all hot plans are sub-millisecond sequential/index scans over 45–1,228 rows; no measured justification); trigram search index (dataset too small); compressing API JSON (measurable localhost CPU cost, small payloads); dynamic-importing Markdown/AI-history (smaller gain, higher test/refactor risk); modulepreload expansion (cannot measure browser-level start-order gain in this environment); LLM prompt changes (provider disabled, no live latency measurement).
+- Verification: `uv run pytest -q` → **448 passed, 1 skipped** (includes the new gzip test); `uv run ruff check .` clean; `node tests/smoke.mjs` 161/161; `node tests/graphify.test.mjs` 4/4; `node tests/markdown.test.mjs` 21/21; `node tests/render-smoke.mjs` 76/76; `python3 scripts/security_check.py` PASS; `git diff --check` clean; `bash scripts/e2e_smoke.sh` ALL STEPS PASSED on the rebuilt Docker stack.
+- Notes: API p50 on localhost is dominated by ASGI/HTTP overhead and moved by a few milliseconds in both directions; the deterministic wins are fewer requests, fewer SQL round trips, and much smaller static transfers. The audit table grew from ~1.2k to ~3.7k rows during repeated benchmarks, which inflates later analytics/audit timings.
+
+### 2026-11-08 — Printable patient medical record (Print / Save as PDF)
+- Status: DONE
+- Implemented:
+  1. **Additive encounter endpoint**: `GET /api/v1/patients/{patient_id}/encounters?limit=&offset=` returns `Page[EncounterOut]`, newest first, soft-deleted excluded, `patient:read`, patient-access check, `404` concealment, existing `patient.read` audit action. Existing endpoint responses are unchanged.
+  2. **Print workflow**: `frontend/assets/js/print-record.js` is dynamically imported on first click. It fetches fresh demographics, summary, every lab page (limit 100), every prescription page, and every encounter page through the authenticated `api.js` client. It refuses to print on any load failure, names the failed section, and offers Retry. Clinical text is rendered only through text nodes.
+  3. **Print layout**: `frontend/assets/css/print.css` provides an A4 portrait report with running header/footer, patient identity, patient information, summary, encounter history, complete laboratory table, and prescriptions. Abnormal labs use text flags (`HIGH ↑` / `LOW ↓`), bold text, underlines, and a heavy row rule so they remain readable in black and white. Table headers repeat and rows avoid mid-row breaks.
+  4. **Patient UI**: a keyboard-accessible **Print / Save as PDF** button sits in the patient header, hidden without `patient:read`; `#print-record` is hidden on screen and revealed only by print CSS. The normal page, lazy tabs, and AI panel are unchanged.
+  5. **Tests**: new `frontend/tests/print-record.test.mjs` (decimal flags, complete pagination, missing data, safe text, failure gate), patient-page render scenarios for the button/complete fetch/failure/permission gate, static print-contract checks, an additive encounter API test, permission-matrix coverage, and CI wiring.
+- Files created: `frontend/assets/js/print-record.js`, `frontend/assets/css/print.css`, `frontend/tests/print-record.test.mjs`.
+- Files modified: `backend/app/api/v1/patients.py`, `backend/app/services/patients.py`, `backend/tests/test_clinical_api.py`, `backend/tests/test_permissions_api.py`, `frontend/patient.html`, `frontend/assets/js/patient.js`, `frontend/assets/css/styles.css`, `frontend/tests/{smoke,render-smoke}.mjs`, `.github/workflows/ci.yml`, `scripts/e2e_smoke.sh`, `docs/API.md`, `frontend/DESIGN.md`, `README.md`, `PLAN.md`.
+- Commands run: `uv run pytest -q` → **453 passed, 1 skipped**; `uv run ruff check .` clean; `node tests/smoke.mjs` **167/167**; `node tests/print-record.test.mjs` **8/8**; `node tests/graphify.test.mjs` **4/4**; `node tests/markdown.test.mjs` **21/21**; `node tests/render-smoke.mjs` **79/79**; `python3 scripts/security_check.py` PASS; `bash scripts/e2e_smoke.sh` ALL STEPS PASSED.
+- Limitations: no headless browser is available, so the native print dialog and actual A4/PDF output are **not browser-verified**; tests verify the generated DOM, print CSS contract, A4 rules, and fail-closed behavior. The API exposes `prescriber_id` but not prescriber names, so the report does not invent a clinician name. CSS page counters (`@page` margin boxes) are browser-dependent; the fixed footer identifies the document regardless.
+
+### 2026-11-09 — Appointment calendar, voice transcription, AI proposal
+- Status: DONE for the locally verifiable scope.
+- Implemented:
+  1. **Scheduling schema/services** (`backend/app/models/scheduling.py`, migration `a4d7e2c9b681`, `schemas/appointment.py`, `services/appointments.py`): doctor schedule, working hours (clinic-local `TIME`), time off (UTC), and appointments (UTC, status lifecycle). Europe/Sofia local→UTC conversion rejects DST holes/folds. Availability replacement validates interval order/overlap and is bounded (≤21 intervals, ≤100 time-off rows). Slots are generated at the configured increment across working intervals with `available|past|booked|time_off` reasons.
+  2. **Conflict-safe writes**: doctor/patient overlap checks plus PostgreSQL transaction advisory locks on both keys and an in-transaction recheck, so concurrent bookings cannot both succeed. Appointment mutations are audited (`appointment.create/update/reschedule/cancel/denied/availability.update`). Terminal appointments cannot be edited; cancellation is idempotent.
+  3. **REST contract** (`api/v1/appointments.py`): config, list (≤62-day range, doctor-own-calendar scoping, Admin doctor selection, read-only Nurse clinic view), create, detail, patch, cancel, availability GET/PUT, slots, and AI interpret. Nurse appointment writes/availability/voice are 403. Another doctor's appointment is a concealed 404 and audited as `appointment.denied`.
+  4. **Provider-agnostic AI interpreter** (`services/appointment_ai.py`): strict JSON, `tools=[]`, clinic anchor, server-side patient resolution through the existing read-only MCP `search_authorized_patients`, deterministic DST/working-hours/time-off/overlap checks, and a non-persisted proposal (`can_confirm`, warnings, candidates). It never writes; final creation is a separate explicit `POST /appointments` with full reauthorization/revalidation. Audited `appointment.ai.propose` (metadata only, never text).
+  5. **Voice backend** (`api/v1/voice.py`, `services/voice.py`, `schemas/voice.py`): authenticated multipart `file` + `language=en|bg`; exact-route body allowance (default 4 MiB, hard clamp 8 MiB) while every other route stays at 1 MiB; streamed private temp file; media-type check; FFprobe duration bound (default 60 s); FFmpeg fixed-argument conversion to 16 kHz mono PCM WAV with timeout; Python `wave` verification; private whisper.cpp `/inference` with none/bearer/gcp_iam auth; controlled 400/429/503; temp cleanup in `finally`; audio/transcripts never logged, audited, or persisted. `Permissions-Policy` allows `microphone=(self)` only.
+  6. **Private speech image** (`speech/Dockerfile`, compose `speech` profile): whisper.cpp v1.9.5 from a checksum-pinned tarball, checksum-verified `ggml-tiny.bin` (Tiny multilingual, not `.en`), CPU-only, non-root, no published port, `/health` check. Backend image installs FFmpeg/FFprobe. Compose points the app at `http://speech:8080` by default; without the profile voice is 503 and manual scheduling still works.
+  7. **Frontend** (`appointments.html`, `appointments.js`, styles, `auth.js`, `api.js`): Appointments nav gated on `appointment:read`; month/week/day/upcoming views; Admin doctor selector; appointment detail/reschedule/cancel; patient search; slot-driven create; availability editor (working hours + UTC time off); MediaRecorder voice panel with language choice, 60 s auto-stop, immediate track stop, in-memory-only audio, upload/retry states, editable transcript and manual fallback; AI proposal card labelled AI-generated with candidate selection, warnings, and “Review & create” → normal explicit create. All clinic display uses Europe/Sofia. No inline styles/scripts; `ui.el` keeps form value property/attribute in sync.
+  8. **Contracts/tests/docs**: permission count is now 11; appointment permission/audit matrices updated; new backend tests for availability, slots, ownership, conflicts, terminal lifecycle, DST, concurrency, audit, voice conversion/limits/cleanup/mocked speech failures, and AI proposal-only behavior. Frontend smoke/render tests cover the page, admin scope, day view, availability dialog, voice proposal, and explicit create. Docs: `API.md`, `ARCHITECTURE.md`, `SECURITY.md`, `DEPLOYMENT.md`, new `SPEECH_RECOGNITION.md`, `TROUBLESHOOTING.md`, `BACKLOG.md`, `README.md`, `frontend/DESIGN.md`, `.env.example`, `scripts/e2e_smoke.sh`.
+- Files created: `backend/app/models/scheduling.py`, `backend/migrations/versions/a4d7e2c9b681_add_scheduling.py`, `backend/app/schemas/appointment.py`, `backend/app/schemas/voice.py`, `backend/app/services/appointments.py`, `backend/app/services/appointment_ai.py`, `backend/app/services/voice.py`, `backend/app/api/v1/appointments.py`, `backend/app/api/v1/voice.py`, `backend/tests/{test_appointments_api,test_appointment_ai,test_voice_api}.py`, `frontend/{appointments.html,assets/js/appointments.js}`, `speech/Dockerfile`, `docs/SPEECH_RECOGNITION.md`.
+- Files modified: `backend/app/{main,config}.py`, `backend/app/authorization/policy.py`, `backend/app/models/__init__.py`, `backend/app/api/v1/router.py`, `backend/app/schemas/appointment.py`, `backend/pyproject.toml`, `backend/uv.lock`, `backend/Dockerfile`, `backend/tests/{test_permissions_api,test_seed,test_hardening,test_audit_api,test_policy,test_auth_api,test_security_headers}.py`, `docker-compose.yml`, `scripts/{seed_demo_data,e2e_smoke,security_check}`, frontend `auth.js`, `api.js`, `ui.js`, `styles.css`, tests, docs, `.env.example`, `README.md`, `PLAN.md`.
+- Commands run:
+  - `uv run ruff check .` → clean.
+  - `uv run pytest -q` → **529 passed, 1 skipped** against the live PostgreSQL test DB.
+  - `node tests/smoke.mjs` → **180/180**; `graphify.test.mjs` **4/4**; `markdown.test.mjs` **21/21**; `print-record.test.mjs` **8/8**; `render-smoke.mjs` **81/81**.
+  - `python3 scripts/security_check.py` → **PASS (6 sections, 0 findings)**; it warns that `design/TechAdminPanel.png` is tracked but absent from this working tree (pre-existing; not created/fabricated here).
+  - `docker compose build app` and `docker compose --profile speech build speech` → both images built; speech container healthy.
+  - `bash scripts/e2e_smoke.sh` → **ALL STEPS PASSED**, including appointment create/update/cancel, nurse 403, audit actions, log scan, and restart persistence.
+  - Live voice path: authenticated multipart upload → backend FFmpeg (2.6 s WAV) → private whisper.cpp Tiny → **200** `{text, language, model: tiny, duration_seconds: 2.6}`. The generated English TTS sample was transcribed; this verifies plumbing, not accuracy.
+  - Live AI interpret with `LLM_ENABLED=false` → **503 dependency_unavailable**; `/appointments.html` served 200; `Permissions-Policy` shows `microphone=(self)`.
+- Acceptance criteria: PASS for locally verifiable behavior — manual calendar/availability/conflicts/ownership, voice upload bounds/cleanup, private speech inference, proposal-only AI, explicit confirmation, audit, and the frozen 1 MiB global body limit.
+- Limitations / not verified: no real browser microphone permission/codec test; whisper Tiny accuracy/latency/memory and Bulgarian clinical vocabulary are **not** benchmarked; Cloud Run private-service IAM/metadata-token path is documented but not deployed/verified; cross-cloud Render→Cloud Run IAM remains a blocker. No Git commands/commits were performed.
+- Security notes: appointment writes are revalidated under advisory locks; the AI cannot write; MCP remains exactly seven read-only tools; voice audio/transcripts are never logged, audited, or persisted; the only route above 1 MiB is exact-match and hard-clamped; `/tmp` cleanup is per request (abrupt process kill can leave files for the OS).
+
+### 2026-11-09 — Landing page care-team background
+- Status: DONE for the local demo.
+- Implemented: copied `design/DoctorBackground.png` to `frontend/assets/images/doctor-background.png` and added a decorative `landing-ambient__photo` layer behind the existing landing gradients. The local photo is rendered with a dark gradient, `blur(20px)`, reduced saturation, and reduced opacity; the existing light-streak/vignette overlays sit above it. It remains same-origin under CSP `img-src 'self'`, is `aria-hidden`, and has no inline styles. Mobile/desktop use `cover` positioning.
+- Added an optimized 32 KB WebP derivative (`doctor-background.webp`) and `image-set` with the PNG fallback. Registered `.webp` as `image/webp` in the backend static media types so it cannot fall back to `application/octet-stream` under `nosniff`; added a regression test.
+- Files changed: `frontend/index.html`, `frontend/assets/css/styles.css`, `frontend/tests/smoke.mjs`, `frontend/DESIGN.md`, `backend/app/main.py`, `backend/tests/test_security_headers.py`, `PLAN.md`; new assets `frontend/assets/images/doctor-background.{png,webp}`.
+- Verification: `node tests/smoke.mjs` **181/181**; `node tests/render-smoke.mjs` **81/81**; `scripts/security_check.py` PASS; backend `test_security_headers.py` **14/14**; Docker image rebuilt and serves both assets (`PNG 200 image/png`, byte-identical to the source; WebP `200 image/webp`, 32 KB), landing HTML/CSS contain the new layer.
+- Licensing caveat: the supplied `design/DoctorBackground.png` appears to be a watermarked stock preview (faint “dreamstime” mark). It is used only as a heavily blurred local demo backdrop; replace it with a properly licensed/authorized asset before public deployment.
+
+### 2026-11-09 — Read-only nurse appointment sidebar
+- Status: DONE.
+- Implemented:
+  1. **Permission:** nurse now holds `appointment:read` only (plus existing clinical reads). `appointment:write`, `appointment:manage_availability`, and voice remain unavailable; the total permission-key count stays **11**.
+  2. **Backend read scoping:** `GET /appointments` and `GET /appointments/{id}` treat nurses as clinic-wide readers (optional `doctor_id` filter); doctor reads stay own-calendar and Admin stays cross-doctor. `GET /appointments/availability`/`slots` accept an explicit `doctor_id` for nurses. Create/update/cancel/availability/interpret/voice remain `403`.
+  3. **Frontend:** the Appointments sidebar item now appears for nurses. The page shows month/week/day/upcoming and appointment detail in a **read-only** mode: no New, Reschedule, Cancel, Availability, voice panel, doctor picker, or booking slots. The header says “Read-only clinic calendar”; availability/slot requests are skipped for read-only users.
+  4. **Docs/tests:** permission matrices and role descriptions updated; policy/auth/appointment/matrix tests and an E2E nurse read-only boundary added; render smoke covers the nurse view.
+- Files changed: `backend/app/authorization/policy.py`, `backend/app/api/v1/appointments.py`, `backend/tests/{test_policy,test_auth_api,test_permissions_api,test_appointments_api}.py`, `frontend/assets/js/appointments.js`, `frontend/tests/render-smoke.mjs`, `scripts/e2e_smoke.sh`, `README.md`, `docs/{API,SECURITY}.md`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: full backend suite **530 passed, 1 skipped**; frontend smoke **181/181** (at the time); render smoke **82/82**; Docker E2E **ALL STEPS PASSED** (nurse GET appointments 200, POST 403, `/auth/me` has `appointment:read` only); live nurse check: config 200, list 200 with clinic data, detail 200, create 403, availability PUT 403, voice 403.
+- Security note: in this synthetic demo the nurse read is clinic-wide, consistent with the existing demo patient-access policy. Real-data use still requires a care-relationship/assignment policy and the other production guards in `docs/AI_GUARDRAILS.md`.
+
+### 2026-11-09 — Visit catalogue + appointment form fixes
+- Status: DONE.
+- Fixed:
+  1. **Slot selection was impossible.** `ui.el` treated `disabled: false` as the string `"false"`; because `disabled` is a boolean HTML attribute, the attribute’s mere presence disabled every available slot. `ui.el` now handles `disabled`/`hidden`/`checked`/`selected`/`required`/`multiple`/`readOnly` as true booleans (set/remove the attribute and property). Available slots are clickable and expose `aria-pressed` selection.
+  2. **Calendar loading block never disappeared.** `.loading-block { display:flex }` overrode the UA `[hidden]` rule. Added a global `[hidden] { display:none !important; }` so the loader disappears after the request and other hidden panels behave correctly. Added a static regression check.
+- Added:
+  1. `frontend/assets/js/visit-types.js` with the full 19-entry `VISIT_TYPES` catalogue and `findVisitType` alias matching (`Consultation` → General Consultation, etc.).
+  2. The appointment form now uses a **Type of visit** select with all types and suggested durations. Selecting a type updates the duration field. Selecting **Other** reveals a required custom visit-type input (≤100 chars) directly below; the custom label is stored in the existing `appointment_type` field. Existing/custom labels are preserved on edit, and AI-proposed types are matched to the catalogue where possible.
+  3. Tests: render smoke now verifies slot click/selection, `disabled=false` semantics, all 19 options, the automatic 45-minute New Patient duration, the Other custom field, and creation with a custom label.
+- Files changed: `frontend/assets/js/ui.js`, `frontend/assets/js/appointments.js`, `frontend/assets/js/visit-types.js`, `frontend/assets/css/styles.css`, `frontend/tests/{smoke,render-smoke}.mjs`, `frontend/DESIGN.md`, `docs/API.md`, `PLAN.md`.
+- Verification: frontend smoke **185/185**; render smoke **83/83**; Docker image rebuilt; Docker E2E **ALL STEPS PASSED**; app/db/speech containers healthy.
+
+### 2026-11-09 — Light / Dark / System themes + readability
+- Status: DONE.
+- Implemented:
+  1. **Pre-paint theme bootstrap:** new classic `theme-init.js` is loaded synchronously before the stylesheet on every page; it reads `localStorage["medicore-theme"]`, resolves `system` against `prefers-color-scheme`, and sets `data-theme`/`data-theme-mode` on `<html>` before first paint (no flash).
+  2. **Tokenized themes:** existing token names retained; `:root` is Light, `:root[data-theme='dark']` is Dark, and `@media (prefers-color-scheme: dark) { :root:not([data-theme]) { … } }` is the no-JS fallback. `color-scheme` follows the active theme (native date/time controls/scrollbars).
+  3. **Switcher:** `theme.js` mounts an accessible three-button (Light/Dark/System) icon control with `aria-label`, `title`, `aria-pressed`, and hit-slop targets in the authenticated top-bar user area and landing header. Selection updates instantly, persists to `medicore-theme`, and System mode listens to `matchMedia` for live OS changes.
+  4. **Readability:** raised light/dark secondary/placeholder contrast; primary text now meets a 7:1 target; primary action buttons use the same accessible blue in both themes; Voice scheduling status is a tone-aware left-border callout (info/success/warn/error), timer is a high-contrast pill, and the transcript has larger line-height/padding/min-height. Landing hero stays dark, while the sign-in card, controls, helper copy, and footer switch to light surfaces in Light mode.
+  5. **Tests:** `smoke.mjs` verifies pre-paint script ordering, token selectors, theme-init contract, sanctioned theme storage, and computed WCAG contrast for both token sets; `render-smoke.mjs` verifies all three modes, persistence, fresh-module reload, switcher buttons/labels, and live OS change handling.
+- Files changed: `frontend/assets/js/{theme-init,theme}.js`, `frontend/assets/js/{ui,login}.js`, `frontend/assets/css/styles.css`, all 8 HTML pages (`theme-init.js` in `<head>`), `frontend/tests/{smoke,render-smoke}.mjs`, `frontend/DESIGN.md`, `README.md`, `docs/SECURITY.md`, `PLAN.md`.
+- Verification: `node tests/smoke.mjs` **191/191**; `node tests/render-smoke.mjs` **85/85**; `scripts/security_check.py` PASS; Docker image rebuilt; served `theme-init.js` before `styles.css`; Docker E2E **ALL STEPS PASSED**; app/db/speech healthy.
+- Notes: the only web-storage item is the non-sensitive `medicore-theme` preference; no patient, account, clinical, or session data is stored there.
+
+### 2026-11-09 — Doctor portraits + footer cleanup
+- Status: DONE.
+- Implemented:
+  1. Four local demo doctor portraits in `frontend/assets/images/doctors/` (128×128 JPEG placeholders from randomuser.me; documented in that folder's README). `ui.avatarForUser` shows a portrait only when the user holds the `doctor` role; nurses/admins keep initials. `ui.doctorAvatar` covers a known appointment doctor. The seeded doctor is mapped to a consistent portrait.
+  2. Doctor portraits appear in the authenticated top bar, dashboard session card, admin staff table, and appointment detail doctor row. Patient avatars remain initials.
+  3. Removed the repeated full-width `.site-footer` bar from all seven authenticated pages. About / Report an issue remain in the bottom-left sidebar help card; the landing page keeps a compact, left-aligned footer instead of a full-width bar. Dead `.site-footer` CSS was removed.
+  4. Added smoke/render coverage for local portrait assets, doctor-only photo gating, appointment detail portrait, footer removal, and initials for non-doctors.
+- Files changed: `frontend/assets/js/{ui,admin,dashboard,appointments}.js`, `frontend/assets/css/styles.css`, all authenticated HTML pages + `index.html`, `frontend/tests/{smoke,render-smoke}.mjs`, `frontend/DESIGN.md`, `frontend/assets/images/doctors/*`, `PLAN.md`.
+- Verification: frontend smoke **193/193**; render smoke **85/85**; Docker image rebuilt; Docker E2E **ALL STEPS PASSED**; app/db/speech healthy.
+- Caveat: the portraits are demo placeholders, not real clinicians; replace them with approved/licensed staff photos before any real deployment.
+
+### 2026-11-09 — LLM key-only configuration + STT handoff verification
+- Status: configuration/wiring verified; external model calls remain blocked by the provider account balance.
+- Implemented:
+  1. **Key-only enablement:** `LLM_ENABLED` is now optional (default `None`). A non-empty `LLM_API_KEY` auto-enables the provider; `LLM_ENABLED=false` remains the explicit kill switch. Blank/`oc_sk_replace…` placeholder keys are treated as unconfigured.
+  2. **Standard endpoint by default:** `LLM_API_BASE_URL` now defaults to `https://opencode.ai/inference` (funded key or available free quota) with `gpt-6-luna` as the standard low-cost model. The Go endpoint (`https://opencode.ai/inference/go`, `mimo-v2.6-pro`) remains documented for active Go subscriptions. The local `backend/.env` was switched to the standard endpoint/model (secret untouched).
+  3. **Provider diagnostics:** 401 invalid key, 402 insufficient funds, 403 missing Go subscription/model access, 404 unknown model, 400 model unavailable, and 429 free-usage-limit now map to specific actionable messages without echoing provider bodies or keys. Regular 429s remain retryable rate limits. The provider always sends `x-opencode-session` (caller id or per-instance fallback), fixing the OpenCode routing requirement.
+  4. **Verification:** live login → `/voice/transcriptions` returned 200 with an editable transcript; posting that transcript to `/appointments/interpret` reached the configured provider and returned the controlled `503` message **“The AI provider account has insufficient funds. Add credit or use a funded OpenCode Go plan…”**. This proves the STT → transcript → LLM handoff; the account itself has no usable model (no Go subscription, free quota exhausted, no paid credit).
+  5. Docs/env template updated for auto-enable and the two OpenCode endpoint profiles.
+- Files changed: `backend/app/config.py`, `backend/app/llm/provider.py`, `backend/tests/test_llm.py`, `.env.example`, `backend/.env` (non-secret base/model), `k8s/configmap.yaml`, `README.md`, `docs/{API,ARCHITECTURE,DEPLOYMENT,KUBERNETES,SPEECH_RECOGNITION,TROUBLESHOOTING}.md`, `PLAN.md`.
+- Verification: backend **534 passed, 1 skipped**; frontend **193/193** static + **85/85** render; `scripts/security_check.py` PASS; Docker E2E **ALL STEPS PASSED**.
+- Blocker: the configured provider key cannot complete a model call until the account has credit, an available free quota, or an active OpenCode Go subscription. This is an account entitlement, not an application wiring issue; the API now returns the exact reason.
+
+### 2026-11-09 — Custom 404 page + error illustrations
+- Status: DONE.
+- Implemented:
+  1. **Custom 404 page:** `frontend/404.html` uses the same theme bootstrap, MediCore brand, theme switcher, token palette, About dialog, and compact bottom-left footer. Unknown browser navigations now serve it with a real **404** status; JSON/API clients still receive the frozen `{"error":{"code":"not_found"}}` envelope.
+  2. **Local themed illustrations:** hand-authored SVG assets `error-404.svg` (clipboard/chart with missing page and magnifier) and `error-connection.svg` (medical monitor with a disconnected heartbeat). No external requests, CSP-safe under `img-src 'self'`.
+  3. **In-page error art:** `ui.renderErrorState` places the 404 art beside 404 messages, the connection art beside network/5xx errors, and no art for authorization/validation errors. The layout stacks on narrow screens and remains decorative (`alt=""`/`aria-hidden`).
+  4. **E2E/docs/tests:** added custom-404 + illustration checks to the Docker E2E, backend fallback test (404 status/page content/JSON envelope), smoke asset/page checks, and render coverage for 404/connection/403 error states.
+- Files changed: `frontend/404.html`, `frontend/assets/js/error-page.js`, `frontend/assets/js/ui.js`, `frontend/assets/css/styles.css`, `frontend/assets/images/error-404.svg`, `frontend/assets/images/error-connection.svg`, `frontend/tests/{smoke,render-smoke}.mjs`, `backend/app/main.py`, `backend/tests/test_security_headers.py`, `scripts/e2e_smoke.sh`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: backend `test_security_headers.py` **14/14**; frontend smoke **202/202**; render smoke **86/86**; Docker E2E **ALL STEPS PASSED**; app/db/speech healthy.
+
+### 2026-11-09 — Clinical Operations & Platform Analytics dashboard
+- Status: DONE.
+- Implemented:
+  1. **Validated shared date range:** `GET /api/v1/analytics/summary` now accepts optional inclusive UTC `start`/`end` dates (both or neither). Default is the last 30 UTC days including today; maximum span is 366 days; reversed, partial, malformed or unknown parameters are `400 validation_error`. The previous period is the equally long window immediately before `start`.
+  2. **Range-aware KPIs with real comparisons:** registered patients (lifetime), new patients, encounters, laboratory tests, total prescriptions (lifetime), prescriptions written (period), active prescriptions, appointments and AI requests. `change_pct = (current − previous) / previous × 100`, rounded to 1 decimal, and **null when the previous period had zero events** (never fabricated).
+  3. **Appointments:** total plus scheduled/confirmed/completed/cancelled/no-show, clinic-local daily trend, visit-type distribution, weekday/hour distribution and clinic-wide calendar utilization. Booked minutes exclude cancelled appointments; available minutes come only from recorded `working_hours` minus overlapping `time_off`; no default schedule is assumed and no per-doctor ranking exists.
+  4. **Patients & encounters:** new/returning/active patients, encounter total, average per UTC day, encounter-type distribution and daily volume. No patient identifiers.
+  5. **Laboratory analytics:** period totals; document-status mix; normal/high/low/unclassified/ missing-reference-range buckets; evaluable denominator and range coverage; top abnormal tests; daily total/evaluable/abnormal trend. The existing `_ABNORMAL`/`_EVALUABLE` SQL rule is preserved; missing/invalid ranges are never normal; high/low partition abnormal; every bucket sums to total.
+  6. **Prescriptions:** period total/status mix, lifetime status mix, daily course-start trend. Only the recorded lifecycle values `active|completed|stopped|cancelled` are used; stopped is displayed as discontinued.
+  7. **Access & Security Activity:** successful/failed sign-ins, permission denials, patient/lab/prescription reads and AI requests, plus grouped daily trends. Aggregates only — no raw audit metadata, IPs, payloads, identifiers, questions/answers or transcripts.
+  8. **AI & Voice Assistant:** request/outcome partition, success rate excluding denied asks, and real `mcp.<tool>` call/failure counts. Per-request latency and voice metrics are explicitly `available: false` with reasons because those datasets are not persisted; provider health is configuration-only and marked `not_monitored`. No new logging or tables were created.
+  9. **Data Quality & System Health:** recorded lab reference-range/unclassified gaps, optional patient/encounter/appointment metadata gaps (explicitly not errors), backend/database state from this successful response, and API error rate explicitly unavailable. No synthetic probes, no continuous expensive checks.
+  10. **Staff:** active/inactive account totals and active accounts by policy role; no individual performance or surveillance data.
+  11. **Frontend:** shared Reporting period card (7/30/90 days, this year, custom, reset), one summary request per filter change, clear period/generated-at labels, empty/loading/error states, responsive KPI/panel grid, keyboard-accessible charts with hidden data tables, status donut, previous-period notes, honesty callouts for unavailable metrics, and no third-party charts/trackers. Existing design tokens, CSP, reduced-motion and responsive behavior were preserved.
+- API: modified `GET /api/v1/analytics/summary` (optional `start`/`end`, expanded typed response). No new endpoints; Audit remains `analytics.read` metadata-only. Doctor/Nurse still receive `403`; `analytics:read` remains Admin-only.
+- Database changes: **none** (no tables, columns, migrations or indexes). All aggregation is read-only over existing models.
+- Files changed: `backend/app/services/analytics.py`, `backend/app/schemas/analytics.py`, `backend/app/api/v1/analytics.py`, `backend/tests/test_analytics.py`, `frontend/analytics.html`, `frontend/assets/js/analytics.js`, `frontend/assets/css/styles.css`, `frontend/tests/render-smoke.mjs`, `frontend/tests/smoke.mjs` (analytics responsive/style assertions), `scripts/e2e_smoke.sh`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `frontend/DESIGN.md`, `PLAN.md`.
+- Performance: one bounded read model per request; grouped/scalar-subquery SELECTs only, no N+1 and no clinical dataset downloaded to JavaScript. Test bound is **≤30 statements** (actual assertion in `test_analytics.py`) and **<5 s** on the seeded demo dataset; date range maximum **366 days** prevents unbounded history. Appointment availability scans only bounded working-hours/time-off metadata; no new index was justified by measurements.
+- Authorization verification: permission-matrix route declaration; anonymous `401`; Doctor and Nurse direct API `403`; Admin `200`; frontend gate is UX only; Docker E2E explicitly checks Doctor/Nurse `403`.
+- Tests/verification:
+  - Backend: **541 passed, 1 skipped** (`uv run pytest -q`).
+  - Frontend smoke: **202/202**; Graphify **4/4**; Markdown **21/21**; print record **8/8**; render-path **88/88**.
+  - `scripts/security_check.py`: **PASS**, 0 findings / 0 warnings across 6 sections.
+  - Docker image rebuilt; `scripts/e2e_smoke.sh`: **ALL STEPS PASSED**, including analytics Admin `200`, Doctor/Nurse `403`, range validation `400`, typed blocks and no `MRN-` in the payload. App/db/speech healthy.
+- Deferred:
+  - **CSV/print analytics export** — requires its own authorization, audit and aggregate-redaction review; it should not reuse the patient-record print path.
+  - **AI latency / provider uptime** — not persisted or continuously probed; returned as unavailable rather than invented.
+  - **Voice transcription volume/success/language/latency** — intentional product policy: audio/transcripts are ephemeral and never audited/persisted; returned as unavailable.
+  - **Recently activated/deactivated staff trend** — the model has no explicit deactivation timestamp distinct from general `updated_at`, so only current active/inactive totals are shown.
+- Caveats: analytics is aggregate operational information, not clinical quality or doctor performance; high volume does not imply better care.
+
+### 2026-11-09 — Command palette: remove navigation file paths
+- Status: DONE.
+- Removed the right-aligned `.html` destination hints (`dashboard.html`, `patients.html`, `appointments.html`, `ai.html`, etc.) from command-palette navigation rows. Navigation entries now show only their action labels; patient entries retain the useful MRN hint.
+- Added a render-path regression assertion that no command option hint is a `.html` page path.
+- Prevented the stale-cache recurrence: HTML/JS/CSS now use `Cache-Control: no-cache` (images keep a bounded public cache), and shell entry modules plus the `command-menu.js` import carry a dated `?v=…` cache-busting token (currently `20261109d`). Backend test added for the revalidation headers.
+- Files changed: `frontend/assets/js/command-menu.js`, all seven shell entry modules and shell HTML pages (version token/preload), `backend/app/main.py`, `backend/tests/test_security_headers.py`, `frontend/tests/render-smoke.mjs`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: frontend smoke **202/202**; render-path **88/88**; backend security-header tests **15/15**; live JS CSS `no-cache` and versioned entry HTML; live module contains no navigation path hint; Docker image rebuilt; E2E **ALL STEPS PASSED**; app/db/speech healthy.
+
+### 2026-11-09 — Doctor appointment Reschedule / Cancel fix
+- Status: DONE.
+- Root cause (two parts): (a) `ui.closeDialog` defers the native `<dialog>.close()` into a view-transition update callback, so immediately reusing the shared dialog let its pending close event clear/close the new form/confirmation; (b) closing the detail dialog consumes its overlay history entry with an asynchronous `history.back()`, while the next dialog immediately pushed a new entry — the pending back could land on the previous page (e.g. AI Assistant). The Node DOM shim closes histories/dialogs synchronously, which is why existing tests missed both.
+- Fix: `ui.openDialog` now returns a `close()` that resolves on the native `close` event (with a fallback for browsers without `<dialog>.close()`), and the appointment detail waits on the shared dialog's own `close` event before reusing it. `overlay-history.js` now defers a replacement overlay's `pushState` until any in-flight self-back `popstate` settles, and exposes `supportsDeferredPush`; the appointment flow also has a popstate/timeout fallback for browsers still holding an older cached `overlay-history.js`.
+- Added frontend coverage for the full doctor flow: open appointment detail → Reschedule → choose a different slot → PATCH with the new `start_at` → reopen → Cancel → confirmation → POST `/cancel`; plus a history-race regression proving replacement pushes wait for the pending self-back.
+- Files changed: `frontend/assets/js/ui.js`, `frontend/assets/js/appointments.js`, `frontend/assets/js/overlay-history.js`, `frontend/tests/render-smoke.mjs`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: frontend render-path **90/90**; smoke **202/202**; Docker image rebuilt; E2E **ALL STEPS PASSED**; app/db/speech healthy.
+
+### 2026-11-09 — Cancelled appointment calendar cleanup
+- Status: DONE.
+- Implemented:
+  1. **5-minute calendar visibility:** cancelled appointments remain in list responses for 5 minutes after cancellation, then are omitted automatically. The rule is enforced in the SQL list query using the cancellation timestamp (`updated_at` on a closed row), so it applies on reload and across clients. Non-cancelled appointments are never auto-hidden.
+  2. **Admin immediate removal:** cancelled appointment detail now shows **Remove from calendar** for Admin only. It confirms, calls `POST /api/v1/appointments/{id}/remove-from-calendar` (`204`, idempotent), and refetches the calendar.
+  3. **Record retention:** removal is a visibility change, not a hard delete. `scheduling.appointment.calendar_removed_at` records explicit removal; the row, cancellation status, patient/doctor links and audit history remain. `GET /appointments/{id}` still returns the retained record. Doctors/Nurses get `403`.
+  4. **Open-page cleanup:** the frontend prunes already-expired cancelled rows on load and schedules a timer for the next expiry, so a cancelled entry disappears from the current view after 5 minutes without a manual refresh.
+  5. **Audit/docs/tests:** `appointment.remove_from_calendar` audit action; migration `b8e4f1a2c3d5`; API/architecture/security/design docs; backend lifecycle tests, permission-matrix declaration, render test for admin removal/doctor denial/expired pruning, and Docker E2E Doctor `403` / Admin `204`.
+- Files changed: `backend/app/models/scheduling.py`, `backend/migrations/versions/b8e4f1a2c3d5_add_appointment_calendar_visibility.py`, `backend/app/services/appointments.py`, `backend/app/api/v1/appointments.py`, `backend/tests/test_appointments_api.py`, `backend/tests/test_permissions_api.py`, `backend/tests/test_audit_api.py`, `frontend/assets/js/appointments.js`, `frontend/tests/render-smoke.mjs`, `scripts/e2e_smoke.sh`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: backend **547 passed, 1 skipped**; frontend smoke **202/202**; render-path **91/91**; Graphify **4/4**; Markdown **21/21**; print **8/8**; Docker E2E **ALL STEPS PASSED**; security scan **PASS**; app/db/speech healthy.
+
+### 2026-11-09 — LLM switched to DeepSeek V4.1 Flash
+- Status: DONE.
+- Configuration: `LLM_MODEL=deepseek-v4.1-flash` (the API/model ID for the display name **DeepSeek V4.1 Flash**) on the OpenCode Go endpoint `https://opencode.ai/inference/go`. The previous `.env` value contained the display name with spaces, which is not a valid model ID.
+- Also updated the provider/config defaults, `.env.example`, README, deployment/architecture/concept docs, and the Kubernetes ConfigMap to the new model. The standard endpoint remains documented as the funded-key/free-quota alternative (`gpt-6-luna`).
+- Live verification: `/api/v1/ai/ask` returned **200**, model `deepseek-v4.1-flash`, and invoked the real MCP tool `find_patients_by_medication`.
+- Tests: LLM/AI suite **70 passed**; Docker E2E **ALL STEPS PASSED** with the live AI path returning 200.
+- Files changed: `backend/.env`, `.env.example`, `backend/app/config.py`, `backend/app/llm/provider.py`, `README.md`, `docs/{ARCHITECTURE,DEPLOYMENT,CONCEPT}.md`, `k8s/configmap.yaml`, `PLAN.md`.
+
+### 2026-11-09 — Patient creation for Doctor and Admin
+- Status: DONE.
+- Implemented:
+  1. **New permission:** `patient:write`, granted to Doctor and Admin (`clinical_admin`) only; Nurse remains read-only and receives `403` on the create route and direct API calls. The permission catalog migration `c9d8e7f6a5b4` and idempotent seed add the key; the effective matrix is now **12 permission keys**.
+  2. **API:** `POST /api/v1/patients` (`patient:write`) with bounded fields `given_name`, `family_name`, optional `display_name`, `date_of_birth`, `sex` (closed vocabulary) and `blood_type` (closed ABO/Rh vocabulary). Blank names, future DOB, invalid enums and extra fields are `400 validation_error`. The server generates the unique `MRN-…` and always writes `provenance='synthetic'`; neither is client-controlled. Returns `201 PatientOut` and audits `patient.create` (metadata only).
+  3. **Frontend:** the Patients page shows **Add patient** only with `patient:write`; the modal collects names, optional DOB, sex and blood type, validates client-side, preserves input on error, and opens the new patient record on success. The command palette offers **Add patient** under the same gate. Nurse sees no control; backend enforcement is independent.
+  4. **Appointment fallback:** the appointment patient picker shares the same form module. When a search has no matches, Doctor/Admin see **Add new patient** inline; the created patient is selected immediately in the open appointment form without losing date/time, and the appointment can be created with the new patient id. Nurse does not see the fallback.
+  5. **Tests/docs:** patient creation/persistence/audit tests, permission-matrix route declaration, Doctor/Admin/Nurse role tests, seed permission count, render tests for page creation, Nurse denial, and the full appointment no-match → create → select → create-appointment flow; E2E permission probes; API/architecture/security/design docs, README permission table and PLAN.
+- Database changes: additive `admin.permission` catalog row via migration `c9d8e7f6a5b4`; **no patient-table schema change** (new patient rows use the existing constrained model).
+- Files changed: `backend/app/authorization/policy.py`, `backend/app/schemas/patient.py`, `backend/app/services/patients.py`, `backend/app/api/v1/patients.py`, `backend/migrations/versions/c9d8e7f6a5b4_add_patient_write_permission.py`, `scripts/seed_demo_data.py`, backend tests, `frontend/patients.html`, `frontend/assets/js/patients.js`, `frontend/assets/js/patient-create.js`, `frontend/assets/js/appointments.js`, frontend tests, `scripts/e2e_smoke.sh`, docs/API.md, docs/ARCHITECTURE.md, docs/SECURITY.md, README.md, frontend/DESIGN.md, PLAN.md.
+- Verification: backend **556 passed, 1 skipped**; frontend smoke **205/205**; render-path **93/93**; Graphify/Markdown/print suites unchanged and passing; Docker E2E **ALL STEPS PASSED**; app/db/speech healthy.
+- Note: patients can now be created centrally and used by existing appointment search; lab/encounter creation workflows can reference the same patient store when those write surfaces are added.
+
+### 2026-11-09 — Heart loader: remove the assistant plus avatar
+- Status: DONE.
+- Removed the assistant favicon/avatar (the blue plus mark) from every loading state beside the heart loader. Loading regions now show only the anatomical heart and the status text; normal assistant answer headers still show the avatar where appropriate.
+- Files changed: `frontend/assets/js/ai-assistant.js`, `frontend/assets/js/patient.js`, `frontend/tests/render-smoke.mjs`, `frontend/DESIGN.md`, `PLAN.md`.
+- Verification: frontend smoke **205/205**; render-path **93/93**; Docker image rebuilt; E2E **ALL STEPS PASSED**; app/db/speech healthy.
+
+### 2026-11-09 — Admin-only patient removal
+- Status: DONE.
+- Implemented:
+  1. **New Admin-only permission:** `patient:delete`; Doctor and Nurse receive `403`. Effective matrix is now **13 permission keys**; catalog migration `d2e3f4a5b6c7` and the idempotent seed add it.
+  2. **API:** `DELETE /api/v1/patients/{patient_id}` (`patient:delete`) soft-deletes the patient (`deleted_at`), returns `204`, and audits `patient.delete` (metadata only). Missing/already-deleted ids are `404`. The row, child clinical records, scheduling history and audit trail are retained internally.
+  3. **Visibility:** patient list/search/detail, encounter access, and appointment list/detail now exclude soft-deleted patients. Existing soft-delete conventions are preserved; no hard delete.
+  4. **Frontend:** the patient header shows **Remove patient** only to Admin, confirmed with patient name/identifier, then calls the endpoint, clears patient caches and returns to the patient list. Doctor/Nurse never see the control; the backend enforces it.
+  5. **Tests/docs:** policy/seed/matrix/auth tests, patient deletion + child-retention/audit tests, appointment hiding test, frontend Admin/Doctor/Nurse render test, full E2E patient lifecycle (Admin create → Doctor/Nurse delete 403 → Admin delete 204 → GET 404), API/architecture/security/design docs and PLAN.
+- Database changes: permission catalog row via migration `d2e3f4a5b6c7`; no clinical-table schema change (the existing `patients.patient.deleted_at` soft-delete column is used).
+- Verification: backend **565 passed, 1 skipped**; frontend smoke **205/205**; render-path **94/94**; Docker E2E **ALL STEPS PASSED**; security scan **PASS**; app/db/speech healthy.
+
+### 2026-11-09 — Internal Messages (Doctor/Admin)
+- Status: DONE.
+- Implemented:
+  1. **Model/API:** `admin.message` (sender/recipient staff FKs, optional subject, body, read timestamp) with own-inbox/own-sent only. `GET /messages?box=inbox|sent`, `GET /messages/recipients`, `POST /messages`, and recipient-only `POST /messages/{id}/read`. Recipients are active Doctor/Admin accounts; self and Nurse recipients are rejected. Bodies are bounded (1–5000 chars), subjects 200 chars, and no attachments exist.
+  2. **Permissions:** new `message:read` and `message:write` for Doctor and Admin only; Nurse gets `403`. Permission count is now **15** (seed + migration `e3f4a5b6c7d8`).
+  3. **Frontend:** **Messages** sidebar item sits after AI Assistant and before Admin for Doctor/Admin. The page has Inbox/Sent tabs, unread markers, plain-text detail, mark-read, Reply/New message compose with bounded recipient list, loading/empty/error states, and a friendly Nurse denial. No patient payload or attachment surface.
+  4. **Audit/privacy:** `message.send` and `message.read` record actor/resource id/outcome only; never subject, body, recipient address, or attachments.
+  5. **Tests/docs:** message API tests (own-inbox isolation, read state, self/Nurse/unknown recipient rejection, validation, audit), permission matrix/policy/auth/seed/audit updates, frontend render test (nav order, inbox, mark-read, compose, Doctor nav, Nurse denial/no fetch), E2E permission probes, API/architecture/security/design docs and PLAN.
+- Database changes: additive `admin.message` table and two permission catalog rows via migration `e3f4a5b6c7d8`; no changes to clinical schemas.
+- Verification: backend **589 passed, 1 skipped**; frontend smoke **215/215**; render-path **95/95**; Docker E2E **ALL STEPS PASSED**; security scan **PASS**; app/db/speech healthy.
+
+### 2026-11-09 — Admin Live System Logs / Terminal Activity Stream
+- Status: DONE.
+- Implemented:
+  1. **Separate permission and storage:** new Admin-only `logs:read` (effective matrix now **16 permission keys**). Durable accountability stays in `admin.audit_event`; operational monitoring goes to new `admin.system_event` with 7-day bounded retention. Migration `f4a5b6c7d8e9` creates the table/indexes and catalog permission.
+  2. **Registry and read model:** centralized approved event registry (`backend/app/logs/registry.py`) maps existing audit actions and operational types to category/severity, validates flat metadata against an allowlist, and redacts email resource references. The unified service merges both tables for bounded history/counts and cursor replay without copying audit rows.
+  3. **Live SSE:** `GET /api/v1/admin/logs/stream` (`logs:read`) subscribes before replay, resumes from `last_event_id`/`Last-Event-ID`, deduplicates exact IDs, sends 15-second heartbeats, revalidates session/permission periodically (including busy streams), emits `auth_expired`, and cleans up a bounded per-subscriber queue. Replay/query sessions are short-lived; no DB transaction stays open for the connection.
+  4. **Event coverage:** existing auth/security/patient/encounter/lab/prescription/appointment/administration audit actions are represented; the audit mapping covers MCP tool outcomes, and operational instrumentation covers the AI request lifecycle, voice transcription (start/complete/validation/rate-limit/unavailable/timeout) with no audio/transcript, appointment conflicts/rejections, API 5xx/429s and application startup.
+  5. **Admin terminal UI:** secure sidebar entry and `system-logs.html` with connection state, filtered-period counters, terminal stream, severity colors, approved metadata search, filters/custom range, pause/resume, auto-scroll, clear view, copy, bounded CSV export, event details, timezone display (`CLINIC_TIMEZONE`; UTC on the wire), reduced motion, mobile layout, and honest loading/empty/error/denial states.
+  6. **Security controls:** no shell/SQL/command surface; DOM-only text rendering; no clinical payloads, names/MRNs, questions/answers, transcripts, audio, secrets, request bodies or stack traces. Operational writes are best-effort and never fail a clinical request; audit live publication happens only after commit.
+  7. **Tests/docs:** registry/redaction/audit-commit/history/cursor tests, bounded-bus tests, generator-level SSE tests (multi-subscriber, replay order, dedup, heartbeat, revocation, cleanup), HTTP 401/403 tests, and frontend render coverage. Added `docs/SYSTEM_LOGS.md` and updated API/architecture/security/troubleshooting docs, E2E role/SSE probes, and PLAN.
+- Files (primary): `backend/app/logs/{registry,bus,service}.py`, `backend/app/api/v1/system_logs.py`, `backend/app/schemas/system_log.py`, `backend/app/models/admin.py`, `backend/app/audit/logger.py`, `backend/app/main.py`, `backend/app/api/v1/{ai,voice,appointments,router}.py`, `backend/migrations/versions/f4a5b6c7d8e9_add_system_events.py`, `backend/tests/test_system_log*.py`, `frontend/system-logs.html`, `frontend/assets/js/system-logs.js`, `frontend/assets/css/styles.css`, docs listed above, `scripts/e2e_smoke.sh`.
+- Verification: backend **612 passed, 5 skipped**; frontend smoke **225/225**; render-path **96/96**; Graphify **4/4**; Markdown **21/21**; print **8/8**; Docker image rebuilt and migration at head `f4a5b6c7d8e9`; live E2E **ALL STEPS PASSED** including Doctor/Nurse 403 and Admin SSE replay; a separate live two-event SSE check confirmed post-subscription delivery in order; security scan **PASS**; app/db/speech healthy.
+- Limitations: live bus is single-process (multi-worker needs `LISTEN/NOTIFY`); replay is capped at 200; operational retention is fixed at 7 days with write-triggered cleanup; no continuous dependency/background-job monitor; CSV exports the currently loaded filtered client view (≤500 events); actor display was a UUID in the initial implementation (superseded by the 2026-11-10 chat actor directory).
+
+### 2026-11-10 — System Logs redesigned as a chat activity feed
+- Status: DONE.
+- Implemented: the Admin System Logs view now presents activity like a modern group chat rather than a terminal: incoming message bubbles with severity badges, event type, description, safe metadata chips, millisecond timestamps in the clinic timezone, day separators, and restrained arrival motion. Events without an actor render as centered system notices.
+- Identity: the page loads the existing bounded staff directory (`GET /staff`, Admin-only) and resolves each actor to a display name/role. Existing local demo doctor portraits are shown for doctor actors (the existing `ui.avatarForUser` behavior); nurses/admins use stable colored initials; unknown or system actors degrade safely. No email addresses are displayed.
+- UI: the chat header shows a group avatar, connection state, last-connected time, timezone, and the existing Pause / Auto-scroll / Copy / Export / Clear controls. Counters and filters are restyled as compact chat controls; the feed follows the app light/dark theme, remains keyboard-accessible, and is responsive on phones. The existing live SSE, filters, details dialog, copy/export, clear-view semantics and read-only boundary are unchanged.
+- Files changed: `frontend/system-logs.html`, `frontend/assets/js/system-logs.js`, `frontend/assets/css/styles.css`, `frontend/tests/render-smoke.mjs`, `frontend/DESIGN.md`, `docs/SYSTEM_LOGS.md`, `docs/TROUBLESHOOTING.md`, `docs/API.md`, `PLAN.md`.
+- Verification: frontend smoke **225/225**; render-path **96/96** (including sender portrait resolution, history/filter/clear/role-denial behavior); Docker image rebuilt; live E2E **ALL STEPS PASSED**; served page, chat JS and chat CSS verified; app/db/speech healthy. No backend code or API contract changed.
+- Limitation: the staff directory is fetched in one bounded page (100 accounts); actors beyond that page fall back to initials, and the page never displays staff emails.
 
 ## Final instruction to the coding agent
 

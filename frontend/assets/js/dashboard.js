@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // dashboard.js — authenticated home: who you are, what you can reach, and the
-// latest synthetic patient records. Everything rendered here comes from the
+// latest patient records. Everything rendered here comes from the
 // /api/v1/auth/me payload and the paginated /api/v1/patients list; nothing is
 // cached in web storage and no data is invented.
 // ---------------------------------------------------------------------------
@@ -8,7 +8,7 @@
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
-import * as commandMenu from './command-menu.js';
+import * as commandMenu from './command-menu.js?v=20261109j';
 import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
 
@@ -27,7 +27,13 @@ function renderProfileCard(user) {
   const permissions = Array.isArray(user.permissions) ? user.permissions : [];
 
   return ui.el('section', { class: 'card', 'aria-labelledby': 'profile-heading' },
-    ui.el('h2', { class: 'card__title', id: 'profile-heading', text: 'Your session' }),
+    ui.el('div', { class: 'profile-card__head' },
+      ui.avatarForUser(user, { size: 'lg' }),
+      ui.el('div', {},
+        ui.el('h2', { class: 'card__title', id: 'profile-heading', text: 'Your session' }),
+        ui.el('p', { class: 'text-muted', text: user.display_name || 'Not recorded' }),
+      ),
+    ),
     ui.el('dl', { class: 'detail-grid' },
       ui.el('dt', { text: 'Name' }),
       ui.el('dd', { text: user.display_name || 'Not recorded' }),
@@ -63,8 +69,16 @@ function renderQuickLinks(user) {
     links.push({
       href: 'patients.html',
       icon: 'users',
-      title: 'Find a synthetic patient',
-      text: 'Search the fictional patient list and open demographics, labs, and prescriptions.',
+      title: 'Find a patient',
+      text: 'Search the patient list and open demographics, labs, and prescriptions.',
+    });
+  }
+  if (auth.hasPermission(user, 'appointment:read')) {
+    links.push({
+      href: 'appointments.html',
+      icon: 'calendar',
+      title: 'Appointment calendar',
+      text: 'Plan, reschedule, and cancel visits; voice scheduling is available when enabled.',
     });
   }
   if (auth.hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
@@ -91,7 +105,7 @@ function renderQuickLinks(user) {
   }
   if (links.length === 0) {
     list.append(
-      ui.el('p', { class: 'text-muted', text: 'No sections are enabled for your account yet. Contact a demo administrator.' }),
+      ui.el('p', { class: 'text-muted', text: 'No sections are enabled for your account yet. Contact an administrator.' }),
     );
   }
 
@@ -121,8 +135,8 @@ function renderRecentPatients(user) {
       ui.clear(grid);
       if (items.length === 0) {
         ui.renderEmptyState(grid, {
-          title: 'No synthetic patients yet',
-          message: 'The fictional dataset is empty for your account. Seed the demo data and reload.',
+          title: 'No patients yet',
+          message: 'No patients are recorded for your account yet.',
           headingTag: 'h3',
         });
         return;
@@ -144,26 +158,6 @@ function renderRecentPatients(user) {
   return section;
 }
 
-function renderNoticeCard() {
-  return ui.el('section', { class: 'card card--notice', 'aria-labelledby': 'notice-heading' },
-    ui.el('h2', { class: 'card__title', id: 'notice-heading', text: 'Synthetic demo data \u2014 not for clinical use' }),
-    ui.el('p', {
-      text: 'Every record in this platform is fictional and generated for demonstration. This is not clinically validated, not a medical device, and must never be used for real patient care.',
-    }),
-    ui.el('div', { class: 'form-actions' },
-      ui.el('button', {
-        class: 'btn btn-secondary',
-        type: 'button',
-        onClick: ui.openAboutDemo,
-      }, 'About this demo'),
-      ui.el('a', {
-        class: 'btn btn-ghost',
-        href: 'mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue',
-      }, 'Report an issue'),
-    ),
-  );
-}
-
 function render(user) {
   const heading = document.getElementById('welcome-heading');
   if (heading) {
@@ -177,7 +171,6 @@ function render(user) {
       renderQuickLinks(user),
       renderRecentPatients(user),
       renderProfileCard(user),
-      renderNoticeCard(),
     ),
   );
   ui.markBlurReady(body);

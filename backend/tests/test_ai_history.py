@@ -30,7 +30,7 @@ from conftest import (
 
 ASK_PATH = "/api/v1/ai/ask"
 HISTORY_PATH = "/api/v1/ai/conversations"
-ASK_RESPONSE_KEYS = {"answer", "used_tools", "citations", "model", "ai_generated", "disclaimer"}
+ASK_RESPONSE_KEYS = {"answer", "used_tools", "citations", "model", "ai_generated"}
 ITEM_KEYS = {"id", "patient_id", "question", "answer", "used_tools", "citations", "model", "created_at"}
 
 

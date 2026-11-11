@@ -16,13 +16,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import ai, analytics, audit, auth, patients, staff
+from app.api.v1 import ai, analytics, appointments, audit, auth, messages, patients, staff, system_logs, voice
 
 api_v1 = APIRouter(prefix="/api/v1")
 
 api_v1.include_router(auth.router)
 api_v1.include_router(patients.router)
+api_v1.include_router(appointments.router)
+api_v1.include_router(voice.router)
 api_v1.include_router(staff.router)
 api_v1.include_router(audit.router)
 api_v1.include_router(ai.router)
+api_v1.include_router(messages.router)
+api_v1.include_router(system_logs.router)
 api_v1.include_router(analytics.router)

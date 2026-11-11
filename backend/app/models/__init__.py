@@ -3,7 +3,9 @@
 from app.models.admin import (
     AuditEvent,
     IdempotencyRecord,
+    Message,
     Permission,
+    SystemEvent,
     Role,
     StaffUser,
     UserRole,
@@ -19,17 +21,21 @@ from app.models.medication import (
     PrescriptionItem,
 )
 from app.models.patient import ClinicalNote, Diagnosis, Encounter, Patient, PatientAssignment
+from app.models.scheduling import Appointment, DoctorSchedule, TimeOff, WorkingHours
 
 __all__ = [
     "AiConversation",
+    "Appointment",
     "AuditEvent",
     "ClinicalNote",
     "Diagnosis",
+    "DoctorSchedule",
     "Encounter",
     "IdempotencyRecord",
     "LabOrder",
     "LabResult",
     "Medication",
+    "Message",
     "Patient",
     "PatientAssignment",
     "Permission",
@@ -41,7 +47,10 @@ __all__ = [
     "Role",
     "Specimen",
     "StaffUser",
+    "SystemEvent",
     "TestCatalog",
+    "TimeOff",
     "UserRole",
     "UserSession",
+    "WorkingHours",
 ]

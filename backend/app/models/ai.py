@@ -1,9 +1,9 @@
 """`admin` schema model: per-user AI assistant conversation history.
 
 Privacy position: `ai_conversation` is a PER-USER PRIVATE history of
-synthetic-demo conversations (questions, AI-generated answers, provenance),
+AI-assistant conversations (questions, AI-generated answers, provenance),
 scoped to its owner (`user_id`) and readable only by that owner through the
-API. It stores synthetic-demo content only. It is deliberately NOT an audit
+API. It stores synthetic content only. It is deliberately NOT an audit
 table: `admin.audit_event` keeps recording only `ai.ask`/`mcp.*` metadata as
 before and never payloads. There is deliberately NO soft delete and no
 retention job yet; a production build with real clinical content must add a

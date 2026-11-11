@@ -219,6 +219,9 @@ export class ShimDocument {
   createElement(tag) {
     return new ShimNode(tag);
   }
+  createElementNS(_namespace, tag) {
+    return new ShimNode(tag);
+  }
   createTextNode(value) {
     return new ShimText(value);
   }

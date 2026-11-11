@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>Patients — MediCore Clinical Platform (synthetic demo)</title>
-  <meta name="description" content="Search the fictional synthetic patient dataset of the MediCore Clinical Platform demonstration.">
+  <title>Patients — MediCore Clinical Platform</title>
+  <meta name="description" content="Search patients by name or medical record number.">
   <link rel="icon" href="assets/images/favicon.svg">
+  <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
        resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
@@ -14,7 +15,7 @@
   <link rel="modulepreload" href="assets/js/api.js">
   <link rel="modulepreload" href="assets/js/cache.js">
   <link rel="modulepreload" href="assets/js/auth.js">
-  <link rel="modulepreload" href="assets/js/command-menu.js">
+  <link rel="modulepreload" href="assets/js/command-menu.js?v=20261109j">
   <script>
     /* Deployment override — see assets/js/config.js. Example:
        window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
@@ -45,10 +46,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
             Need help?
           </p>
-          <p class="help-card__text">Open the demo overview or contact the maintainers about a problem.</p>
+          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
           <ul class="help-card__links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
+            <li><button type="button" class="link-button" data-open-about>About</button></li>
+            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
           </ul>
         </div>
       </div>
@@ -67,14 +68,20 @@
       <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
 
       <main id="main" class="container main">
-        <div class="page-header">
-          <h1>Patients</h1>
-          <p class="lede">Search the fictional synthetic patient dataset by name or medical record number.</p>
+        <div class="page-header toolbar">
+          <div>
+            <h1>Patients</h1>
+            <p class="lede">Search patients by name or medical record number.</p>
+          </div>
+          <button class="btn btn-primary" type="button" id="patient-new" hidden>
+            <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+            Add patient
+          </button>
         </div>
 
         <form id="patient-search-form" class="search-bar" role="search" novalidate>
           <div class="field">
-            <label for="patient-search">Search synthetic patients</label>
+            <label for="patient-search">Search patients</label>
             <div class="search-input">
               <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-3.6-3.6"/></svg>
               <input id="patient-search" name="q" type="search" autocomplete="off"
@@ -95,27 +102,14 @@
           <div class="loading-block">
             <div class="heart-loader heart-loader--md">
               <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
-              <p class="heart-loader__label">Loading synthetic patients&hellip;</p>
+              <p class="heart-loader__label">Loading patients&hellip;</p>
             </div>
           </div>
         </div>
       </main>
-
-      <footer class="site-footer">
-        <div class="container site-footer__inner">
-          <p class="footer-note">
-            MediCore — synthetic-data demonstration. Not clinically validated, not a
-            medical device, and not for clinical use. All records are fictional.
-          </p>
-          <ul class="footer-links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
-          </ul>
-        </div>
-      </footer>
     </div>
   </div>
 
-  <script type="module" src="assets/js/patients.js"></script>
+  <script type="module" src="assets/js/patients.js?v=20261109j"></script>
 </body>
 </html>

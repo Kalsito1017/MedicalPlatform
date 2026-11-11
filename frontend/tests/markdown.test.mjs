@@ -358,9 +358,9 @@ await check('literal details tags: whitelisted pattern only, all attributes drop
 await check('horizontal rules and blockquotes render', () => {
   assertEqual(first('---').tagName, 'HR', 'three dashes render as a rule');
   assertEqual(first('------').tagName, 'HR', 'longer rules render too');
-  const quote = first('> Внимание: това е демонстрационен запис.');
+  const quote = first('> Внимание: това е вътрешен запис.');
   assertEqual(quote.tagName, 'BLOCKQUOTE', 'quote lines render as a blockquote');
-  assertEqual(textOf(quote), 'Внимание: това е демонстрационен запис.', 'quote marker is stripped');
+  assertEqual(textOf(quote), 'Внимание: това е вътрешен запис.', 'quote marker is stripped');
 });
 
 await check('unparseable lines fall back to plain paragraphs like before', () => {

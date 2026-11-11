@@ -23,17 +23,31 @@ in `docs/BACKLOG.md`.
 | Permission | doctor | nurse | clinical_admin (Admin) |
 |---|---|---|---|
 | `patient:read` | ✔ | ✔ | ✔ |
+| `patient:write` | ✔ | ✖ | ✔ |
+| `patient:delete` | ✖ | ✖ | ✔ |
+| `message:read` | ✔ | ✖ | ✔ |
+| `message:write` | ✔ | ✖ | ✔ |
 | `lab:read` | ✔ | ✔ | ✔ |
 | `prescription:read` | ✔ | ✔ | ✔ |
 | `staff:read` | ✖ | ✖ | ✔ |
 | `staff:manage` | ✖ | ✖ | ✔ |
 | `role:assign` | ✖ | ✖ | ✔ |
 | `audit:read` | ✖ | ✖ | ✔ |
+| `logs:read` | ✖ | ✖ | ✔ |
 | `analytics:read` | ✖ | ✖ | ✔ |
+| `appointment:read` | ✔ | ✔ | ✔ |
+| `appointment:write` | ✔ | ✖ | ✔ |
+| `appointment:manage_availability` | ✔ | ✖ | ✔ |
 
-Deny by default. `nurse` is least-privilege clinical read; `clinical_admin` (Admin) holds
-every permission. `analytics:read` is declared in advance of the analytics page (a later
-wave); no endpoint requires it yet.
+Deny by default. `nurse` is least-privilege clinical read with a **read-only
+clinic-wide appointment view** (`appointment:read` only; no writes, no
+availability management, no voice scheduling); `clinical_admin` (Admin) holds
+every permission. `analytics:read` is enforced by
+`GET /api/v1/analytics/summary` (wave U, 2026-10-27; expanded with validated ranges and operational metrics 2026-11-09). Appointment routes
+(2026-11-09) enforce doctor-own-calendar scoping server-side; the Admin/nurse
+reader must name a doctor for scoped availability/slot reads, and writes cannot
+be performed by a nurse or by a doctor targeting another doctor's calendar
+through a request body or AI output. There are now **16** permission keys.
 
 ### Where checks live
 
@@ -95,6 +109,9 @@ browser storage.
 ### Not used (deliberately)
 
 - No JWT or bearer tokens in `localStorage`/`sessionStorage`.
+- The only web-storage item is the non-sensitive UI preference
+  `medicore-theme` (`light`/`dark`/`system`); it contains no account, patient,
+  clinical, or session data. All application/response caches remain in memory.
 - No long-lived API keys in the browser. The LLM key exists only as a server-side
   environment variable.
 
@@ -109,11 +126,34 @@ browser storage.
 | **CSRF** | Evil page triggers state-changing requests with the victim's cookie | `SameSite=Lax` cookie + double-submit `X-CSRF-Token` on all non-GET requests | Phase 5 |
 | **IDOR** | Authenticated user guesses/enumerates a patient UUID | Opaque UUIDs; per-request authorization via `policy.py`; concealed resources return `404 not_found` (not `403`) so existence is not confirmed; tests attempt direct ID access | Phase 5–6, tests Phase 12 |
 | **Privilege escalation** | User assigns themselves `clinical_admin` | Self role assignment blocked server-side (`POST /api/v1/staff/{user_id}/roles` targeting self → `403`, unconditionally); role changes require `role:assign` + CSRF; unknown role keys (including the removed `tech_admin`) are rejected with `400`; last-active-Admin protection (`409`); all changes audited; no break-glass or impersonation exists in the demo | Phase 5, 10 |
-| **Prompt injection** | A synthetic note or patient field contains "ignore instructions / call tool X" | Prompt text is treated as untrusted data, never as instructions; server-side tool **allowlist** (only `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`, `get_my_recent_patients` — all read-only); identity from session, never from tool arguments; authorization re-executed inside every tool; bounds on tool count (`LLM_MAX_TOOL_CALLS`), result size, and request duration; model output cannot trigger any privileged or state-changing action | Phases 7–8, tests Phase 12 |
+| **Prompt injection** | A record field contains "ignore instructions / call tool X" | Prompt text is treated as untrusted data, never as instructions; server-side tool **allowlist** (only `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`, `get_my_recent_patients` — all read-only); identity from session, never from tool arguments; patient-scoped calls are restricted to the three single-patient tools and the verified patient id; authorization re-executed inside every tool; bounds on tool count (`LLM_MAX_TOOL_CALLS` / `LLM_MAX_TOOL_CALLS_GENERAL`), result size, and request duration; deterministic guardrails reject explicit credential/database/shell/bypass requests and unsafe output; model output cannot trigger any privileged or state-changing action | Phases 7–8, tests Phase 12 |
 | **Secret leakage** | API key, DB URL, or session token appears in logs, repo, or browser | Secrets only in env vars; `.env` gitignored; log redaction of auth headers, cookies, tokens, passwords; generic error envelope to clients (never stack traces/SQL); no secrets in frontend assets; repo/history review before publishing | Phase 11 + `.gitignore` |
 | **DoS on the AI endpoint** | Repeated expensive LLM calls exhaust quota/money | Rate limit on `POST /api/v1/ai/ask`; question and prompt size bounds; `LLM_MAX_TOOL_CALLS` and `LLM_REQUEST_TIMEOUT_SECONDS`; Console **budget cap** on the service-account key; `LLM_ENABLED=false` kill switch; endpoint degrades to `503` without affecting the rest of the app | Phases 8, 11 |
 | **Credential stuffing / brute force** | Automated password guessing | Login rate limiting + progressive lockout; uniform errors; argon2id cost slows offline cracking if hashes ever leak | Phase 5 |
 | **Session theft (XSS → session)** | Script steals the session cookie | `HttpOnly` cookies; XSS controls above; server-side revocation on logout | Phase 5, 9 |
+
+### Focused AI guardrails
+
+`backend/app/llm/guardrails.py` is a deterministic supplementary layer around
+the LLM loop, not a replacement for the trusted authorization boundary:
+
+- Input requests for system prompts, credentials/DSNs, SQL, shell/filesystem/
+  database access, authorization bypass, or out-of-scope patients fail closed
+  before the provider call.
+- Patient-scoped tool execution is restricted to `get_patient_summary`,
+  `get_patient_lab_results`, and `get_recent_prescriptions` with exactly the
+  verified `patient_id`; cross-patient tools and mismatched arguments are
+  denied before MCP.
+- Tool payloads are minimized before prompt insertion: record/citation IDs and
+  clinically necessary facts remain; MRNs, raw dates of birth, and unnecessary
+  foreign keys are removed from model context.
+- Output containing secret/DSN/token/private-key patterns, external URLs, raw
+  HTML/script/event-handler payloads, internal prompt/config text, or citation
+  IDs absent from authorized tool results is blocked.
+
+Blocked requests receive a generic `403 forbidden`; no question, answer, prompt,
+or clinical payload is logged or audited. These checks are lexical and bounded —
+they are defence in depth, not proof that arbitrary model output is safe.
 
 ### HTTP security headers
 
@@ -126,7 +166,7 @@ Set on **every** response — API, static pages, and error envelopes — by
 | `X-Content-Type-Options` | `nosniff` | no MIME sniffing of API or asset responses |
 | `X-Frame-Options` | `DENY` | the UI is never framed (mirrors CSP `frame-ancestors 'none'`) |
 | `Referrer-Policy` | `no-referrer` | the strictest option; the app needs no referrer and patient identifiers live in page URLs, so nothing about navigation may leak cross-origin |
-| `Permissions-Policy` | camera, microphone, geolocation, payment, sensors, USB, screen capture, … denied (`()`) | the demo uses none of these browser features |
+| `Permissions-Policy` | microphone `(self)`; camera, geolocation, payment, sensors, USB, screen capture, … denied (`()`) | voice scheduling uses `getUserMedia` from this origin after an explicit user action; no other browser feature is allowed |
 | `Cross-Origin-Opener-Policy` | `same-origin` | isolates the browsing context from cross-origin openers |
 | `Cross-Origin-Resource-Policy` | `same-origin` | responses are for this origin only |
 | `X-Permitted-Cross-Domain-Policies` | `none` | no Flash/PDF cross-domain policies |
@@ -148,12 +188,52 @@ without breaking under CSP — by design.
 receives a relaxed CSP (jsdelivr CDN + inline) on `/docs` and `/redoc` only;
 production mode relaxes nothing and the docs UI is off.
 
+**Appointment scheduling controls.** The appointment calendar is scheduling
+metadata, not clinical data. Authorization is still enforced server-side:
+Doctors read/write only their own calendar; an Admin may act across doctors and
+must name `doctor_id` for scoped reads/writes; a Nurse has a **read-only**
+clinic-wide view and no write/availability/voice permissions. A Doctor naming
+another doctor is `403`; another doctor's appointment id is concealed as `404`
+and audited `appointment.denied`. Nurse write requests are `403`. Writes
+check patient access, working hours, time off, and both doctor/patient overlap.
+Concurrent bookings take PostgreSQL transaction advisory locks on the doctor
+and patient and re-check overlap inside the transaction, so two simultaneous
+requests cannot both succeed. Availability replacement validates interval
+order/overlap and is bounded (≤21 working intervals, ≤100 time-off rows).
+Appointment mutations are audited; the AI interpreter can only propose.
+
+**Voice transcription and the private speech service.** The microphone is used
+only after an explicit user action; `MediaRecorder` is feature-detected, tracks
+are stopped immediately on stop, and audio stays in browser memory. The upload
+route is the only request allowed above the global 1 MiB body limit; its
+allowance is an exact `(POST, /api/v1/voice/transcriptions)` match clamped to a
+hard 8 MiB ceiling (default 4 MiB) in `BodySizeLimitMiddleware`, so no other
+route inherits it. The server streams the upload to a `0700` temporary
+directory, writes the source `0600`, validates the client media type, probes
+duration with FFprobe, rejects >`VOICE_MAX_DURATION_SECONDS` (default 60), and
+converts with FFmpeg to 16 kHz mono PCM WAV using argument lists (never a
+shell) and timeouts. The converted PCM size is bounded and re-read with Python's
+`wave` module. The temporary directory is removed in `finally`. Audio and
+transcripts are **never** logged, audited, stored in the database, or written to
+web storage. The private whisper.cpp service is reachable only on the compose
+network in the local stack and is called with an optional bearer token or a
+Cloud Run ID token (`WHISPER_AUTH_MODE`); failure is a controlled `503`/`429`.
+The AI proposal endpoint calls the model with `tools=[]`, resolves patients
+through the existing read-only MCP tool, and never receives or returns authority
+to write; final creation is a separate explicit doctor-confirmed request that
+re-runs authorization, validation, locks, and audit. Transcription itself stays
+inside the private speech service; the AI proposal step is separate and, when
+the LLM is enabled, sends the edited transcript (possibly containing a patient
+name) to the configured external provider. With `LLM_ENABLED=false` it fails
+closed with `503` and makes no external call.
+
 **Production caveat:** when Cloudflare Pages serves the frontend and proxies
 `/api/*` to the backend (Phase 14/15), page responses are served by Pages and do
 **not** pass through this middleware. The equivalent headers must then be set at
 the edge (Cloudflare `_headers` file / Transform Rules) or by proxying the whole
 site to the backend; API responses already carry the headers above. This must be
-verified before the public launch checklist is signed off.
+verified before the public launch checklist is signed off. The microphone
+header must also be preserved at the edge, or browser recording will be blocked.
 
 ---
 
@@ -167,19 +247,94 @@ Recorded in `admin.audit_event` (readable via `GET /api/v1/audit` with `audit:re
 | Logout | actor, timestamp, request id |
 | Permission denial (any `403`) | actor, attempted action, outcome, timestamp, request id |
 | Patient-record reads (patient, summary, labs, prescriptions, encounter) | actor, action, resource type + resource id, outcome, timestamp, request id |
+| Patient creation (`patient.create`) | actor, new patient resource id, outcome, timestamp, request id; no clinical payload |
+| Patient removal (`patient.delete`) | actor, soft-deleted patient resource id, outcome, timestamp, request id; no clinical payload. The row is retained; child records and audit history are not erased |
+| Staff messages (`message.send`, `message.read`) | actor, message resource id, outcome, timestamp, request id; **never** subject, body, recipient address or attachments |
 | MCP tool calls | tool name, actor, target resource reference, outcome, request id |
 | Staff / role changes (create, patch, activate/deactivate, role add/remove) | actor, target user, change summary, outcome, request id |
+| Appointment mutations (`appointment.create`, `appointment.update`, `appointment.reschedule`, `appointment.cancel`, `appointment.remove_from_calendar`, `appointment.denied`, `appointment.availability.update`) | actor, appointment/doctor resource reference, outcome, request id; **no** patient clinical content, notes, or transcript |
+| Appointment AI proposal (`appointment.ai.propose`) | actor, proposal resource type, outcome, request id; **never** the transcript, patient name, or model output |
+| Voice transcription | **not audited by design**: it is a transient audio-to-text operation with no clinical record, and the transcript/audio must not be retained. Safe outcome/latency metadata is written to the separate operational log (`voice.transcription.*`) and shown in System Logs. |
+| Analytics reads (`analytics.read`) | actor, resource type `analytics`, outcome, timestamp, request id; **never** the selected range values, returned aggregates, patient identifiers or clinical payload |
+
+Analytics is a **read-only aggregate** surface enforced by `analytics:read`
+(Admin only). Every request is re-authorized server-side; Doctor/Nurse direct
+API calls receive `403` regardless of navigation. The read model accepts only
+validated inclusive UTC dates (both or neither, maximum 366 days) and never
+accepts arbitrary SQL, filters or per-patient selectors. Aggregate responses
+contain no patient names, MRNs, notes, AI questions/answers, audio, transcripts,
+raw audit metadata (IP/user-agent/resource ids), passwords, tokens or secrets.
+Detailed audit inspection stays in the separate `audit:read` interface.
+
+Per-request AI latency and voice transcription metrics are **not persisted**;
+the AI section reports them as `available: false` rather than logging extra
+sensitive data to make a chart. Provider availability is not continuously
+probed. Analytics export/print was deferred: a future export must be its own
+authorized, audited, aggregate-only path with explicit redaction review.
 
 Deliberately **NOT** recorded:
 
 - Full clinical payloads (no note text, lab values, or record bodies in audit rows).
 - Passwords, password hashes, session tokens, CSRF tokens, API keys, connection strings.
 - Raw LLM prompts/completions.
+- Audio recordings, transcription text, and speech-service request/response bodies.
 
 Retention: audit events are retained for the lifetime of the demo database. There is no
 automated retention/deletion job yet; retention rules and GDPR-style erasure are backlog
 items (`docs/BACKLOG.md`). Resetting demo data (see `docs/DEPLOYMENT.md`) clears audit
 history along with it.
+
+### Operational system-event log (System Logs)
+
+System Logs is a **read-only operational monitor**, not a second audit trail and
+not a clinical-record viewer. Its storage and retention are deliberately
+separate:
+
+| Concern | Audit events | Operational events |
+|---|---|---|
+| Table | `admin.audit_event` | `admin.system_event` |
+| Purpose | accountability/security | application and dependency monitoring |
+| Retention | demo lifetime; no automated deletion | **7 days**, pruned best-effort on operational writes |
+| Access | `audit:read` | `logs:read` |
+| Examples | login, denial, patient/lab/prescription reads, appointment/staff changes | AI/tool latency and failures, voice outcomes, appointment conflicts/rejections, API 5xx/429s, startup |
+| Failure handling | written on the caller's transaction; failure follows the existing request/audit policy and is not silently swallowed | best-effort: a failure logs a server warning and never blocks the clinical request |
+
+Controls:
+
+- **Authorization:** only `clinical_admin` holds `logs:read`. History and stream
+  endpoints return 401 anonymous / 403 for Doctor and Nurse. The SSE generator
+  re-resolves the session and permission periodically (including on busy
+  streams) and sends `auth_expired` before closing after revocation,
+  deactivation or permission removal. Navigation hiding is not a control.
+- **Data minimization:** operational rows carry only an approved event type,
+  category/severity from the registry, an optional actor UUID, opaque resource
+  type/reference, request id, outcome and a flat metadata allowlist
+  (`language`, durations, model/provider, status, safe error code/tool,
+  method/route/HTTP status, counts, reason). Values are bounded and validated
+  before persistence. Free-form, nested or unknown keys are dropped.
+- **Never recorded:** clinical text or values, patient names/MRNs/DOB, AI
+  questions/answers, transcripts, audio, request/response bodies, passwords,
+  tokens, cookies, API keys, connection strings, authorization headers,
+  filesystem contents, environment variables, or raw exception text/stack
+  traces. Unknown audit actions map to a generic `system.audit_event` with a
+  bounded action string; the durable audit row itself is unchanged.
+- **Audit integrity:** the live bus receives an audit payload only after the
+  caller's transaction commits (`after_commit`); rollbacks discard it. The bus
+  is not a source of truth; reconnect/replay reads the durable table. Rows are
+  never duplicated into `system_event`.
+- **No shell:** the page and API expose no command input, shell, SQL console,
+  container console or server-control operation. Export is a bounded CSV of the
+  currently loaded filtered view; Clear View clears only the browser display.
+- **Bounded resources:** 7-day query window, max 100 history rows, max 500
+  offset, max 200 replay events, a 500-event per-subscriber queue (oldest
+  dropped), 500-event client buffer, and 15-second heartbeats. SSE connections
+  do not hold a database transaction; each replay/auth check uses a short-lived
+  session.
+- **Operational failure policy:** writing an operational event is best-effort
+  and must never turn a successful clinical action into a failure. If the
+  operational store is unavailable, the request proceeds and the application
+  log records a warning. Audit persistence is deliberately stricter; it remains
+  part of the caller's transaction and follows `docs/API.md`.
 
 ---
 
@@ -212,7 +367,7 @@ This system is:
   touches the data.
 - **NOT clinically validated** and **NOT a medical device.** No output — human-written or
   AI-generated — is a diagnosis, treatment recommendation, or validated clinical
-  decision. AI output is labelled as AI-generated and informational.
+  decision. AI output is labelled AI-generated.
 - **NOT a production clinical system.** It is a publicly reachable synthetic-data demo
   with production-grade *foundations*, not production hardening. Production hardening
   items (MFA, SSO, SCIM, backups/PITR, monitoring/on-call, retention/erasure, pen tests,
@@ -231,7 +386,8 @@ Public availability is not the same as being compliant or safe for clinical use.
 - No MFA; password compromise is full account compromise.
 - No automated audit retention/erasure.
 - Free-tier hosting sleeps/autosuspends; availability is best-effort.
-- Rate limits (login, `/ai/ask`) are application-level **in-process** state: per
+- Rate limits (login, `/ai/ask`, voice transcription, appointment interpretation)
+  are application-level **in-process** state: per
   instance, reset on restart, not coordinated across instances. A shared store
   (Redis or a database table) is required before scaling out. There is no edge
   WAF/DDoS protection beyond what the hosting providers provide.
@@ -245,6 +401,19 @@ Public availability is not the same as being compliant or safe for clinical use.
   frontend (local/Docker); the production Pages-hosted frontend needs the same
   headers configured at the edge (see §3 "HTTP security headers").
 - Audit is read-only via API; it is not tamper-evident (no append-only store or hashing).
+- Speech recognition is CPU-only whisper.cpp Tiny multilingual. Transcription
+  accuracy, latency, and memory use have **not** been benchmarked across accents,
+  Bulgarian/English clinical vocabulary, or the target host; treat transcripts
+  as editable drafts. No GPU path, no Vosk fallback, and no cloud speech API.
+- The browser microphone/`MediaRecorder` path is feature-detected and has a
+  manual text fallback, but real-browser permission prompts and codec behaviour
+  are not verified by the automated suite (it has no browser).
+- `WHISPER_AUTH_MODE=gcp_iam` metadata-token fetching and Cloud Run
+  service-to-service IAM are implemented/documented but **not verified** here;
+  the current deployment target is Render + Cloudflare + Neon.
+- Voice rate limiting is in-process like the other limiters; voice temp files
+  live under the system temp directory and are removed per request, but an
+  abrupt process kill can leave files for the OS to reap.
 
 ## 8. Vulnerability disclosure
 
@@ -257,5 +426,8 @@ reports within a few working days; this demo has no formal SLA.
 
 - `docs/API.md` — frozen API contract, error envelope, permission matrix (source of truth).
 - `docs/ARCHITECTURE.md` — trust boundaries and data flows.
+- `docs/AI_GUARDRAILS.md` — section-by-section assessment against
+  `patient_data_ai_agent_security_guardrails.md`, including partial controls and
+  open gaps; not a compliance certification.
 - `docs/BACKLOG.md` — deferred production security/compliance work.
 - `docs/TROUBLESHOOTING.md` — how to gather diagnostics without leaking secrets.

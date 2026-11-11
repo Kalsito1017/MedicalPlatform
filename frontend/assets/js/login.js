@@ -8,6 +8,7 @@
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as prefetch from './prefetch.js';
+import * as theme from './theme.js';
 import * as ui from './ui.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -81,7 +82,7 @@ function renderSignedIn(user) {
         onClick: async () => {
           const confirmed = await ui.confirmDialog({
             title: 'Sign out',
-            message: 'Sign out of the demo? Your session ends and protected pages will require signing in again.',
+            message: 'Sign out? Your session ends and protected pages will require signing in again.',
             confirmLabel: 'Sign out',
           });
           if (confirmed) await auth.logout();
@@ -91,12 +92,28 @@ function renderSignedIn(user) {
   );
 }
 
+function initPasswordToggle() {
+  const toggle = document.getElementById('password-toggle');
+  const passwordInput = document.getElementById('password');
+  if (!toggle || !passwordInput) return;
+
+  toggle.addEventListener('click', () => {
+    const show = passwordInput.type === 'password';
+    passwordInput.type = show ? 'text' : 'password';
+    toggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+    toggle.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+    if (typeof passwordInput.focus === 'function') passwordInput.focus();
+  });
+}
+
 function initLoginForm() {
   const form = document.getElementById('login-form');
   const emailInput = document.getElementById('email');
   const passwordInput = document.getElementById('password');
   const submitButton = document.getElementById('login-submit');
   if (!form || !emailInput || !passwordInput || !submitButton) return;
+
+  initPasswordToggle();
 
   for (const input of [emailInput, passwordInput]) {
     input.addEventListener('input', () => setFieldError(input, null));
@@ -174,6 +191,7 @@ function initLoginForm() {
 ui.onReady(async () => {
   ui.wireFooterDialogs();
   ui.setRetryHandler(() => window.location.reload());
+  theme.mountSwitcher(document.querySelector('.landing-header'));
   initLoginForm();
   // Pre-rendering (prefetch.js): a successful sign-in lands on the dashboard,
   // so warm its module on idle (link hint only — nothing is executed early).
@@ -188,7 +206,7 @@ ui.onReady(async () => {
     if (info.retryable) {
       ui.showGlobalBanner({
         tone: 'warn',
-        message: 'We cannot confirm your session right now \u2014 the demo backend did not respond.',
+        message: 'We cannot confirm your session right now \u2014 the backend did not respond.',
         actionLabel: 'Retry',
         onAction: () => window.location.reload(),
       });

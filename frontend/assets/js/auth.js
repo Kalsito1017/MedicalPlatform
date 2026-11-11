@@ -39,7 +39,15 @@ export function navItemsFor(user) {
   const items = [{ key: 'dashboard', label: 'Dashboard', href: 'dashboard.html' }];
   if (hasPermission(user, 'patient:read')) {
     items.push({ key: 'patients', label: 'Patients', href: 'patients.html' });
+  }
+  if (hasPermission(user, 'appointment:read')) {
+    items.push({ key: 'appointments', label: 'Appointments', href: 'appointments.html' });
+  }
+  if (hasPermission(user, 'patient:read')) {
     items.push({ key: 'ai', label: 'AI Assistant', href: 'ai.html' });
+  }
+  if (hasPermission(user, 'message:read')) {
+    items.push({ key: 'messages', label: 'Messages', href: 'messages.html' });
   }
   if (hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
     items.push({ key: 'admin', label: 'Admin', href: 'admin.html' });
@@ -51,6 +59,14 @@ export function navItemsFor(user) {
       label: 'Analytics',
       href: 'analytics.html',
       commandLabel: 'Open Analytics',
+    });
+  }
+  if (hasPermission(user, 'logs:read')) {
+    items.push({
+      key: 'logs',
+      label: 'System Logs',
+      href: 'system-logs.html',
+      commandLabel: 'Open System Logs',
     });
   }
   return items;

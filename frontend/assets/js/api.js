@@ -129,11 +129,15 @@ async function parseBody(response) {
  * rejects with ApiError for every failure mode, including network failure
  * (status 0, code 'network_error').
  */
-export async function request(path, { method = 'GET', body, query, signal, idempotencyKey } = {}) {
+export async function request(
+  path,
+  { method = 'GET', body, query, signal, idempotencyKey, formData } = {}
+) {
   const upperMethod = method.toUpperCase();
   const headers = { Accept: 'application/json' };
 
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  // FormData must set its own multipart boundary: never add Content-Type here.
+  if (body !== undefined && formData === undefined) headers['Content-Type'] = 'application/json';
   if (!SAFE_METHODS.has(upperMethod)) {
     const csrf = readCsrfCookie();
     if (csrf) headers['X-CSRF-Token'] = csrf;
@@ -142,6 +146,10 @@ export async function request(path, { method = 'GET', body, query, signal, idemp
     headers['Idempotency-Key'] = idempotencyKey || newIdempotencyKey();
   }
 
+  let requestBody;
+  if (formData !== undefined) requestBody = formData;
+  else if (body !== undefined) requestBody = JSON.stringify(body);
+
   let response;
   try {
     response = await fetch(buildUrl(path, query), {
@@ -149,7 +157,7 @@ export async function request(path, { method = 'GET', body, query, signal, idemp
       headers,
       credentials: 'include',
       cache: 'no-store',
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: requestBody,
       signal,
     });
   } catch (networkFailure) {
@@ -157,7 +165,7 @@ export async function request(path, { method = 'GET', body, query, signal, idemp
     throw new ApiError({
       status: 0,
       code: 'network_error',
-      message: 'The demo backend could not be reached.',
+      message: 'The backend could not be reached.',
     });
   }
 
@@ -201,6 +209,15 @@ export function post(path, body, options) {
   return request(path, { ...options, method: 'POST', body });
 }
 
+/** POST multipart/form-data (audio uploads); CSRF and idempotency included. */
+export function postForm(path, formData, options) {
+  return request(path, { ...options, method: 'POST', formData });
+}
+
+export function put(path, body, options) {
+  return request(path, { ...options, method: 'PUT', body });
+}
+
 export function patch(path, body, options) {
   return request(path, { ...options, method: 'PATCH', body });
 }
@@ -224,7 +241,7 @@ export function describeApiError(error) {
       return {
         title: 'Backend unreachable',
         message:
-          'We cannot reach the demo backend right now. It may be starting up, offline, or blocked by a network problem. Check your connection and try again.',
+          'We cannot reach the backend right now. It may be starting up, offline, or blocked by a network problem. Check your connection and try again.',
         retryable: true,
       };
     case 400:
@@ -276,7 +293,7 @@ export function describeApiError(error) {
       return {
         title: 'Something went wrong',
         message:
-          'The demo backend hit an unexpected error. Nothing was changed. Please try again.',
+          'The backend hit an unexpected error. Nothing was changed. Please try again.',
         retryable: true,
       };
     case 503:
@@ -284,7 +301,7 @@ export function describeApiError(error) {
         title: 'Service temporarily unavailable',
         message:
           serverMessage ||
-          'A backend service is temporarily unavailable. The rest of the demo keeps working; please try again shortly.',
+          'A backend service is temporarily unavailable. The rest of the app keeps working; please try again shortly.',
         retryable: true,
       };
     default:

@@ -6,7 +6,7 @@
   plus patient access (the concealment contract: an inaccessible patient is
   `404 not_found`, never 403),
 * general lookup (`{"question"}`, no patient_id) - permission `patient:read`;
-  the model may search and read records across the synthetic patients the
+  the model may search and read records across the patients the
   caller is authorized for, and every tool call is authorization-checked again
   inside the tool layer.
 
@@ -35,6 +35,7 @@ When the LLM is disabled or unreachable the endpoint answers 503
 """
 from __future__ import annotations
 
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Request, Response
@@ -46,7 +47,8 @@ from app.api.idempotency import ENDPOINT_AI_ASK, IdempotencyContext, Idempotency
 from app.audit.logger import write_audit_event
 from app.auth.identity import client_ip
 from app.authorization.policy import Principal, require_permission
-from app.errors import DependencyUnavailable, NotFound, RateLimited, Unauthenticated
+from app.errors import DependencyUnavailable, Forbidden, NotFound, RateLimited, Unauthenticated
+from app.llm.guardrails import GUARDRAIL_BLOCK_MESSAGE, GuardrailBlocked
 from app.llm.limiter import ai_rate_limiter
 from app.llm.loop import ToolLoopAbort, run_assistant
 from app.llm.provider import (
@@ -56,9 +58,10 @@ from app.llm.provider import (
     LLMUnavailable,
     build_provider,
 )
+from app.logs.service import record_operational_event
 from app.mcp.context import ToolContext
 from app.mcp.server import mcp_server
-from app.schemas.ai import DISCLAIMER, AskRequest, AskResponse, Citation, ConversationOut
+from app.schemas.ai import AskRequest, AskResponse, Citation, ConversationOut
 from app.schemas.common import Page
 from app.services import ai_history
 from app.services.access import check_patient_access
@@ -158,6 +161,15 @@ async def ask(
         )
         raise RateLimited(retry_after=retry_after)
     ai_rate_limiter.record(rate_key)
+    mode = "patient" if patient_id is not None else "general"
+    started = time.perf_counter()
+    await record_operational_event(
+        event_type="ai.request.started",
+        actor_id=principal.user_uuid,
+        request_id=request_id,
+        outcome="info",
+        metadata={"mode": mode},
+    )
 
     provider = build_provider(settings)
     tool_context = ToolContext(
@@ -175,7 +187,32 @@ async def ask(
             tool_context=tool_context,
             settings=settings,
         )
+    except GuardrailBlocked:
+        await record_operational_event(
+            event_type="ai.request.failed",
+            actor_id=principal.user_uuid,
+            request_id=request_id,
+            outcome="error",
+            metadata={"mode": mode, "duration_ms": round((time.perf_counter() - started) * 1000), "error_code": "guardrail_blocked"},
+        )
+        await _audit_ask(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            outcome="denied",
+        )
+        raise Forbidden(GUARDRAIL_BLOCK_MESSAGE) from None
     except LLMRateLimited as exc:
+        await record_operational_event(
+            event_type="ai.request.rate_limited",
+            actor_id=principal.user_uuid,
+            request_id=request_id,
+            outcome="warning",
+            metadata={"mode": mode, "duration_ms": round((time.perf_counter() - started) * 1000), "error_code": "provider_rate_limit"},
+        )
         await _audit_ask(
             db,
             request=request,
@@ -187,6 +224,19 @@ async def ask(
         )
         raise RateLimited(exc.message, retry_after=exc.retry_after)
     except (LLMUnavailable, LLMTimeout, LLMRejected, ToolLoopAbort) as exc:
+        if isinstance(exc, LLMTimeout):
+            event_type = "ai.request.timeout"
+        elif isinstance(exc, LLMUnavailable):
+            event_type = "ai.request.unavailable"
+        else:
+            event_type = "ai.request.failed"
+        await record_operational_event(
+            event_type=event_type,
+            actor_id=principal.user_uuid,
+            request_id=request_id,
+            outcome="error",
+            metadata={"mode": mode, "duration_ms": round((time.perf_counter() - started) * 1000), "error_code": type(exc).__name__},
+        )
         await _audit_ask(
             db,
             request=request,
@@ -226,7 +276,6 @@ async def ask(
         citations=citations,
         model=outcome.model,
         ai_generated=True,
-        disclaimer=DISCLAIMER,
     )
     if idem is not None:
         # Recorded before the single commit below so the idempotency row commits
@@ -236,6 +285,18 @@ async def ask(
         if replay is not None:
             return replay.response()
 
+    await record_operational_event(
+        event_type="ai.request.completed",
+        actor_id=principal.user_uuid,
+        request_id=request_id,
+        outcome="success",
+        metadata={
+            "mode": mode,
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+            "model": outcome.model,
+            "tool_calls": len(outcome.used_tools or []),
+        },
+    )
     await _audit_ask(
         db,
         request=request,

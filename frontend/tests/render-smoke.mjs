@@ -34,7 +34,7 @@
  * patient prefetch (permission-gated, in-memory), and idempotency keys on
  * mutating requests, and the wave UI-C responsive contract: the command
  * palette's arrow-follow scroll ({block:'nearest'} on the NEW active option),
- * wrap-safe long synthetic names in patient cards and the patient header,
+ * wrap-safe long names in patient cards and the patient header,
  * and the narrow-width structure contract (card-stacked tables, labelled
  * keyboard-focusable scroll regions — the shim has no layout, real layout at
  * 320–430px is browser-verified).
@@ -83,6 +83,108 @@ const DOCTOR = {
   permissions: ['patient:read', 'lab:read', 'prescription:read'],
   is_active: true,
 };
+const PATIENT_WRITER = {
+  ...DOCTOR,
+  permissions: [...DOCTOR.permissions, 'patient:write'],
+};
+const MESSAGING_DOCTOR = {
+  ...DOCTOR,
+  permissions: [...DOCTOR.permissions, 'message:read', 'message:write'],
+};
+const SYSTEM_LOG_EVENT = {
+  id: 'audit:11111111-1111-1111-1111-111111111111',
+  timestamp: '2026-11-09T10:00:00.123456Z',
+  severity: 'info',
+  category: 'patients',
+  event_type: 'patient.read',
+  description: 'Patient record accessed',
+  actor_id: 'u1',
+  resource_type: 'patient',
+  resource_reference: 'p1',
+  request_id: 'req-log-1',
+  outcome: 'success',
+  metadata: {},
+};
+const SYSTEM_LOG_STAFF = {
+  items: [DOCTOR],
+  total: 1,
+  limit: 100,
+  offset: 0,
+};
+const SYSTEM_LOGS_PAGE = {
+  items: [SYSTEM_LOG_EVENT],
+  total: 1,
+  limit: 50,
+  offset: 0,
+  counts: { total: 1, info: 1, success: 0, warning: 0, error: 0, security: 0 },
+  start: '2026-11-09T09:45:00Z',
+  end: '2026-11-09T10:00:00Z',
+  timezone: 'UTC',
+};
+const SYSTEM_LOG_IDS = [
+  'page-body',
+  'logs-loading',
+  'logs-status',
+  'logs-connection',
+  'logs-last-connected',
+  'logs-last-event',
+  'logs-stat-total',
+  'logs-stat-info',
+  'logs-stat-success',
+  'logs-stat-warning',
+  'logs-stat-error',
+  'logs-stat-security',
+  'logs-filter-form',
+  'logs-severity',
+  'logs-category',
+  'logs-range',
+  'logs-custom',
+  'logs-start',
+  'logs-end',
+  'logs-actor',
+  'logs-event-type',
+  'logs-request-id',
+  'logs-outcome',
+  'logs-search',
+  'logs-apply',
+  'logs-reset',
+  'logs-filter-error',
+  'logs-timezone',
+  'logs-terminal',
+  'logs-empty',
+  'logs-pause',
+  'logs-autoscroll',
+  'logs-copy-visible',
+  'logs-export',
+  'logs-clear',
+  'logs-new-indicator',
+];
+const MESSAGE_INBOX = {
+  id: 'm1',
+  sender_id: 'u9',
+  sender_display_name: 'Doc Sender',
+  recipient_id: 'u2',
+  recipient_display_name: 'Cal Admin',
+  subject: 'Rota review',
+  body: 'Please review the rota for next week.',
+  read_at: null,
+  created_at: '2026-11-09T10:00:00Z',
+  updated_at: '2026-11-09T10:00:00Z',
+};
+const MESSAGE_RECIPIENTS = {
+  items: [{ id: 'u9', display_name: 'Doc Sender', roles: ['doctor'] }],
+};
+const MESSAGES_IDS = [
+  'page-body',
+  'messages-loading',
+  'messages-status',
+  'messages-inbox-tab',
+  'messages-sent-tab',
+  'messages-new',
+  'messages-region',
+  'messages-detail',
+];
+
 const CLIN_ADMIN = {
   id: 'u2',
   email: 'admin@example.com',
@@ -90,6 +192,8 @@ const CLIN_ADMIN = {
   roles: ['clinical_admin'],
   permissions: [
     'patient:read',
+    'patient:write',
+    'patient:delete',
     'lab:read',
     'prescription:read',
     'staff:read',
@@ -97,6 +201,9 @@ const CLIN_ADMIN = {
     'role:assign',
     'audit:read',
     'analytics:read',
+    'message:read',
+    'message:write',
+    'logs:read',
   ],
   is_active: true,
 };
@@ -108,13 +215,11 @@ const PATIENT = {
   family_name: 'Test',
   date_of_birth: '1980-05-04',
   sex: 'F',
-  provenance: 'synthetic',
 };
 // Fixtures mirror backend/app/schemas/patient.py field names exactly.
 const SUMMARY = {
   patient: PATIENT,
-  provenance: 'synthetic',
-  encounters: [{ id: 'e1', encounter_type: 'office_visit', occurred_at: '2026-09-14', summary: 'Routine follow-up (synthetic).' }],
+  encounters: [{ id: 'e1', encounter_type: 'office_visit', occurred_at: '2026-09-14', summary: 'Routine follow-up.' }],
   latest_labs: [{ test_name: 'Haemoglobin', value_num: '13.5', unit: 'g/dL', collected_at: '2026-09-14' }],
   active_prescriptions: [{ medication_name: 'Amoxicillin', dose_amount: '500', dose_unit: 'mg', route: 'Oral' }],
 };
@@ -136,6 +241,37 @@ const LABS = {
   limit: 20,
   offset: 0,
 };
+const LAB_TRENDS = {
+  patient_id: 'p1',
+  window_days: 365,
+  series: [
+    {
+      test_code: 'HGB',
+      test_name: 'Haemoglobin',
+      unit: 'g/dL',
+      ref_low: '12.0',
+      ref_high: '17.0',
+      points: [
+        { collected_at: '2026-08-01', value_num: '11.8', flag: 'low' },
+        { collected_at: '2026-09-14', value_num: '13.5', flag: 'normal' },
+      ],
+      abnormal_count: 1,
+    },
+    {
+      test_code: 'GLU',
+      test_name: 'Fasting glucose',
+      unit: 'mg/dL',
+      ref_low: '70.0',
+      ref_high: '99.0',
+      points: [
+        { collected_at: '2026-07-01', value_num: '104.0', flag: 'high' },
+        { collected_at: '2026-09-14', value_num: '92.0', flag: 'normal' },
+      ],
+      abnormal_count: 1,
+    },
+  ],
+  truncated: false,
+};
 const PRESCRIPTIONS = {
   items: [
     {
@@ -152,6 +288,22 @@ const PRESCRIPTIONS = {
   ],
   total: 1,
   limit: 20,
+  offset: 0,
+};
+const ENCOUNTERS = {
+  items: [
+    {
+      id: 'e1',
+      patient_id: 'p1',
+      occurred_at: '2026-09-14T09:30:00Z',
+      encounter_type: 'office_visit',
+      summary: 'Routine follow-up.',
+      weight_kg: '70.50',
+      height_cm: '165.00',
+    },
+  ],
+  total: 1,
+  limit: 100,
   offset: 0,
 };
 
@@ -205,21 +357,19 @@ const AUDIT_EVENT = {
 };
 
 const AI_ANSWER = {
-  answer: 'The latest synthetic haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
+  answer: 'The latest haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
   used_tools: ['get_patient_lab_results'],
-  citations: [{ type: 'lab_result', id: 'DEMO-LAB-0001' }],
-  model: 'demo-model-1',
+  citations: [{ type: 'lab_result', id: 'LAB-0001' }],
+  model: 'model-1',
   ai_generated: true,
-  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
 const AI_GENERAL_ANSWER = {
-  answer: 'One synthetic patient is on metformin.\n\nThe record consulted is listed below.',
+  answer: 'One patient is on metformin.\n\nThe record consulted is listed below.',
   used_tools: ['search_authorized_patients', 'get_recent_prescriptions'],
   citations: [{ type: 'patient', id: 'p1' }, { type: 'prescription', id: 'rx1' }],
-  model: 'demo-model-1',
+  model: 'model-1',
   ai_generated: true,
-  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
 // A doctor-scannable Markdown answer as the prompt steers it: bold summary,
@@ -242,9 +392,8 @@ const AI_MARKDOWN_ANSWER = {
   ].join('\n'),
   used_tools: ['find_patients_by_lab'],
   citations: [{ type: 'patient', id: 'p1' }],
-  model: 'demo-model-1',
+  model: 'model-1',
   ai_generated: true,
-  disclaimer: 'AI-generated synthetic-demo assistance; not a diagnosis or treatment recommendation.',
 };
 
 /* Conversation history fixtures (docs/API.md "AI assistant" history). */
@@ -255,20 +404,20 @@ const CONVERSATIONS = {
       id: 'c1',
       patient_id: 'p1',
       question: 'What is the latest haemoglobin?',
-      answer: 'The latest synthetic haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
+      answer: 'The latest haemoglobin is 13.5 g/dL.\n\nIt is within the recorded reference range.',
       used_tools: ['get_patient_lab_results'],
-      citations: [{ type: 'patient', id: 'p1' }, { type: 'lab_result', id: 'DEMO-LAB-0001' }],
-      model: 'demo-model-1',
+      citations: [{ type: 'patient', id: 'p1' }, { type: 'lab_result', id: 'LAB-0001' }],
+      model: 'model-1',
       created_at: minutesAgo(5),
     },
     {
       id: 'c2',
       patient_id: null,
       question: 'Which patients are on metformin?',
-      answer: 'One synthetic patient is on metformin.',
+      answer: 'One patient is on metformin.',
       used_tools: ['find_patients_by_medication'],
       citations: [],
-      model: 'demo-model-1',
+      model: 'model-1',
       created_at: minutesAgo(90),
     },
   ],
@@ -281,9 +430,75 @@ const EMPTY_CONVERSATIONS = { items: [], total: 0, limit: 20, offset: 0 };
 /* -------------------------------------------- analytics fixtures (wave U) */
 
 // Mirrors the documented GET /analytics/summary payload exactly
-// (docs/API.md "Analytics"): ints everywhere, bounded lists, synthetic label.
+// (docs/API.md "Analytics"): ints everywhere, bounded lists.
+const ANALYTICS_DAYS = Array.from(
+  { length: 14 },
+  (_, index) => `2026-10-${String(index + 1).padStart(2, '0')}`,
+);
+
+const ANALYTICS_SECURITY_TREND = ANALYTICS_DAYS.map((day, index) => ({
+  day,
+  successful_signins: index % 5 === 0 ? 4 : 2,
+  failed_signins: index % 6 === 0 ? 1 : 0,
+  permission_denials: index % 7 === 0 ? 1 : 0,
+  patient_reads: 2 + (index % 3),
+  lab_reads: index % 2 === 0 ? 2 : 1,
+  prescription_reads: index % 3 === 0 ? 2 : 1,
+  ai_requests: index % 4 === 0 ? 2 : 1,
+}));
+
+const ANALYTICS_SECURITY_TOTALS = ANALYTICS_SECURITY_TREND.reduce(
+  (totals, day) => {
+    for (const key of Object.keys(totals)) totals[key] += day[key];
+    return totals;
+  },
+  {
+    successful_signins: 0,
+    failed_signins: 0,
+    permission_denials: 0,
+    patient_reads: 0,
+    lab_reads: 0,
+    prescription_reads: 0,
+    ai_requests: 0,
+  },
+);
+
+const ANALYTICS_APPOINTMENT_TREND = ANALYTICS_DAYS.map((day, index) => ({
+  day,
+  total: index < 12 ? 1 : 0,
+  completed: index < 4 ? 1 : 0,
+  cancelled: index === 4 ? 1 : 0,
+  no_show: index === 5 ? 1 : 0,
+}));
+
+const ANALYTICS_WEEKDAYS = [
+  ['Monday', 2],
+  ['Tuesday', 3],
+  ['Wednesday', 2],
+  ['Thursday', 2],
+  ['Friday', 2],
+  ['Saturday', 1],
+  ['Sunday', 0],
+].map(([label, count], weekday) => ({ weekday, label, count }));
+
+const ANALYTICS_HOURS = Array.from({ length: 24 }, (_, hour) => ({
+  hour,
+  count: hour >= 8 && hour <= 16 ? (hour % 3) + 1 : 0,
+}));
+
+// Mirrors the documented GET /analytics/summary payload exactly
+// (docs/API.md "Analytics"): ints, bounded lists, zero-filled series.
 const ANALYTICS_SUMMARY = {
-  generated_at: '2026-10-27T09:30:00Z',
+  generated_at: '2026-10-14T18:15:00Z',
+  range: {
+    start: '2026-10-01',
+    end: '2026-10-14',
+    days: 14,
+    previous_start: '2026-09-17',
+    previous_end: '2026-09-30',
+    timezone: 'UTC',
+    appointment_timezone: 'Europe/Sofia',
+  },
   counts: {
     patients: 45,
     encounters: 167,
@@ -292,73 +507,247 @@ const ANALYTICS_SUMMARY = {
     active_prescriptions: 62,
     diagnoses_active: 90,
     staff_active: 3,
+    staff_inactive: 1,
     ai_conversations: 12,
   },
-  last_30_days: {
+  activity: {
+    new_patients: 8,
     encounters: 24,
     lab_results: 58,
     prescriptions_written: 9,
-    ai_asks: 12,
-    logins: 31,
-    permission_denials: 4,
+    appointments: 12,
+    ai_requests: 12,
+    successful_signins: ANALYTICS_SECURITY_TOTALS.successful_signins,
+    failed_signins: ANALYTICS_SECURITY_TOTALS.failed_signins,
+    permission_denials: ANALYTICS_SECURITY_TOTALS.permission_denials,
   },
-  lab_status_mix: { final: 380, preliminary: 25, pending: 10 },
-  abnormal_lab_rate: { abnormal: 121, total: 402, pct: 30.1 },
-  top_abnormal_tests: [
-    { test_code: 'GLU', test_name: 'Glucose, fasting', abnormal_count: 12 },
-    { test_code: 'HBA1C', test_name: 'HbA1c', abnormal_count: 9 },
-    { test_code: 'K', test_name: 'Potassium', abnormal_count: 7 },
-    { test_code: 'HGB', test_name: 'Hemoglobin', abnormal_count: 5 },
-    { test_code: 'LDL', test_name: 'LDL cholesterol', abnormal_count: 4 },
-    { test_code: 'TSH', test_name: 'TSH', abnormal_count: 3 },
-  ],
-  prescriptions_by_status: { active: 62, completed: 22, stopped: 12, cancelled: 8 },
-  staff_by_role: [
-    { role: 'doctor', count: 2 },
-    { role: 'nurse', count: 2 },
-    { role: 'clinical_admin', count: 1 },
-  ],
-  audit_activity: [
-    { day: '2026-10-14', logins: 3, denials: 0, record_reads: 10 },
-    { day: '2026-10-15', logins: 2, denials: 1, record_reads: 8 },
-    { day: '2026-10-16', logins: 0, denials: 0, record_reads: 0 },
-    { day: '2026-10-17', logins: 4, denials: 0, record_reads: 12 },
-    { day: '2026-10-18', logins: 1, denials: 0, record_reads: 6 },
-    { day: '2026-10-19', logins: 0, denials: 0, record_reads: 2 },
-    { day: '2026-10-20', logins: 5, denials: 2, record_reads: 14 },
-    { day: '2026-10-21', logins: 3, denials: 0, record_reads: 9 },
-    { day: '2026-10-22', logins: 2, denials: 0, record_reads: 7 },
-    { day: '2026-10-23', logins: 0, denials: 0, record_reads: 0 },
-    { day: '2026-10-24', logins: 4, denials: 1, record_reads: 11 },
-    { day: '2026-10-25', logins: 1, denials: 0, record_reads: 5 },
-    { day: '2026-10-26', logins: 3, denials: 0, record_reads: 8 },
-    { day: '2026-10-27', logins: 3, denials: 0, record_reads: 6 },
-  ],
+  previous_activity: {
+    new_patients: 5,
+    encounters: 20,
+    lab_results: 50,
+    prescriptions_written: 11,
+    appointments: 10,
+    ai_requests: 9,
+    successful_signins: 26,
+    failed_signins: 2,
+    permission_denials: 2,
+  },
+  comparisons: {
+    new_patients: { current: 8, previous: 5, change_pct: 60.0 },
+    encounters: { current: 24, previous: 20, change_pct: 20.0 },
+    lab_results: { current: 58, previous: 50, change_pct: 16.0 },
+    prescriptions_written: { current: 9, previous: 11, change_pct: -18.2 },
+    appointments: { current: 12, previous: 10, change_pct: 20.0 },
+    ai_requests: { current: 12, previous: 9, change_pct: 33.3 },
+  },
+  patients: {
+    new_patients: 8,
+    returning_patients: 14,
+    active_patients: 22,
+    encounters: 24,
+    avg_encounters_per_day: 1.7,
+    by_encounter_type: [
+      { encounter_type: 'office_visit', count: 14 },
+      { encounter_type: 'follow_up', count: 6 },
+      { encounter_type: 'telehealth', count: 4 },
+    ],
+    trend: ANALYTICS_DAYS.map((day, index) => ({ day, encounters: index % 4 })),
+    timezone: 'UTC',
+  },
+  appointments: {
+    total: 12,
+    by_status: { scheduled: 4, confirmed: 2, completed: 4, cancelled: 1, no_show: 1 },
+    by_visit_type: [
+      { visit_type: 'Consultation', count: 5 },
+      { visit_type: 'Follow-up', count: 3 },
+      { visit_type: 'Analytics Probe', count: 2 },
+    ],
+    by_weekday: ANALYTICS_WEEKDAYS,
+    by_hour: ANALYTICS_HOURS,
+    trend: ANALYTICS_APPOINTMENT_TREND,
+    utilization: {
+      booked_minutes: 360,
+      available_minutes: 720,
+      utilization_pct: 50.0,
+      doctors_with_schedule: 2,
+    },
+    timezone: 'Europe/Sofia',
+  },
+  labs: {
+    total: 58,
+    status_mix: { final: 50, preliminary: 6, pending: 2 },
+    abnormal_rate: { abnormal: 17, total: 50, pct: 34.0 },
+    classification: {
+      normal: 33,
+      high: 11,
+      low: 6,
+      unclassified: 8,
+      missing_reference_ranges: 6,
+      reference_coverage_pct: 86.2,
+    },
+    top_abnormal_tests: [
+      { test_code: 'GLU', test_name: 'Glucose, fasting', abnormal_count: 5 },
+      { test_code: 'HBA1C', test_name: 'HbA1c', abnormal_count: 4 },
+      { test_code: 'K', test_name: 'Potassium', abnormal_count: 3 },
+      { test_code: 'HGB', test_name: 'Hemoglobin', abnormal_count: 2 },
+    ],
+    trend: ANALYTICS_DAYS.map((day, index) => ({
+      day,
+      total: 4 + (index % 3),
+      evaluable: 3 + (index % 3),
+      abnormal: index % 4,
+    })),
+    timezone: 'UTC',
+  },
+  prescriptions: {
+    total: 9,
+    by_status: { active: 5, completed: 2, stopped: 1, cancelled: 1 },
+    lifetime_by_status: { active: 62, completed: 22, stopped: 12, cancelled: 8 },
+    trend: ANALYTICS_DAYS.map((day, index) => ({ day, prescriptions: index % 3 })),
+    timezone: 'UTC',
+    date_basis: 'start_date',
+  },
+  security: {
+    totals: ANALYTICS_SECURITY_TOTALS,
+    trend: ANALYTICS_SECURITY_TREND,
+    timezone: 'UTC',
+  },
   ai_usage: {
-    total_asks: 12,
-    general_asks: 5,
-    patient_asks: 7,
+    total_requests: 12,
+    successful: 10,
+    failed: 1,
+    denied: 1,
+    success_rate: 90.9,
     top_tools: [
-      { tool: 'get_patient_summary', calls: 9 },
-      { tool: 'get_patient_lab_results', calls: 7 },
-      { tool: 'find_patients_by_medication', calls: 4 },
+      { tool: 'get_patient_summary', calls: 9, failures: 1 },
+      { tool: 'get_patient_lab_results', calls: 7, failures: 0 },
+      { tool: 'find_patients_by_medication', calls: 4, failures: 0 },
+    ],
+    latency: {
+      available: false,
+      average_ms: null,
+      reason: 'Per-request AI latency is not persisted.',
+    },
+    voice: {
+      available: false,
+      reason: 'Voice transcription requests are intentionally ephemeral.',
+    },
+    timezone: 'UTC',
+  },
+  data_quality: {
+    checks: [
+      {
+        key: 'lab_missing_reference_ranges',
+        label: 'Lab results missing reference ranges',
+        count: 6,
+        denominator: 58,
+        scope: 'period',
+        kind: 'classification',
+        note: 'A missing range cannot be classified.',
+      },
+      {
+        key: 'lab_unclassified',
+        label: 'Unclassified lab results',
+        count: 8,
+        denominator: 58,
+        scope: 'period',
+        kind: 'classification',
+        note: 'Text-only or missing usable bound.',
+      },
+      {
+        key: 'patient_missing_date_of_birth',
+        label: 'Patients without a recorded date of birth',
+        count: 2,
+        denominator: 45,
+        scope: 'current',
+        kind: 'optional_metadata',
+        note: 'Optional demographic field; not a data error.',
+      },
+      {
+        key: 'patient_missing_blood_type',
+        label: 'Patients without a recorded blood type',
+        count: 7,
+        denominator: 45,
+        scope: 'current',
+        kind: 'optional_metadata',
+        note: 'Optional clinical field.',
+      },
+      {
+        key: 'encounter_missing_practitioner',
+        label: 'Encounters without a practitioner',
+        count: 1,
+        denominator: 24,
+        scope: 'period',
+        kind: 'optional_metadata',
+        note: 'Practitioner attribution is nullable.',
+      },
+      {
+        key: 'appointment_missing_visit_type',
+        label: 'Appointments without a visit type',
+        count: 2,
+        denominator: 12,
+        scope: 'period',
+        kind: 'optional_metadata',
+        note: 'Visit type is optional scheduling metadata.',
+      },
     ],
   },
-  data_provenance: 'synthetic',
+  system_health: {
+    backend: 'operational',
+    database: 'connected',
+    api_error_rate: {
+      available: false,
+      rate_pct: null,
+      reason: 'API error rates are not persisted in the audit stream.',
+    },
+    llm: {
+      configured: true,
+      availability: 'not_monitored',
+      note: 'No persisted provider-health probe; AI ask outcomes are reported above.',
+    },
+    voice: {
+      configured: true,
+      availability: 'not_monitored',
+      note: 'Transcription requests are intentionally not audited or persisted.',
+    },
+  },
+  staff: {
+    active_total: 3,
+    inactive_total: 1,
+    by_role: [
+      { role: 'doctor', count: 2 },
+      { role: 'nurse', count: 2 },
+      { role: 'clinical_admin', count: 1 },
+    ],
+  },
 };
 
 const ANALYTICS_IDS = [
   'page-body',
   'analytics-loading',
   'analytics-generated-at',
+  'analytics-period-label',
   'analytics-refresh',
   'analytics-status',
+  'analytics-error-region',
+  'analytics-filter-form',
+  'analytics-range',
+  'analytics-start',
+  'analytics-end',
+  'analytics-custom',
+  'analytics-reset',
+  'analytics-range-error',
+  'analytics-filter-summary',
   'kpi-region',
-  'audit-activity-region',
+  'patients-region',
+  'appointments-region',
   'labs-region',
   'prescriptions-region',
-  'staff-region',
+  'security-region',
   'ai-region',
+  'quality-region',
+  'health-region',
+  'staff-region',
 ];
 
 const AI_PAGE_IDS = [
@@ -401,6 +790,7 @@ const ADMIN_IDS = [
 ];
 const AI_IDS = [
   'ai-panel',
+  'ai-patient-context',
   'ai-question-form',
   'ai-question',
   'ai-char-count',
@@ -420,10 +810,73 @@ const PATIENT_IDS = [
   'patient-avatar',
   'demographics-region',
   'summary-region',
+  'lab-trends-region',
   'labs-region',
   'prescriptions-region',
   'encounters-region',
+  'print-status',
+  'print-record',
+  'remove-patient',
   ...AI_IDS,
+];
+
+const PRINT_BUTTON_FIXTURE = {
+  id: 'print-patient-record',
+  tag: 'button',
+  attrs: { type: 'button', 'aria-describedby': 'print-status' },
+};
+
+// Shared patient-tab DOM contract for tests that need to open a hidden tab.
+// Hidden tabs load lazily (Labs/Prescriptions/AI history), so tests must
+// activate the matching tab before asserting its rendered data.
+const PATIENT_TAB_FIXTURE = [
+  {
+    id: 'patient-tabs',
+    class: 'tabs',
+    attrs: { role: 'tablist' },
+    children: [
+      {
+        id: 'tab-summary',
+        tag: 'button',
+        class: 'tab is-active',
+        attrs: { role: 'tab', 'aria-controls': 'panel-summary', 'aria-selected': 'true' },
+        text: 'Summary',
+      },
+      {
+        id: 'tab-labs',
+        tag: 'button',
+        class: 'tab',
+        attrs: { role: 'tab', 'aria-controls': 'panel-labs', 'aria-selected': 'false', tabindex: '-1' },
+        text: 'Labs',
+      },
+      {
+        id: 'tab-prescriptions',
+        tag: 'button',
+        class: 'tab',
+        attrs: { role: 'tab', 'aria-controls': 'panel-prescriptions', 'aria-selected': 'false', tabindex: '-1' },
+        text: 'Prescriptions',
+      },
+      {
+        id: 'tab-encounters',
+        tag: 'button',
+        class: 'tab',
+        attrs: { role: 'tab', 'aria-controls': 'panel-encounters', 'aria-selected': 'false', tabindex: '-1' },
+        text: 'Encounters',
+      },
+      {
+        id: 'tab-ai-patient',
+        tag: 'button',
+        class: 'tab',
+        attrs: { role: 'tab', 'aria-controls': 'panel-ai-patient', 'aria-selected': 'false', tabindex: '-1' },
+        text: 'AI Patient',
+      },
+    ],
+  },
+  { id: 'panel-summary', class: 'tab-panel', attrs: { role: 'tabpanel' } },
+  { id: 'panel-labs', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  { id: 'panel-prescriptions', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  { id: 'panel-encounters', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+  { id: 'panel-ai-patient', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
 ];
 
 function buttonByText(root, text) {
@@ -457,7 +910,7 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescriptions, staff, audit, ai, conversations, analytics, routes = [], calls = [] }) {
+function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_TRENDS, prescriptions, encounters = ENCOUNTERS, staff, audit, ai, conversations, analytics, messages, messageRecipients, routes = [], calls = [] }) {
   // A payload carrying a numeric `status` (and no `ok` flag) is an error
   // response: { status, code?, message?, retryAfter? }. A non-200 success
   // carries `ok: true` (e.g. { status: 204, ok: true }).
@@ -506,8 +959,10 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     }
     if (path.endsWith('/auth/login')) return json(200, me);
     if (path.endsWith('/auth/logout')) return json(204, null);
+    if (/\/patients\/[^/]+\/labs\/trends$/.test(path)) return respond(trend);
     if (/\/patients\/[^/]+\/labs$/.test(path)) return respond(labs);
     if (/\/patients\/[^/]+\/prescriptions$/.test(path)) return respond(prescriptions);
+    if (/\/patients\/[^/]+\/encounters$/.test(path)) return respond(encounters);
     if (/\/patients\/[^/]+\/summary$/.test(path)) return respond(summary);
     if (/\/patients\/[^/]+$/.test(path)) return respond(patient);
     if (path.endsWith('/patients')) return respond(patients);
@@ -531,6 +986,14 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, prescription
     }
     if (/\/ai\/conversations\/[^/]+$/.test(path) && method === 'DELETE') {
       return json(204, null);
+    }
+    if (path.endsWith('/messages/recipients') && method === 'GET') {
+      if (messageRecipients === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(messageRecipients);
+    }
+    if (path.endsWith('/messages') && method === 'GET') {
+      if (messages === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
+      return respond(messages);
     }
     if (path.endsWith('/analytics/summary') && method === 'GET') {
       if (analytics === undefined) throw new Error(`unstubbed request: ${method} ${url}`);
@@ -571,7 +1034,7 @@ await check('patients list renders Page shape with search + pagination', async (
     patients: {
       items: [
         PATIENT,
-        { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', birth_date: '1975-01-20', sex: 'M', provenance: 'synthetic' },
+        { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', birth_date: '1975-01-20', sex: 'M' },
       ],
       total: 42,
       limit: 20,
@@ -585,14 +1048,82 @@ await check('patients list renders Page shape with search + pagination', async (
   const region = textOf(document.getElementById('patients-region'));
   assertContains(region, 'Ann Test', 'patient name not rendered');
   assertContains(region, 'MRN-0002', 'MRN not rendered');
-  assertContains(region, 'Showing 1\u20132 of 42 synthetic patients', 'pagination summary wrong');
+  assertContains(region, 'Showing 1\u20132 of 42 patients', 'pagination summary wrong');
   const link = document.getElementById('patients-region').querySelector('a');
   assertEqualLocal(link && link.getAttribute('href'), 'patient.html?id=p1', 'patient link missing');
-  assertContains(textOf(document.getElementById('patients-status')), '42 synthetic patients found', 'status not announced');
+  assertContains(textOf(document.getElementById('patients-status')), '42 patients found', 'status not announced');
 
   const nav = textOf(document.getElementById('site-nav'));
   assertContains(nav, 'Patients', 'nav missing Patients');
   assert(!nav.includes('Admin'), 'doctor must not see Admin nav');
+});
+
+await check('doctor creates a patient and nurse does not get the control', async () => {
+  const calls = [];
+  const created = [];
+  const newPatient = {
+    ...PATIENT,
+    id: 'p-new',
+    mrn: 'MRN-NEW',
+    display_name: 'New Patient',
+    given_name: 'New',
+    family_name: 'Patient',
+    date_of_birth: '1992-03-04',
+    sex: 'female',
+    blood_type: 'O+',
+  };
+  globalThis.fetch = makeFetch({
+    me: PATIENT_WRITER,
+    calls,
+    patients: { items: [PATIENT], total: 1, limit: 20, offset: 0 },
+    routes: [{
+      method: 'POST',
+      match: '/api/v1/patients',
+      response: ({ body }) => {
+        created.push(body);
+        return { status: 201, ok: true, body: newPatient };
+      },
+    }],
+  });
+  const pageIds = [...CHROME_IDS, 'patient-new', 'patient-search-form', 'patient-search', 'patient-search-clear', 'patients-status', 'patients-region'];
+  const document = bootDom(pageIds);
+  await freshPage('patients.js');
+  await settle();
+
+  const newButton = document.getElementById('patient-new');
+  assertEqualLocal(newButton.hidden, false, 'doctor with patient:write must see Add patient');
+  await newButton.dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('app-dialog-title')), 'Add patient', 'dialog title missing');
+
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create patient');
+  assertContains(textOf(document.getElementById('new-patient-error')), 'both a given name', 'required-name validation missing');
+  assertEqualLocal(created.length, 0, 'invalid form must not POST');
+
+  document.getElementById('new-patient-given').value = 'New';
+  document.getElementById('new-patient-family').value = 'Patient';
+  document.getElementById('new-patient-dob').value = '1992-03-04';
+  document.getElementById('new-patient-sex').value = 'female';
+  document.getElementById('new-patient-blood-type').value = 'O+';
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create patient');
+  await settle();
+  assertEqualLocal(created.length, 1, 'valid form must POST once');
+  assertEqualLocal(created[0].given_name, 'New', 'given name missing from request');
+  assertEqualLocal(created[0].family_name, 'Patient', 'family name missing from request');
+  assertEqualLocal(created[0].date_of_birth, '1992-03-04', 'date of birth missing from request');
+  assertEqualLocal(created[0].sex, 'female', 'sex missing from request');
+  assertEqualLocal(created[0].blood_type, 'O+', 'blood type missing from request');
+  assertEqualLocal(globalThis.location.redirectedTo, 'patient.html?id=p-new', 'must open the new record');
+
+  globalThis.fetch = makeFetch({
+    me: NURSE,
+    calls: [],
+    patients: { items: [PATIENT], total: 1, limit: 20, offset: 0 },
+  });
+  const nurseDocument = bootDom(pageIds);
+  await freshPage('patients.js');
+  await settle();
+  assertEqualLocal(nurseDocument.getElementById('patient-new').hidden, true, 'nurse must not see Add patient');
 });
 
 await check('patients search debounces and sends q/limit/offset', async () => {
@@ -618,7 +1149,7 @@ await check('patients empty state is friendly, not an error', async () => {
   await freshPage('patients.js');
   await settle();
   const region = textOf(document.getElementById('patients-region'));
-  assertContains(region, 'No synthetic patients match your search', 'empty state copy missing');
+  assertContains(region, 'No patients match your search', 'empty state copy missing');
 });
 
 await check('patients network failure renders offline banner with retry', async () => {
@@ -637,23 +1168,41 @@ await check('patients network failure renders offline banner with retry', async 
 
 await check('patient detail renders demographics, summary, labs, prescriptions', async () => {
   globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'lab-trends-region', 'labs-region', 'prescriptions-region', 'encounters-region', ...PATIENT_TAB_FIXTURE]);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
 
   assertContains(textOf(document.getElementById('patient-heading')), 'Ann Test', 'heading not set');
-  const demo = textOf(document.getElementById('demographics-region'));
-  assertContains(demo, 'MRN-0001', 'MRN missing');
-  assertContains(demo, 'Synthetic demo data', 'provenance badge missing');
-  assertContains(demo, ui.formatDate('1980-05-04'), 'birth date not formatted');
+  await document.getElementById('tab-labs').dispatch('click');
+  await settle();
+  const trendsHost = document.getElementById('lab-trends-region');
+  const trends = textOf(trendsHost);
+  assertContains(trends, 'Lab Results Summary', 'lab summary heading missing');
+  assertContains(trends, 'Haemoglobin (HGB) trend values', 'lab trend hidden table missing');
+  assertContains(trends, 'Fasting glucose (GLU) trend values', 'second lab trend hidden table missing');
+  assertContains(trends, 'Target: 12\u201317 g/dL', 'reference target missing');
+  assertContains(trends, 'Target: 70\u201399 mg/dL', 'second reference target missing');
+  assertContains(trends, '13.5', 'lab value label missing');
+  assertContains(trends, '92', 'second lab value label missing');
+  assertEqualLocal(trendsHost.querySelectorAll('.lab-chart').length, 2, 'expected one chart card per test');
+  assertEqualLocal(trendsHost.querySelectorAll('.chart-range-band').length, 2, 'expected a reference band per chart');
+  assert(trendsHost.querySelectorAll('.lab-chart__value').length >= 4, 'value labels must render beside points');
+  const header = textOf(document.getElementById('demographics-region'));
+  assertContains(header, 'MRN-0001', 'MRN missing');
+  assertEqualLocal(
+    document.getElementById('demographics-region').querySelectorAll('.badge').length,
+    0,
+    'no data-origin badge may render in the patient header',
+  );
+  assertContains(header, ui.formatDate('1980-05-04'), 'birth date not formatted');
 
   const summary = textOf(document.getElementById('summary-region'));
   assertContains(summary, 'Amoxicillin (500 mg, Oral)', 'active medication missing');
   assertContains(summary, 'No active problems recorded.', 'problems empty state missing');
 
   const encounters = textOf(document.getElementById('encounters-region'));
-  assertContains(encounters, 'Routine follow-up (synthetic).', 'encounter missing');
+  assertContains(encounters, 'Routine follow-up.', 'encounter missing');
   assertContains(encounters, 'office_visit', 'encounter type badge missing');
 
   const labs = textOf(document.getElementById('labs-region'));
@@ -663,6 +1212,8 @@ await check('patient detail renders demographics, summary, labs, prescriptions',
   assertContains(labs, '12.0\u201317.0', 'reference range missing');
   assertContains(labs, ui.formatDate('2026-09-14'), 'collected date missing');
 
+  await document.getElementById('tab-prescriptions').dispatch('click');
+  await settle();
   const rx = textOf(document.getElementById('prescriptions-region'));
   assertContains(rx, 'Amoxicillin', 'medication missing');
   assertContains(rx, '500 mg', 'dose missing');
@@ -677,13 +1228,225 @@ await check('patient detail isolates a 403 lab section from the rest', async () 
     labs: { status: 403 },
     prescriptions: PRESCRIPTIONS,
   });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region', ...PATIENT_TAB_FIXTURE]);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
 
+  await document.getElementById('tab-labs').dispatch('click');
+  await settle();
   assertContains(textOf(document.getElementById('labs-region')), 'You do not have permission', '403 copy missing');
+  await document.getElementById('tab-prescriptions').dispatch('click');
+  await settle();
   assertContains(textOf(document.getElementById('prescriptions-region')), 'Amoxicillin', 'prescriptions should still render');
+});
+
+await check('admin removes a patient while doctor and nurse do not get the control', async () => {
+  const deletions = [];
+  const routes = [{
+    method: 'DELETE',
+    match: '/api/v1/patients/p1',
+    response: () => {
+      deletions.push('p1');
+      return { status: 204, ok: true };
+    },
+  }];
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    routes,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const remove = document.getElementById('remove-patient');
+  assertEqualLocal(remove.hidden, false, 'admin must see Remove patient');
+  remove.dispatch('click', {});
+  await settle(30);
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'will disappear from search', 'remove confirmation missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Remove patient');
+  await settle(60);
+  assertEqualLocal(deletions.length, 1, 'DELETE patient request missing');
+  assertEqualLocal(globalThis.location.redirectedTo, 'patients.html', 'admin must return to the patient list');
+
+  for (const user of [DOCTOR, NURSE]) {
+    globalThis.fetch = makeFetch({
+      me: user,
+      patient: PATIENT,
+      summary: SUMMARY,
+      labs: LABS,
+      prescriptions: PRESCRIPTIONS,
+    });
+    const other = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE]);
+    globalThis.location.search = '?id=p1';
+    await freshPage('patient.js');
+    await settle();
+    assertEqualLocal(other.getElementById('remove-patient').hidden, true, `${user.roles[0]} must not see Remove patient`);
+  }
+});
+
+await check('patient hidden tabs defer their data requests until opened', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    conversations: CONVERSATIONS,
+  });
+  const document = bootDom([
+    ...CHROME_IDS,
+    ...PATIENT_IDS,
+    ...PATIENT_TAB_FIXTURE,
+  ]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const called = (fragment) => calls.some((call) => call.url.includes(fragment));
+  assert(!called('/labs'), 'labs must not be fetched before the Labs tab opens');
+  assert(!called('/prescriptions'), 'prescriptions must not be fetched before the Prescriptions tab opens');
+  assert(!called('/ai/conversations'), 'AI history must not be fetched before the AI Patient tab opens');
+
+  await document.getElementById('tab-labs').dispatch('click');
+  await settle();
+  assert(called('/labs'), 'Labs tab must fetch the lab table');
+  assert(called('/labs/trends'), 'Labs tab must fetch the trend chart');
+
+  await document.getElementById('tab-prescriptions').dispatch('click');
+  await settle();
+  assert(called('/prescriptions'), 'Prescriptions tab must fetch on first open');
+
+  await document.getElementById('tab-ai-patient').dispatch('click');
+  await settle();
+  assert(called('/ai/conversations'), 'AI Patient tab must fetch patient-filtered history on first open');
+});
+
+await check('print action prepares a complete record without opening any tab', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    calls,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: {
+      ...LABS,
+      items: [
+        ...LABS.items,
+        {
+          id: 'l2',
+          test_code: 'GLU',
+          test_name: 'Fasting glucose',
+          value_num: '104.0',
+          unit: 'mg/dL',
+          ref_low: '70.0',
+          ref_high: '99.0',
+          status: 'final',
+          collected_at: '2026-08-01T07:30:00Z',
+        },
+      ],
+      total: 2,
+    },
+    prescriptions: PRESCRIPTIONS,
+    encounters: ENCOUNTERS,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE, PRINT_BUTTON_FIXTURE]);
+  globalThis.location.search = '?id=p1';
+  const previousPrint = globalThis.print;
+  let printed = 0;
+  globalThis.print = () => { printed += 1; };
+
+  await freshPage('patient.js');
+  await settle();
+
+  const button = document.getElementById('print-patient-record');
+  assert(button, 'print button missing');
+  assertEqualLocal(button.tagName, 'BUTTON', 'print action must be a real button');
+  assertEqualLocal(button.getAttribute('type'), 'button', 'print action must not submit');
+  assertEqualLocal(button.getAttribute('aria-describedby'), 'print-status', 'print action must describe its status');
+  assert(!button.hidden, 'print button must be visible with patient:read');
+  assert(!calls.some((call) => call.url.includes('/encounters')), 'print data must not load before the click');
+
+  await button.dispatch('click');
+  for (let attempt = 0; attempt < 50 && printed === 0; attempt += 1) {
+    await settle(10);
+  }
+  assertEqualLocal(printed, 1, 'native print must be called once');
+
+  const report = textOf(document.getElementById('print-record'));
+  for (const expected of [
+    'Patient Medical Record',
+    'Ann Test',
+    'MRN-0001',
+    'Patient Information',
+    'Patient Summary',
+    'Encounter History',
+    'Laboratory Results',
+    'Prescriptions',
+    'Routine follow-up.',
+    'Haemoglobin',
+    'HIGH \u2191',
+    'Amoxicillin',
+  ]) {
+    assertContains(report, expected, `print report missing ${expected}`);
+  }
+  assertContains(textOf(document.getElementById('print-status')), 'Print dialog opened', 'print status missing');
+
+  if (previousPrint === undefined) delete globalThis.print;
+  else globalThis.print = previousPrint;
+});
+
+await check('print failure names the failed section and never opens print', async () => {
+  globalThis.fetch = makeFetch({
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: { status: 500 },
+    prescriptions: PRESCRIPTIONS,
+    encounters: ENCOUNTERS,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE, PRINT_BUTTON_FIXTURE]);
+  globalThis.location.search = '?id=p1';
+  const previousPrint = globalThis.print;
+  let printed = 0;
+  globalThis.print = () => { printed += 1; };
+
+  await freshPage('patient.js');
+  await settle();
+  await document.getElementById('print-patient-record').dispatch('click');
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (textOf(document.getElementById('print-status')).includes('laboratory results')) break;
+    await settle(10);
+  }
+
+  assertEqualLocal(printed, 0, 'print must not open when a section fails');
+  const status = textOf(document.getElementById('print-status'));
+  assertContains(status, 'laboratory results', 'failed section must be named');
+  assertContains(status, 'not printed', 'failure must state the report was not printed');
+  assertContains(status, 'Retry', 'failure must offer retry');
+
+  if (previousPrint === undefined) delete globalThis.print;
+  else globalThis.print = previousPrint;
+});
+
+await check('print action is hidden without patient:read', async () => {
+  globalThis.fetch = makeFetch({
+    me: NO_PATIENT_READ,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    encounters: ENCOUNTERS,
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE, PRINT_BUTTON_FIXTURE]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+  assertEqualLocal(document.getElementById('print-patient-record').hidden, true, 'print must be hidden without patient:read');
 });
 
 await check('patient detail shows friendly state without an id', async () => {
@@ -725,15 +1488,23 @@ await check('AI panel renders the answer with AI-generated labelling, tools, and
   assertEqualLocal(body.question, 'What is the latest haemoglobin?', 'question missing from the AI request');
 
   const region = textOf(document.getElementById('ai-response-region'));
-  assertContains(region, 'The latest synthetic haemoglobin is 13.5 g/dL.', 'answer text missing');
+  assertContains(region, 'The latest haemoglobin is 13.5 g/dL.', 'answer text missing');
   assertContains(region, 'It is within the recorded reference range.', 'second answer paragraph missing');
   assertContains(region, 'AI-generated', 'AI-generated label missing');
-  assertContains(region, 'not a diagnosis or treatment recommendation', 'diagnosis disclaimer missing');
-  assertContains(region, AI_ANSWER.disclaimer, 'backend disclaimer missing');
+  assertEqualLocal(
+    document.getElementById('ai-response-region').querySelectorAll('.badge').length,
+    1,
+    'the answer must carry exactly one badge: the AI-generated label',
+  );
+  assertEqualLocal(
+    document.getElementById('ai-response-region').querySelectorAll('.alert').length,
+    0,
+    'no disclaimer note may render in the answer turn',
+  );
   assertContains(region, 'Sources consulted', 'sources label missing');
   assertContains(region, 'get_patient_lab_results', 'tool chip missing');
-  assertContains(region, 'Synthetic lab result DEMO-LAB-0001', 'citation label missing');
-  assertContains(region, 'Model: demo-model-1', 'model fine print missing');
+  assertContains(region, 'Lab result LAB-0001', 'citation label missing');
+  assertContains(region, 'Model: model-1', 'model fine print missing');
   assertEqualLocal(
     document.getElementById('ai-response-region').querySelector('.heart-loader__img'),
     null,
@@ -762,7 +1533,7 @@ await check('AI panel shows a calm unavailable state on 503, not a crash', async
 
   const region = document.getElementById('ai-response-region');
   const text = textOf(region);
-  assertContains(text, 'AI assistant unavailable', 'unavailable title missing');
+  assertContains(text, 'AI Patient unavailable', 'unavailable title missing');
   assertContains(text, 'runs without a language model', 'unavailable explanation missing');
   assertEqualLocal(region.querySelector('.state-panel--error'), null, '503 must not render as an error crash');
   assertEqualLocal(document.getElementById('ai-submit').disabled, false, 'submit must stay usable after 503');
@@ -862,6 +1633,7 @@ await check('AI panel shows a loading state and supports cancelling the request'
   assertContains(textOf(pendingAnswer), 'Consulting the assistant', 'loading state missing');
   assert(pendingAnswer.querySelector('.heart-loader__img'), 'the pending answer must show the heart loader');
   assert(pendingAnswer.querySelector('.heart-loader--lg'), 'the answer region takes the lg heart');
+  assertEqualLocal(pendingAnswer.querySelector('.ai-avatar'), null, 'loading state must not show the assistant plus avatar');
   assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
 
   await document.getElementById('ai-cancel').dispatch('click');
@@ -919,15 +1691,19 @@ await check('AI page sends a general question and renders bubbles, chips, and li
 
   const region = textOf(document.getElementById('ai-response-region'));
   assertContains(region, 'Which patients are on metformin?', 'user question bubble missing');
-  assertContains(region, 'One synthetic patient is on metformin.', 'answer text missing');
+  assertContains(region, 'One patient is on metformin.', 'answer text missing');
   assertContains(region, 'AI-generated', 'AI-generated label missing');
-  assertContains(region, 'not a diagnosis or treatment recommendation', 'diagnosis disclaimer missing');
+  assertEqualLocal(
+    document.getElementById('ai-response-region').querySelectorAll('.alert').length,
+    0,
+    'no disclaimer note may render in the answer turn',
+  );
   assertContains(region, 'Sources consulted', 'sources label missing');
   assertContains(region, 'search_authorized_patients', 'tool chip missing');
   assertContains(region, 'Records consulted', 'citations label missing');
-  assertContains(region, 'Synthetic patient p1', 'patient citation label missing');
-  assertContains(region, 'Synthetic prescription rx1', 'prescription citation label missing');
-  assertContains(region, 'Model: demo-model-1', 'model fine print missing');
+  assertContains(region, 'Patient p1', 'patient citation label missing');
+  assertContains(region, 'Prescription rx1', 'prescription citation label missing');
+  assertContains(region, 'Model: model-1', 'model fine print missing');
 
   const hrefs = document.getElementById('ai-response-region').querySelectorAll('a').map((a) => a.getAttribute('href'));
   assert(hrefs.includes('patient.html?id=p1'), 'patient citation link missing');
@@ -941,7 +1717,7 @@ await check('AI page keeps record citations plain when the patient is ambiguous'
       citations: [
         { type: 'patient', id: 'p1' },
         { type: 'patient', id: 'p2' },
-        { type: 'lab_result', id: 'DEMO-LAB-0001' },
+        { type: 'lab_result', id: 'LAB-0001' },
       ],
     },
   });
@@ -961,7 +1737,38 @@ await check('AI page keeps record citations plain when the patient is ambiguous'
   assert(hrefs.includes('patient.html?id=p2'), 'patient citations must link');
   assert(!hrefs.some((href) => href && href.startsWith('patient.html') && !href.includes('p1') && !href.includes('p2')),
     'record citations must not invent a patient link');
-  assertContains(textOf(region), 'Synthetic lab result DEMO-LAB-0001', 'record reference must still render');
+  assertContains(textOf(region), 'Lab result LAB-0001', 'record reference must still render');
+});
+
+await check('legacy payload keys (provenance, disclaimer) are ignored gracefully', async () => {
+  // The de-marked contract drops `provenance` from clinical payloads and
+  // `disclaimer` from the ask response. A stale backend may still send them
+  // (or any other extra keys): rendering must neither crash nor surface them.
+  globalThis.fetch = makeFetch({
+    patient: { ...PATIENT, provenance: 'legacy-tag', extra_field: 'ignored' },
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    ai: { ...AI_ANSWER, disclaimer: 'OBSOLETE-COPY-MARKER', unused_key: 1 },
+  });
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const header = textOf(document.getElementById('demographics-region'));
+  assert(!header.includes('legacy-tag'), 'a legacy provenance value must never render');
+  assertContains(header, 'MRN-0001', 'the patient header must still render');
+
+  const input = document.getElementById('ai-question');
+  input.value = 'What is the latest haemoglobin?';
+  await input.dispatch('input');
+  await document.getElementById('ai-question-form').dispatch('submit');
+  await settle();
+
+  const region = textOf(document.getElementById('ai-response-region'));
+  assert(!region.includes('OBSOLETE-COPY-MARKER'), 'a legacy disclaimer key must never render');
+  assertContains(region, 'The latest haemoglobin is 13.5 g/dL.', 'the answer must still render');
 });
 
 await check('AI page shows a calm unavailable state on 503, not a crash', async () => {
@@ -1030,7 +1837,7 @@ await check('AI page shows a loading state and supports cancelling the request',
   await settle();
 
   const input = document.getElementById('ai-question');
-  input.value = 'Which synthetic patients have the most recent lab results?';
+  input.value = 'Which patients have the most recent lab results?';
   await input.dispatch('input');
   await document.getElementById('ai-question-form').dispatch('submit');
   await settle();
@@ -1039,6 +1846,7 @@ await check('AI page shows a loading state and supports cancelling the request',
   assertContains(textOf(pendingAnswer), 'Consulting the assistant', 'loading state missing');
   assert(pendingAnswer.querySelector('.heart-loader__img'), 'the pending answer must show the heart loader');
   assert(pendingAnswer.querySelector('.heart-loader--lg'), 'the answer region takes the lg heart');
+  assertEqualLocal(pendingAnswer.querySelector('.ai-avatar'), null, 'loading state must not show the assistant plus avatar');
   assertEqualLocal(document.getElementById('ai-cancel').hidden, false, 'cancel button must show while loading');
 
   await document.getElementById('ai-cancel').dispatch('click');
@@ -1121,7 +1929,7 @@ await check('AI page composer sends on Enter and inserts a new line on Shift+Ent
   const askCalls = calls.filter((call) => call.url.includes('/ai/ask'));
   assertEqualLocal(askCalls.length, 1, 'Enter must send exactly one question');
   assertEqualLocal(JSON.parse(askCalls[0].init.body).question, 'Which patients are on metformin?', 'sent question');
-  assertContains(textOf(document.getElementById('ai-response-region')), 'One synthetic patient is on metformin.', 'answer missing');
+  assertContains(textOf(document.getElementById('ai-response-region')), 'One patient is on metformin.', 'answer missing');
 });
 
 await check('AI panel send button sends and compose is disabled while in flight', async () => {
@@ -1191,11 +1999,12 @@ await check('AI page history renders, expands the full answer, and clears behind
   assertEqualLocal(firstSummary.getAttribute('aria-expanded'), 'true', 'summary must report expanded');
   assertEqualLocal(detail.hidden, false, 'the answer detail must be visible when expanded');
   const detailText = textOf(detail);
-  assertContains(detailText, 'The latest synthetic haemoglobin is 13.5 g/dL.', 'expanded answer missing');
+  assertContains(detailText, 'The latest haemoglobin is 13.5 g/dL.', 'expanded answer missing');
   assertContains(detailText, 'AI-generated', 'expanded turn must keep the AI-generated label');
-  assertContains(detailText, 'not a diagnosis or treatment recommendation', 'expanded turn must keep the disclaimer');
+  assertEqualLocal(detail.querySelectorAll('.badge').length, 1, 'the expanded turn must carry exactly one badge: the AI-generated label');
+  assertEqualLocal(detail.querySelectorAll('.alert').length, 0, 'the expanded turn must not carry a disclaimer note');
   assertContains(detailText, 'Records consulted', 'expanded citations label missing');
-  assertContains(detailText, 'Synthetic lab result DEMO-LAB-0001', 'expanded citation missing');
+  assertContains(detailText, 'Lab result LAB-0001', 'expanded citation missing');
   assert(document.activeElement === detail, 'expanding must move focus into the answer');
   assert(detail.querySelectorAll('a').map((a) => a.getAttribute('href')).includes('patient.html?id=p1'),
     'patient citations must link to the record');
@@ -1228,12 +2037,14 @@ await check('AI panel history is filtered to the patient and grows without a rel
     conversations: CONVERSATIONS,
     ai: AI_ANSWER,
   });
-  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  const document = bootDom([...CHROME_IDS, ...PATIENT_IDS, ...PATIENT_TAB_FIXTURE, PRINT_BUTTON_FIXTURE]);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
 
-  // The rail history request carries the patient filter (never a full dump).
+  // Opening the AI Patient tab starts the lazy patient-filtered history request.
+  await document.getElementById('tab-ai-patient').dispatch('click');
+  await settle();
   const historyCall = calls.find((call) => call.url.includes('/ai/conversations'));
   assert(historyCall, 'history endpoint not called');
   assert(historyCall.url.includes('patient_id=p1'), `history must filter by patient: ${historyCall.url}`);
@@ -1346,7 +2157,7 @@ await check('AI page renders a Markdown answer as real table/strong/details DOM'
   assertContains(textOf(document.getElementById('ai-response-region')), '2-ма пациенти', 'the bold summary must render');
 });
 
-await check('patient rail + history render Markdown answers through the safe renderer', async () => {
+await check('AI Patient tab + history render Markdown answers through the safe renderer', async () => {
   const calls = [];
   globalThis.fetch = makeFetch({
     calls,
@@ -1424,6 +2235,14 @@ await check('admin staff table renders the Page shape with roles, status, and pa
   assertContains(region, 'Admin', 'role label missing');
   assertContains(region, ui.displayDate('2026-10-20T09:00:00Z'), 'created date missing');
   assertContains(region, 'Showing 1\u20132 of 25 staff accounts', 'pagination summary wrong');
+  const staffRows = document.getElementById('staff-region').querySelector('tbody').querySelectorAll('tr');
+  const doctorAvatar = staffRows[0].querySelector('.avatar--photo');
+  assert(doctorAvatar, 'doctor row must render a demo profile picture');
+  const doctorPhoto = doctorAvatar.querySelector('img');
+  assert(doctorPhoto, 'doctor avatar must contain a local image');
+  assertContains(doctorPhoto.getAttribute('src'), 'assets/images/doctors/doctor-', 'doctor photo must be local');
+  const adminAvatar = staffRows[1].querySelector('.avatar');
+  assert(adminAvatar && !adminAvatar.classList.contains('avatar--photo'), 'non-doctor row must keep initials, not a photo');
   const badges = badgeTexts(firstRow(document.getElementById('staff-region')));
   assert(badges.includes('Doctor') && badges.includes('Active'), `role/status badges wrong: ${badges}`);
   const secondBadges = badgeTexts(document.getElementById('staff-region').querySelector('tbody').querySelectorAll('tr')[1]);
@@ -1596,6 +2415,7 @@ await check('admin deactivate confirms session revocation and is reversible', as
 await check('admin create staff shows the generated password once with a warning', async () => {
   const calls = [];
   const created = [];
+  const interpretBodies = [];
   globalThis.fetch = makeFetch({
     calls,
     me: CLIN_ADMIN,
@@ -1720,6 +2540,7 @@ await check('admin page denies a nurse honestly and shows no fake controls', asy
   assertContains(body, 'You do not have permission', 'denial copy missing');
   assertContains(textOf(document.getElementById('site-nav')), 'Dashboard', 'nav must still render');
   assert(!textOf(document.getElementById('site-nav')).includes('Admin'), 'admin nav item must not render for a nurse');
+  assert(!document.getElementById('user-area').querySelector('.avatar--photo'), 'nurse must keep initials, not a doctor photo');
   assert(!textOf(document.body).includes('Grant role'), 'no staff controls may render for a nurse');
   assertEqualLocal(
     calls.filter((call) => call.url.startsWith('/api/v1/staff') || call.url.startsWith('/api/v1/audit')).length,
@@ -1737,7 +2558,7 @@ await check('dashboard renders welcome, role badges, quick actions, and recent p
     patients: {
       items: [
         PATIENT,
-        { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', date_of_birth: '1975-01-20', sex: 'M', provenance: 'synthetic' },
+        { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', date_of_birth: '1975-01-20', sex: 'M' },
       ],
       total: 2,
       limit: 8,
@@ -1748,15 +2569,31 @@ await check('dashboard renders welcome, role badges, quick actions, and recent p
   await freshPage('dashboard.js');
   await settle();
 
+  const themeSwitcher = document.getElementById('user-area').querySelector('.theme-switcher');
+  assert(themeSwitcher, 'theme switcher missing from the authenticated top bar');
+  assertEqualLocal(themeSwitcher.querySelectorAll('.theme-switcher__btn').length, 3, 'theme switcher must expose three modes');
+  const topAvatar = document.getElementById('user-area').querySelector('.avatar--photo');
+  assert(topAvatar, 'doctor top-bar avatar must use a demo profile picture');
+  const topPhoto = topAvatar.querySelector('img');
+  assert(topPhoto, 'doctor top-bar avatar must contain a local image');
+  assertContains(topPhoto.getAttribute('src'), 'assets/images/doctors/doctor-', 'doctor top-bar photo must be local');
+  const profileHead = document.getElementById('page-body').querySelector('.profile-card__head');
+  const profileAvatar = profileHead && profileHead.querySelector('.avatar--photo');
+  assert(profileAvatar, 'doctor dashboard profile card must show the demo picture');
+  const profilePhoto = profileAvatar && profileAvatar.querySelector('img');
+  assert(profilePhoto, 'doctor dashboard profile picture must contain an image');
   assertContains(textOf(document.getElementById('welcome-heading')), 'Welcome back, Dr Ada Example', 'welcome heading missing');
   const body = textOf(document.getElementById('page-body'));
   assertContains(body, 'Quick actions', 'quick actions heading missing');
   assertContains(body, 'Recent patients', 'recent patients heading missing');
   assertContains(body, 'MRN-0001', 'recent patient card missing');
   assertContains(body, 'MRN-0002', 'second patient card missing');
-  assertContains(body, 'Synthetic demo data', 'provenance badge missing');
   assertContains(body, 'Doctor', 'role badge missing');
-  assertContains(body, 'Synthetic demo data \u2014 not for clinical use', 'demo disclosure card missing');
+  assertEqualLocal(
+    document.getElementById('page-body').querySelectorAll('.card--notice').length,
+    0,
+    'no disclosure card may render on the dashboard',
+  );
 
   const hrefs = document.getElementById('page-body').querySelectorAll('a').map((a) => a.getAttribute('href'));
   assert(hrefs.includes('patient.html?id=p1'), 'patient card link missing');
@@ -1795,10 +2632,14 @@ await check('patient header renders the avatar initials and copies the MRN', asy
   await freshPage('patient.js');
   await settle();
 
-  const demo = textOf(document.getElementById('demographics-region'));
-  assertContains(demo, 'Synthetic demo data', 'provenance badge missing');
-  assertContains(demo, 'MRN: MRN-0001', 'MRN missing');
-  assertContains(demo, ui.formatDate('1980-05-04'), 'birth date not shown in the header meta line');
+  const header = textOf(document.getElementById('demographics-region'));
+  assertEqualLocal(
+    document.getElementById('demographics-region').querySelectorAll('.badge').length,
+    0,
+    'no data-origin badge may render in the patient header',
+  );
+  assertContains(header, 'MRN: MRN-0001', 'MRN missing');
+  assertContains(header, ui.formatDate('1980-05-04'), 'birth date not shown in the header meta line');
   assertEqualLocal(textOf(document.getElementById('patient-avatar')), 'AT', 'avatar initials wrong');
   assertContains(textOf(document.getElementById('patient-heading')), 'Ann Test', 'heading not set');
 
@@ -1837,10 +2678,18 @@ await check('patient record tabs switch panels with the ARIA tabs pattern', asyn
           attrs: { role: 'tab', 'aria-controls': 'panel-labs', 'aria-selected': 'false', tabindex: '-1' },
           text: 'Labs',
         },
+        {
+          id: 'tab-ai-patient',
+          tag: 'button',
+          class: 'tab',
+          attrs: { role: 'tab', 'aria-controls': 'panel-ai-patient', 'aria-selected': 'false', tabindex: '-1' },
+          text: 'AI Patient',
+        },
       ],
     },
     { id: 'panel-summary', class: 'tab-panel', attrs: { role: 'tabpanel' } },
     { id: 'panel-labs', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
+    { id: 'panel-ai-patient', class: 'tab-panel', attrs: { role: 'tabpanel', hidden: '' } },
   ]);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
@@ -1848,8 +2697,15 @@ await check('patient record tabs switch panels with the ARIA tabs pattern', asyn
 
   const summaryPanel = document.getElementById('panel-summary');
   const labsPanel = document.getElementById('panel-labs');
+  const aiPanel = document.getElementById('panel-ai-patient');
   assertEqualLocal(summaryPanel.hidden, false, 'summary panel must start visible');
   assertEqualLocal(labsPanel.hidden, true, 'labs panel must start hidden');
+  assertEqualLocal(aiPanel.hidden, true, 'AI Patient panel must start hidden');
+  assertContains(
+    textOf(document.getElementById('ai-patient-context')),
+    'About: Ann Test \u00b7 MRN MRN-0001',
+    'AI Patient must show the patient context',
+  );
 
   await document.getElementById('tab-labs').dispatch('click');
   assertEqualLocal(labsPanel.hidden, false, 'labs panel must show after clicking its tab');
@@ -1857,9 +2713,14 @@ await check('patient record tabs switch panels with the ARIA tabs pattern', asyn
   assertEqualLocal(document.getElementById('tab-labs').getAttribute('aria-selected'), 'true', 'aria-selected not set on the new tab');
   assertEqualLocal(document.getElementById('tab-summary').getAttribute('aria-selected'), 'false', 'aria-selected not cleared on the old tab');
 
-  await document.getElementById('tab-labs').dispatch('keydown', { key: 'ArrowLeft' });
-  assertEqualLocal(summaryPanel.hidden, false, 'arrow key must move selection back to the summary tab');
-  assertEqualLocal(labsPanel.hidden, true, 'labs panel must hide after arrow-key navigation');
+  await document.getElementById('tab-ai-patient').dispatch('click');
+  assertEqualLocal(aiPanel.hidden, false, 'AI Patient panel must show after clicking its tab');
+  assertEqualLocal(labsPanel.hidden, true, 'labs panel must hide after switching to AI Patient');
+  assertEqualLocal(document.getElementById('tab-ai-patient').getAttribute('aria-selected'), 'true', 'AI Patient tab must be selected');
+
+  await document.getElementById('tab-ai-patient').dispatch('keydown', { key: 'ArrowLeft' });
+  assertEqualLocal(labsPanel.hidden, false, 'arrow key must move selection back to the labs tab');
+  assertEqualLocal(aiPanel.hidden, true, 'AI Patient panel must hide after arrow-key navigation');
 });
 
 /* ------------------------------------------------------------- login + session */
@@ -1882,6 +2743,35 @@ await check('login maps 401 to the uniform message and preserves input', async (
   assertContains(textOf(document.getElementById('login-status')), 'Invalid email or password.', 'uniform 401 copy missing');
   assertEqualLocal(email.value, 'doctor@example.com', 'email input was not preserved');
   assertEqualLocal(password.value, 'wrong-password', 'password input was not preserved');
+});
+
+await check('landing header receives the three-mode theme switcher', async () => {
+  globalThis.fetch = async (url) =>
+    (url.endsWith('/auth/me')
+      ? json(401, { error: { code: 'unauthenticated', message: '' } })
+      : json(401, { error: { code: 'unauthenticated', message: 'no' } }));
+  const document = bootDom([
+    'global-status',
+    'login-form',
+    'email',
+    'password',
+    'login-submit',
+    'login-status',
+    'email-error',
+    'password-error',
+    'login-card',
+    'signed-in-card',
+    { id: 'landing-header', tag: 'header', class: 'landing-header' },
+  ]);
+  await freshPage('login.js');
+  await settle();
+  const switcher = document.getElementById('landing-header').querySelector('.theme-switcher');
+  assert(switcher, 'landing theme switcher missing');
+  assertEqualLocal(switcher.querySelectorAll('.theme-switcher__btn').length, 3, 'landing switcher must expose three modes');
+  for (const button of switcher.querySelectorAll('.theme-switcher__btn')) {
+    assert(button.getAttribute('aria-label'), 'landing theme button needs an accessible label');
+    assert(button.getAttribute('title'), 'landing theme button needs a tooltip');
+  }
 });
 
 await check('login validates fields inline before calling the API', async () => {
@@ -1919,6 +2809,33 @@ await check('successful login redirects to the dashboard', async () => {
   assertEqualLocal(globalThis.location.redirectedTo, 'dashboard.html', 'no redirect after login');
 });
 
+await check('login password toggle switches visibility accessibly', async () => {
+  globalThis.fetch = async (url) =>
+    (url.endsWith('/auth/me')
+      ? json(401, { error: { code: 'unauthenticated', message: '' } })
+      : json(401, { error: { code: 'unauthenticated', message: 'no' } }));
+  const document = bootDom([
+    'global-status', 'login-form', 'email', 'password', 'login-submit',
+    'login-status', 'email-error', 'password-error', 'login-card',
+    'signed-in-card', 'password-toggle',
+  ]);
+  const password = document.getElementById('password');
+  const toggle = document.getElementById('password-toggle');
+  password.type = 'password';
+  await freshPage('login.js');
+  await settle();
+
+  await toggle.dispatch('click');
+  assertEqualLocal(password.type, 'text', 'toggle must reveal the password');
+  assertEqualLocal(toggle.getAttribute('aria-pressed'), 'true', 'toggle must expose its pressed state');
+  assertEqualLocal(toggle.getAttribute('aria-label'), 'Hide password', 'toggle label must describe hiding');
+
+  await toggle.dispatch('click');
+  assertEqualLocal(password.type, 'password', 'toggle must hide the password again');
+  assertEqualLocal(toggle.getAttribute('aria-pressed'), 'false', 'toggle must clear its pressed state');
+  assertEqualLocal(toggle.getAttribute('aria-label'), 'Show password', 'toggle label must describe showing');
+});
+
 await check('anonymous access to an authenticated page redirects to sign-in', async () => {
   globalThis.fetch = async () => json(401, { error: { code: 'unauthenticated', message: '' } });
   bootDom([...CHROME_IDS, 'page-body']);
@@ -1950,7 +2867,7 @@ await check('heart loaders show on first load and are replaced by real content',
   const region = document.getElementById('patients-region');
   assert(region.querySelector('.loading-block'), 'first load must show the loading placeholder');
   assert(region.querySelector('.heart-loader__img'), 'the placeholder must show the heart loader');
-  assertContains(textOf(region), 'Loading synthetic patients', 'the placeholder must announce its label');
+  assertContains(textOf(region), 'Loading patients', 'the placeholder must announce its label');
 
   releasePatients();
   await settle();
@@ -1975,7 +2892,7 @@ await check('stale-while-revalidate renders cached data instantly then refreshes
         releaseSecond = () => resolve(json(200, {
           items: [
             PATIENT,
-            { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002', provenance: 'synthetic' },
+            { id: 'p2', display_name: 'Bob Test', mrn: 'MRN-0002' },
           ],
           total: 2,
           limit: 20,
@@ -2003,14 +2920,156 @@ await check('stale-while-revalidate renders cached data instantly then refreshes
   assertContains(textOf(region), 'Ann Test', 'cached data must render instantly on the second load');
   assert(!textOf(region).includes('Bob Test'), 'nothing may change until the revalidation lands');
   assertEqualLocal(region.querySelector('.loading-block'), null, 'a cache hit must not show the heart loader');
-  assertContains(textOf(document.getElementById('patients-status')), '1 synthetic patient found', 'cached status must render instantly');
+  assertContains(textOf(document.getElementById('patients-status')), '1 patient found', 'cached status must render instantly');
   assert(region.querySelector('.sync-chip'), 'a tiny updating indicator must mark the background refresh');
 
   releaseSecond();
   await settle();
   assertContains(textOf(region), 'Bob Test', 'the revalidated payload must update the DOM');
   assertEqualLocal(region.querySelector('.sync-chip'), null, 'the updating indicator must clear');
-  assertContains(textOf(document.getElementById('patients-status')), '2 synthetic patients found', 'status must follow the refresh');
+  assertContains(textOf(document.getElementById('patients-status')), '2 patients found', 'status must follow the refresh');
+});
+
+/* ---------------------------------------------------------- system logs */
+
+await check('system logs render history, stats, filters, clear, and deny non-admins', async () => {
+  const calls = [];
+  const routes = [{
+    method: 'GET',
+    match: /\/admin\/logs$/,
+    response: SYSTEM_LOGS_PAGE,
+  }];
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, calls, routes, staff: SYSTEM_LOG_STAFF });
+  const document = bootDom([...CHROME_IDS, ...SYSTEM_LOG_IDS]);
+  await freshPage('system-logs.js');
+  await settle();
+
+  const nav = textOf(document.getElementById('site-nav'));
+  assertContains(nav, 'System Logs', 'admin System Logs nav missing');
+  assert(nav.indexOf('Analytics') < nav.indexOf('System Logs'), 'System Logs must follow Analytics');
+  const terminal = document.getElementById('logs-terminal');
+  assertContains(textOf(terminal), 'patient.read', 'historical event missing');
+  assertContains(textOf(terminal), 'Patient record accessed', 'event description missing');
+  assertContains(textOf(terminal), 'Dr Ada Example', 'event sender missing');
+  const senderImages = terminal.querySelectorAll('img');
+  assert(senderImages.length > 0, 'doctor profile portrait missing');
+  assert(senderImages[0].getAttribute('src').includes('doctors/doctor-'), 'portrait must use a local doctor image');
+  assertEqualLocal(textOf(document.getElementById('logs-stat-total')), '1', 'total counter wrong');
+  assertEqualLocal(textOf(document.getElementById('logs-connection')), 'Disconnected', 'status must not claim live');
+  assertContains(textOf(document.getElementById('logs-last-event')), '10:00:00.123', 'last-event timestamp missing');
+
+  document.getElementById('logs-severity').value = 'error';
+  await document.getElementById('logs-filter-form').dispatch('submit');
+  await settle();
+  assert(
+    calls.some((call) => call.url.includes('/admin/logs') && call.url.includes('severity=error')),
+    'severity filter was not sent',
+  );
+
+  const beforeClear = calls.length;
+  await document.getElementById('logs-clear').dispatch('click');
+  assertContains(textOf(document.getElementById('logs-terminal')), 'Waiting for incoming events', 'clear view must empty the terminal');
+  assert(document.getElementById('logs-empty'), 'clear view must leave a replaceable empty marker');
+  assertEqualLocal(calls.length, beforeClear, 'clear view must not call the backend or delete events');
+
+  for (const user of [DOCTOR, NURSE]) {
+    const deniedCalls = [];
+    globalThis.fetch = makeFetch({ me: user, calls: deniedCalls });
+    const denied = bootDom([...CHROME_IDS, ...SYSTEM_LOG_IDS]);
+    await freshPage('system-logs.js');
+    await settle();
+    assertContains(textOf(denied.getElementById('page-body')), 'You do not have permission', `${user.roles[0]} denial missing`);
+    assert(!textOf(denied.getElementById('site-nav')).includes('System Logs'), `${user.roles[0]} must not see System Logs`);
+    assert(!deniedCalls.some((call) => call.url.includes('/admin/logs')), `${user.roles[0]} must not fetch logs`);
+  }
+});
+
+/* ------------------------------------------------------------- messages */
+
+await check('messages page renders own inbox, marks read, and sends a message', async () => {
+  const calls = [];
+  const readCalls = [];
+  const sentMessages = [];
+  const routes = [
+    {
+      method: 'POST',
+      match: '/api/v1/messages/m1/read',
+      response: () => {
+        readCalls.push('m1');
+        return { status: 204, ok: true };
+      },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/messages',
+      response: ({ body }) => {
+        sentMessages.push(body);
+        return { status: 201, ok: true, body: { ...MESSAGE_INBOX, id: 'm2', ...body } };
+      },
+    },
+  ];
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    calls,
+    routes,
+    messages: { items: [MESSAGE_INBOX], total: 1, limit: 50, offset: 0 },
+    messageRecipients: MESSAGE_RECIPIENTS,
+  });
+  const document = bootDom([...CHROME_IDS, ...MESSAGES_IDS]);
+  await freshPage('messages.js');
+  await settle();
+
+  const nav = textOf(document.getElementById('site-nav'));
+  assertContains(nav, 'Messages', 'admin nav item missing');
+  assert(nav.indexOf('Messages') < nav.indexOf('Admin'), 'Messages must sit before Admin');
+  const region = document.getElementById('messages-region');
+  assertContains(textOf(region), 'Doc Sender', 'inbox sender missing');
+  assertContains(textOf(region), 'Rota review', 'inbox subject missing');
+  assertContains(textOf(region), 'Unread', 'unread marker missing');
+
+  const row = region.querySelector('.message-row');
+  await row.dispatch('click');
+  await settle();
+  assertEqualLocal(readCalls.length, 1, 'mark-read request missing');
+  assertContains(textOf(document.getElementById('messages-detail')), 'Please review the rota', 'detail body missing');
+  assertContains(textOf(document.getElementById('messages-detail')), 'Read', 'detail read state missing');
+
+  await document.getElementById('messages-new').dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('app-dialog-title')), 'New message', 'compose dialog missing');
+  document.getElementById('message-recipient').value = 'u9';
+  document.getElementById('message-subject').value = 'Reply';
+  document.getElementById('message-body').value = 'Thanks for the update.';
+  await clickButton(document.getElementById('app-dialog-actions'), 'Send message');
+  await settle();
+  assertEqualLocal(sentMessages.length, 1, 'message send request missing');
+  assertEqualLocal(sentMessages[0].recipient_id, 'u9', 'recipient missing from message');
+  assertEqualLocal(sentMessages[0].subject, 'Reply', 'subject missing from message');
+  assertEqualLocal(sentMessages[0].body, 'Thanks for the update.', 'body missing from message');
+
+  // Doctors get Messages too, but not the Admin nav item.
+  globalThis.fetch = makeFetch({
+    me: MESSAGING_DOCTOR,
+    messages: { items: [], total: 0, limit: 50, offset: 0 },
+    messageRecipients: MESSAGE_RECIPIENTS,
+  });
+  const doctorDocument = bootDom([...CHROME_IDS, ...MESSAGES_IDS]);
+  await freshPage('messages.js');
+  await settle();
+  const doctorNav = textOf(doctorDocument.getElementById('site-nav'));
+  assertContains(doctorNav, 'Messages', 'doctor nav item missing');
+  assert(!doctorNav.includes('Admin'), 'doctor must not see Admin nav');
+  assertContains(textOf(doctorDocument.getElementById('messages-region')), 'Your inbox is empty', 'empty inbox state missing');
+
+  // Nurses have no Messages surface and never fetch it.
+  const nurseCalls = [];
+  globalThis.fetch = makeFetch({ me: NURSE, calls: nurseCalls });
+  const nurseDocument = bootDom([...CHROME_IDS, ...MESSAGES_IDS]);
+  await freshPage('messages.js');
+  await settle();
+  assertContains(textOf(nurseDocument.getElementById('page-body')), 'You do not have permission', 'nurse denial missing');
+  assert(!textOf(nurseDocument.getElementById('site-nav')).includes('Messages'), 'nurse must not see Messages nav');
+  assert(!nurseCalls.some((call) => call.url.includes('/messages')), 'nurse must not fetch messages');
 });
 
 /* -------------------------------------------------------- command menu (⌘K) */
@@ -2040,6 +3099,13 @@ await check('command menu opens with the keyboard shortcut, filters, and runs a 
   const filtered = textOf(document.getElementById('command-menu-list'));
   assertContains(filtered, 'Go to Patients', 'the navigation command must match');
   assertContains(filtered, 'Go to patient Ann Test', 'the patient command must match');
+
+  // Navigation rows are actions, not page-filename listings. Patient rows may
+  // still carry their MRN hint, but no option hint may be a .html path.
+  const hints = document.getElementById('command-menu-list').querySelectorAll('.command-menu__option-hint');
+  for (const hint of hints) {
+    assert(!/\.html$/.test(textOf(hint)), `navigation hint must not expose a page path: ${textOf(hint)}`);
+  }
 
   input.value = 'zzzzz';
   await input.dispatch('input');
@@ -2076,7 +3142,7 @@ await check('command menu lists bounded patient entries, closes on Esc, and show
 
   const listText = textOf(document.getElementById('command-menu-list'));
   assertContains(listText, 'Go to patient Ann Test', 'patient entries are missing');
-  assertContains(listText, 'of 130 synthetic patients', 'the bounded patient note is missing');
+  assertContains(listText, 'of 130 patients', 'the bounded patient note is missing');
   const paletteFetch = calls.find((call) => call.url.includes('/api/v1/patients') && call.url.includes('limit=50'));
   assert(paletteFetch, 'the palette must fetch a bounded patient list');
 
@@ -2406,7 +3472,7 @@ await check('swipe-to-dismiss keeps the sheet below the threshold and dismisses 
   let resolved;
   const promise = ui.confirmDialog({
     title: 'Sign out',
-    message: 'Sign out of the demo?',
+    message: 'Sign out?',
     confirmLabel: 'Sign out',
   });
   promise.then((value) => {
@@ -2425,6 +3491,16 @@ await check('swipe-to-dismiss keeps the sheet below the threshold and dismisses 
   assertEqualLocal(resolved, undefined, 'a small drag must not resolve the dialog');
   assertEqualLocal(dialog.open, true, 'a small drag must keep the sheet open');
   assertEqualLocal(dialog.style.getPropertyValue('--sheet-dy'), '0px', 'the sheet must spring back');
+
+  // Upward drag past the resting position: rubber-band resistance, then snap back.
+  await grabber.dispatch('pointerdown', { clientX: 100, clientY: 220, pointerType: 'touch' });
+  await grabber.dispatch('pointermove', { clientX: 100, clientY: 160, pointerType: 'touch' });
+  const upwardOffset = Number.parseFloat(dialog.style.getPropertyValue('--sheet-dy'));
+  assert(upwardOffset < 0 && upwardOffset > -60, `upward drag must rubber-band, got ${upwardOffset}`);
+  await grabber.dispatch('pointerup', {});
+  await settle();
+  assertEqualLocal(resolved, undefined, 'an upward drag must never dismiss the dialog');
+  assertEqualLocal(dialog.style.getPropertyValue('--sheet-dy'), '0px', 'rubber-banded sheet must snap back');
 
   // Second gesture: past the threshold — dismissed like cancel, NEVER confirmed.
   await grabber.dispatch('pointerdown', { clientX: 100, clientY: 100, pointerType: 'touch' });
@@ -2544,6 +3620,41 @@ await check('predictive back dismisses the topmost overlay first and unwinds LIF
   globalThis.history.back();
   await settle();
   assertEqualLocal(document.getElementById('nav-toggle').getAttribute('aria-expanded'), 'false', 'Back must close the drawer');
+});
+
+await check('overlay history defers a replacement push until the pending self-back settles', async () => {
+  bootDom([]);
+  const overlayHistory = await import(JS + 'overlay-history.js');
+  overlayHistory.resetOverlayStack();
+  const originalBack = globalThis.history.back.bind(globalThis.history);
+  let pendingBack = false;
+  globalThis.history.back = () => {
+    pendingBack = true;
+  };
+
+  const baseline = globalThis.history.length;
+  const first = overlayHistory.pushOverlay(() => {});
+  assertEqualLocal(globalThis.history.length, baseline + 1, 'the first overlay must push one entry');
+
+  overlayHistory.releaseOverlay(first);
+  assert(pendingBack, 'a UI close must request history.back()');
+
+  const replacement = overlayHistory.pushOverlay(() => {});
+  assertEqualLocal(
+    globalThis.history.length,
+    baseline + 1,
+    'the replacement push must wait while the self-back is in flight',
+  );
+
+  dispatchWindowEvent('popstate', { state: null });
+  assertEqualLocal(
+    globalThis.history.length,
+    baseline + 2,
+    'the replacement push must run after the self-back popstate',
+  );
+
+  globalThis.history.back = originalBack;
+  overlayHistory.resetOverlayStack();
 });
 
 await check('expanded history entries unwind through Back in LIFO order', async () => {
@@ -2670,113 +3781,305 @@ await check('AI asks carry an Idempotency-Key with a fresh value per request', a
 
 /* ================================================ wave U — admin analytics ===
    The analytics page renders real aggregates from GET /analytics/summary as
-   pure CSS/inline-SVG charts: SVG bar counts must match the data, the donut is
-   a stroke-dasharray arc, every chart carries role="img" + an aria-label and a
-   visually-hidden data table, empty states are honest, the first load shows
-   skeletons, Refresh rides the SWR cache, and the page/nav/palette all gate on
-   analytics:read. */
+   pure CSS/inline-SVG charts: one request supplies every section, the shared
+   date filter requests the selected UTC range, SVG/donut counts match the data,
+   every chart carries role="img" + an aria-label and a visually-hidden data
+   table, empty states are honest, the first load shows skeletons, Refresh rides
+   the SWR cache, and the page/nav/palette all gate on analytics:read. */
 
-await check('analytics page renders KPI tiles and pure-SVG charts from the summary payload', async () => {
+await check('analytics page renders range-aware KPIs and every aggregate section', async () => {
   const calls = [];
   globalThis.fetch = makeFetch({ me: CLIN_ADMIN, calls, analytics: ANALYTICS_SUMMARY });
   const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
   await freshPage('analytics.js');
   await settle();
 
+  const analyticsCalls = calls.filter((call) => call.url.includes('/analytics/summary'));
+  assertEqualLocal(analyticsCalls.length, 1, 'one request must feed every analytics section');
+  assertContains(analyticsCalls[0].url, 'start=', 'the selected range start must be sent');
+  assertContains(analyticsCalls[0].url, 'end=', 'the selected range end must be sent');
+
   const kpi = document.getElementById('kpi-region');
   const kpiText = textOf(kpi);
-  assertContains(kpiText, 'Patients', 'KPI labels missing');
-  assertContains(kpiText, '45', 'patient count missing');
-  assertContains(kpiText, '167', 'encounter count missing');
-  assertContains(kpiText, '+24 in the last 30 days', 'the 30-day delta missing');
-  assertEqualLocal(kpi.querySelectorAll('.kpi-tile').length, 8, 'eight KPI tiles expected');
-  assertContains(textOf(document.getElementById('analytics-generated-at')), '27 Oct 2026', 'generated-at line missing');
+  assertContains(kpiText, 'Registered patients', 'KPI labels missing');
+  assertContains(kpiText, '45', 'lifetime patient count missing');
+  assertContains(kpiText, 'New patients', 'new-patient KPI missing');
+  assertContains(kpiText, '8', 'new-patient count missing');
+  assertContains(kpiText, '+60.0% vs the preceding 14 days', 'comparison note missing');
+  assertContains(kpiText, 'Laboratory tests', 'lab KPI missing');
+  assertContains(kpiText, 'Total prescriptions', 'lifetime prescription KPI missing');
+  assertContains(kpiText, 'Prescriptions written', 'prescription KPI missing');
+  assertContains(kpiText, 'Active prescriptions', 'active prescription KPI missing');
+  assertContains(kpiText, 'Appointments', 'appointment KPI missing');
+  assertContains(kpiText, 'AI requests', 'AI KPI missing');
+  assertEqualLocal(kpi.querySelectorAll('.kpi-tile').length, 9, 'nine KPI tiles expected');
+  assertContains(textOf(document.getElementById('analytics-generated-at')), '14 Oct 2026', 'generated-at line missing');
+  assertContains(textOf(document.getElementById('analytics-period-label')), '1 Oct 2026', 'period start missing');
+  assertContains(textOf(document.getElementById('analytics-period-label')), '14 Oct 2026', 'period end missing');
+  assertContains(textOf(document.getElementById('analytics-period-label')), '14 days', 'period length missing');
 
-  const audit = document.getElementById('audit-activity-region');
-  assertEqualLocal(audit.querySelectorAll('rect').length, 14 * 3, 'one grouped bar per day and series');
-  const chart = audit.querySelector('svg.chart');
-  assert(chart, 'the audit chart must render');
-  assertEqualLocal(chart.getAttribute('role'), 'img', 'the chart must be exposed as an image');
-  assertContains(chart.getAttribute('aria-label') || '', 'last 14 days', 'the chart needs a spoken summary');
-  assertContains(textOf(audit), 'Permission denials', 'the legend is missing');
-  assertEqualLocal(audit.querySelectorAll('tr').length, 15, 'hidden data table must carry 14 days + header');
+  const patients = document.getElementById('patients-region');
+  assertContains(textOf(patients), 'Encounter volume', 'encounter trend panel missing');
+  assertContains(textOf(patients), 'office_visit', 'encounter type bars missing');
+  assert(patients.querySelector('svg.chart'), 'encounter line chart missing');
+  assertEqualLocal(patients.querySelectorAll('.chart-legend__item').length, 1, 'one encounter series expected');
+
+  const appointments = document.getElementById('appointments-region');
+  assertContains(textOf(appointments), 'Calendar utilization', 'utilization KPI missing');
+  assertContains(textOf(appointments), '50.0%', 'utilization percent missing');
+  assertContains(textOf(appointments), '360 booked / 720 available minutes', 'utilization denominator missing');
+  assertContains(textOf(appointments), 'Appointments by status', 'status panel missing');
+  assertContains(textOf(appointments), 'Analytics Probe', 'visit type bars missing');
+  assertContains(textOf(appointments), 'Monday', 'weekday distribution missing');
+  assertContains(textOf(appointments), '08:00', 'hour distribution missing');
+  assertEqualLocal(appointments.querySelectorAll('.analytics-status-legend__item').length, 5, 'five status categories expected');
+  const statusDonut = appointments.querySelector('.analytics-status-donut');
+  assert(statusDonut, 'appointment status donut missing');
+  assertEqualLocal(statusDonut.getAttribute('role'), 'img', 'status donut must be exposed as an image');
+  assertContains(statusDonut.getAttribute('aria-label') || '', 'Scheduled', 'status donut aria-label missing categories');
+  const segments = appointments.querySelectorAll('.donut__segment');
+  assert(segments.length >= 1, 'status donut segments missing');
+  assertContains(segments[0].getAttribute('stroke-dasharray') || '', ' ', 'status segments must use dasharray attributes');
 
   const labs = document.getElementById('labs-region');
-  const donut = labs.querySelector('svg.donut');
-  assert(donut, 'the abnormal-rate donut must render');
-  assertEqualLocal(donut.getAttribute('role'), 'img', 'the donut must be exposed as an image');
-  assertContains(donut.getAttribute('aria-label') || '', '121 of 402', 'the donut summary must carry the numbers');
-  assertEqualLocal(donut.querySelectorAll('circle').length, 2, 'track + value arc expected');
-  const arc = donut.querySelectorAll('circle')[1];
-  assertContains(arc.getAttribute('stroke-dasharray') || '', ' ', 'the arc length must be a dasharray attribute');
-  assertContains(textOf(labs), '30.1%', 'the donut label must show the rate');
+  assertContains(textOf(labs), '34.0%', 'abnormal rate missing');
+  assertContains(textOf(labs), '17 of 50', 'abnormal denominator missing');
+  assertContains(textOf(labs), 'Unclassified', 'classification missing');
   assertContains(textOf(labs), 'Glucose, fasting (GLU)', 'top abnormal tests missing');
-  assertContains(textOf(labs), 'Preliminary', 'status mix missing');
+  assertContains(textOf(labs), 'Document status mix', 'lab status mix missing');
+  assert(labs.querySelector('svg.donut'), 'abnormal-rate donut missing');
 
   const prescriptions = document.getElementById('prescriptions-region');
-  assertContains(textOf(prescriptions), 'Completed', 'prescription statuses missing');
-  assertEqualLocal(prescriptions.querySelectorAll('rect').length, 8, 'four bar rows with track + fill expected');
+  assertContains(textOf(prescriptions), 'Stopped / discontinued', 'discontinued label missing');
+  assertContains(textOf(prescriptions), 'Lifetime prescriptions by status', 'lifetime status panel missing');
+  assertContains(textOf(prescriptions), 'Completed', 'completed status missing');
 
-  const staff = document.getElementById('staff-region');
-  assertContains(textOf(staff), 'Doctor', 'role pills missing');
-  assertContains(textOf(staff), 'Admin', 'admin role pill missing');
+  const security = document.getElementById('security-region');
+  assertContains(textOf(security), 'Successful sign-ins', 'sign-in KPI missing');
+  assertContains(textOf(security), 'Permission denials', 'denial KPI missing');
+  assertContains(textOf(security), 'Clinical-record reads over time', 'record-read chart missing');
+  assertContains(textOf(security), 'Permission denials over time', 'denial chart missing');
 
   const ai = document.getElementById('ai-region');
-  assertContains(textOf(ai), 'General lookups', 'AI split missing');
-  assertContains(textOf(ai), 'Patient questions', 'AI split missing');
-  assertContains(textOf(ai), 'get_patient_summary', 'tool chips missing');
-  assertContains(textOf(ai), '\u00d7 9', 'tool call counts missing');
+  assertContains(textOf(ai), 'MCP tool calls', 'tool panel missing');
+  assertContains(textOf(ai), 'get_patient_summary', 'tool name missing');
+  assertContains(textOf(ai), 'Failures', 'tool failures column missing');
+  assertContains(textOf(ai), 'Not available', 'unpersisted metrics must be marked unavailable');
+  assertContains(textOf(ai), 'Provider health', 'provider health panel missing');
 
-  // Every chart pairs its visual with a visually-hidden data table.
-  for (const regionId of ['audit-activity-region', 'labs-region', 'prescriptions-region', 'staff-region', 'ai-region']) {
+  const quality = document.getElementById('quality-region');
+  assertContains(textOf(quality), 'Lab results missing reference ranges', 'quality check missing');
+  assertContains(textOf(quality), 'Optional metadata', 'quality kind missing');
+
+  const health = document.getElementById('health-region');
+  assertContains(textOf(health), 'Backend', 'backend health missing');
+  assertContains(textOf(health), 'Operational', 'backend state missing');
+  assertContains(textOf(health), 'Connected', 'database state missing');
+  assertContains(textOf(health), 'API error rate', 'API error rate missing');
+
+  const staff = document.getElementById('staff-region');
+  assertContains(textOf(staff), 'Active staff accounts', 'staff KPI missing');
+  assertContains(textOf(staff), 'Doctor', 'doctor role missing');
+  assertContains(textOf(staff), 'Admin', 'admin role missing');
+
+  for (const regionId of [
+    'patients-region',
+    'appointments-region',
+    'labs-region',
+    'prescriptions-region',
+    'security-region',
+    'ai-region',
+    'staff-region',
+  ]) {
     const region = document.getElementById(regionId);
     assert(
       region.querySelectorAll('.visually-hidden').length >= 1,
-      `${regionId} must carry a hidden data table`,
+      `${regionId} must carry a visually-hidden data table`,
     );
   }
 });
 
-await check('analytics empty states are honest when a metric is empty', async () => {
+await check('analytics date filter requests the selected UTC range exactly once', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ me: CLIN_ADMIN, calls, analytics: ANALYTICS_SUMMARY });
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+
+  const range = document.getElementById('analytics-range');
+  range.value = '7';
+  await range.dispatch('change');
+  assertContains(textOf(document.getElementById('analytics-period-label')), '7 days', 'period label did not update immediately');
+  await settle();
+  let analyticsCalls = calls.filter((call) => call.url.includes('/analytics/summary'));
+  assertEqualLocal(analyticsCalls.length, 2, 'a preset change must add exactly one request');
+  const sevenDayUrl = new URL(analyticsCalls[1].url, 'http://testserver');
+  const sevenStart = Date.parse(`${sevenDayUrl.searchParams.get('start')}T00:00:00Z`);
+  const sevenEnd = Date.parse(`${sevenDayUrl.searchParams.get('end')}T00:00:00Z`);
+  assertEqualLocal((sevenEnd - sevenStart) / 86400000 + 1, 7, 'seven-day range mismatch');
+
+  range.value = 'custom';
+  await range.dispatch('change');
+  assertEqualLocal(document.getElementById('analytics-custom').hidden, false, 'custom inputs must be revealed');
+  document.getElementById('analytics-start').value = '2026-09-01';
+  document.getElementById('analytics-end').value = '2026-09-10';
+  await document.getElementById('analytics-filter-form').dispatch('submit');
+  await settle();
+  analyticsCalls = calls.filter((call) => call.url.includes('/analytics/summary'));
+  assertEqualLocal(analyticsCalls.length, 3, 'custom apply must add exactly one request');
+  assertContains(analyticsCalls[2].url, 'start=2026-09-01', 'custom start missing');
+  assertContains(analyticsCalls[2].url, 'end=2026-09-10', 'custom end missing');
+
+  const beforeInvalid = calls.filter((call) => call.url.includes('/analytics/summary')).length;
+  document.getElementById('analytics-start').value = '2026-09-20';
+  document.getElementById('analytics-end').value = '2026-09-10';
+  await document.getElementById('analytics-filter-form').dispatch('submit');
+  await settle();
+  assertContains(textOf(document.getElementById('analytics-range-error')), 'on or after', 'invalid range error missing');
+  assertEqualLocal(
+    calls.filter((call) => call.url.includes('/analytics/summary')).length,
+    beforeInvalid,
+    'an invalid range must not fetch',
+  );
+
+  await document.getElementById('analytics-reset').dispatch('click');
+  await settle();
+  assertEqualLocal(range.value, '30', 'reset must restore the default preset');
+  analyticsCalls = calls.filter((call) => call.url.includes('/analytics/summary'));
+  const resetUrl = new URL(analyticsCalls[analyticsCalls.length - 1].url, 'http://testserver');
+  const resetStart = Date.parse(`${resetUrl.searchParams.get('start')}T00:00:00Z`);
+  const resetEnd = Date.parse(`${resetUrl.searchParams.get('end')}T00:00:00Z`);
+  assertEqualLocal((resetEnd - resetStart) / 86400000 + 1, 30, 'reset must request the default 30-day range');
+});
+
+await check('analytics empty states are honest when a period has no activity', async () => {
+  const zeroCounts = {
+    successful_signins: 0,
+    failed_signins: 0,
+    permission_denials: 0,
+    patient_reads: 0,
+    lab_reads: 0,
+    prescription_reads: 0,
+    ai_requests: 0,
+  };
+  const emptyTrend = ANALYTICS_DAYS.map((day) => ({ day }));
   const emptyish = {
     ...ANALYTICS_SUMMARY,
-    top_abnormal_tests: [],
-    abnormal_lab_rate: { abnormal: 0, total: 0, pct: 0 },
-    prescriptions_by_status: { active: 0, completed: 0, stopped: 0, cancelled: 0 },
-    staff_by_role: [
-      { role: 'doctor', count: 0 },
-      { role: 'nurse', count: 0 },
-      { role: 'clinical_admin', count: 0 },
-    ],
-    ai_usage: { total_asks: 0, general_asks: 0, patient_asks: 0, top_tools: [] },
+    activity: {
+      new_patients: 0,
+      encounters: 0,
+      lab_results: 0,
+      prescriptions_written: 0,
+      appointments: 0,
+      ai_requests: 0,
+      successful_signins: 0,
+      failed_signins: 0,
+      permission_denials: 0,
+    },
+    previous_activity: {
+      new_patients: 0,
+      encounters: 0,
+      lab_results: 0,
+      prescriptions_written: 0,
+      appointments: 0,
+      ai_requests: 0,
+      successful_signins: 0,
+      failed_signins: 0,
+      permission_denials: 0,
+    },
+    comparisons: Object.fromEntries(
+      Object.keys(ANALYTICS_SUMMARY.comparisons).map((key) => [key, { current: 0, previous: 0, change_pct: null }]),
+    ),
+    patients: {
+      ...ANALYTICS_SUMMARY.patients,
+      new_patients: 0,
+      returning_patients: 0,
+      active_patients: 0,
+      encounters: 0,
+      avg_encounters_per_day: 0,
+      by_encounter_type: [],
+      trend: emptyTrend.map((entry) => ({ ...entry, encounters: 0 })),
+    },
+    appointments: {
+      ...ANALYTICS_SUMMARY.appointments,
+      total: 0,
+      by_status: { scheduled: 0, confirmed: 0, completed: 0, cancelled: 0, no_show: 0 },
+      by_visit_type: [],
+      by_weekday: ANALYTICS_SUMMARY.appointments.by_weekday.map((entry) => ({ ...entry, count: 0 })),
+      by_hour: ANALYTICS_SUMMARY.appointments.by_hour.map((entry) => ({ ...entry, count: 0 })),
+      trend: emptyTrend.map((entry) => ({ ...entry, total: 0, completed: 0, cancelled: 0, no_show: 0 })),
+      utilization: { booked_minutes: 0, available_minutes: 0, utilization_pct: null, doctors_with_schedule: 0 },
+    },
+    labs: {
+      ...ANALYTICS_SUMMARY.labs,
+      total: 0,
+      status_mix: { final: 0, preliminary: 0, pending: 0 },
+      abnormal_rate: { abnormal: 0, total: 0, pct: 0 },
+      classification: {
+        normal: 0,
+        high: 0,
+        low: 0,
+        unclassified: 0,
+        missing_reference_ranges: 0,
+        reference_coverage_pct: 0,
+      },
+      top_abnormal_tests: [],
+      trend: emptyTrend.map((entry) => ({ ...entry, total: 0, evaluable: 0, abnormal: 0 })),
+    },
+    prescriptions: {
+      ...ANALYTICS_SUMMARY.prescriptions,
+      total: 0,
+      by_status: { active: 0, completed: 0, stopped: 0, cancelled: 0 },
+      lifetime_by_status: { active: 0, completed: 0, stopped: 0, cancelled: 0 },
+      trend: emptyTrend.map((entry) => ({ ...entry, prescriptions: 0 })),
+    },
+    security: { totals: zeroCounts, trend: emptyTrend.map((entry) => ({ ...entry, ...zeroCounts })), timezone: 'UTC' },
+    ai_usage: {
+      ...ANALYTICS_SUMMARY.ai_usage,
+      total_requests: 0,
+      successful: 0,
+      failed: 0,
+      denied: 0,
+      success_rate: null,
+      top_tools: [],
+    },
+    data_quality: { checks: [] },
+    staff: { active_total: 0, inactive_total: 0, by_role: [] },
   };
   globalThis.fetch = makeFetch({ me: CLIN_ADMIN, analytics: emptyish });
   const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
   await freshPage('analytics.js');
   await settle();
 
-  assertContains(
-    textOf(document.getElementById('ai-region')),
-    'No AI usage recorded yet',
-    'zero AI usage must be said honestly',
-  );
-  const labs = textOf(document.getElementById('labs-region'));
-  assertContains(labs, 'No abnormal lab results recorded yet', 'zero abnormal results must be said honestly');
-  assertContains(
-    labs,
-    'No numeric lab results with reference ranges yet',
-    'a zero denominator must be explained',
-  );
-  assertContains(
-    textOf(document.getElementById('prescriptions-region')),
-    'No prescriptions recorded yet',
-    'zero prescriptions must be said honestly',
-  );
-  assertContains(
-    textOf(document.getElementById('staff-region')),
-    'No active staff roles yet',
-    'zero staff roles must be said honestly',
-  );
+  assertContains(textOf(document.getElementById('kpi-region')), 'No activity in this or the preceding 14 days', 'zero comparison must be explained');
+  assertContains(textOf(document.getElementById('patients-region')), 'No encounters in this period', 'empty encounter state missing');
+  assertContains(textOf(document.getElementById('appointments-region')), 'No appointments in this period', 'empty appointment state missing');
+  assertContains(textOf(document.getElementById('labs-region')), 'No evaluable laboratory results', 'zero lab denominator must be explained');
+  assertContains(textOf(document.getElementById('prescriptions-region')), 'No prescriptions written in this period', 'empty prescription state missing');
+  assertContains(textOf(document.getElementById('security-region')), 'No sign-in events in this period', 'empty sign-in state missing');
+  assertContains(textOf(document.getElementById('ai-region')), 'No MCP tool calls in this period', 'empty tool state missing');
+  assertContains(textOf(document.getElementById('quality-region')), 'No data-quality checks available', 'empty quality state missing');
+  assertContains(textOf(document.getElementById('staff-region')), 'No active staff account holds a role', 'empty staff state missing');
+});
+
+await check('analytics server-error state is honest and offers a retry', async () => {
+  globalThis.fetch = makeFetch({
+    me: CLIN_ADMIN,
+    analytics: {
+      status: 503,
+      code: 'dependency_unavailable',
+      message: 'Analytics is temporarily unavailable.',
+    },
+  });
+  const document = bootDom([...CHROME_IDS, ...ANALYTICS_IDS]);
+  await freshPage('analytics.js');
+  await settle();
+
+  const errorRegion = document.getElementById('analytics-error-region');
+  assertContains(textOf(errorRegion), 'Analytics is temporarily unavailable.', 'server error message missing');
+  assert(errorRegion.querySelector('.state-panel--error'), 'error panel missing');
+  assertContains(textOf(errorRegion), 'Try again', 'retry action missing');
+  assertEqualLocal(document.getElementById('kpi-region').querySelectorAll('.kpi-tile').length, 0, 'no fake KPI data on error');
 });
 
 await check('analytics first load shows the heart loader and replaces it with the summary', async () => {
@@ -2923,21 +4226,20 @@ await check('command menu arrows scroll the NEW active option into view with blo
   // Long filtered list: the active option must follow the arrows via
   // scrollIntoView({block:'nearest'}) (the fix in command-menu.js renderList).
   const names = [
-    'Елена Георгиева (демо)',
-    'Иван Петров (демо)',
-    'Александър-Константин Димитров-Стоянов (демо)',
-    'Мария Иванова (демо)',
-    'Антоанета Иванова-Петрова (демо)',
+    'Елена Георгиева',
+    'Иван Петров',
+    'Александър-Константин Димитров-Стоянов',
+    'Мария Иванова',
+    'Антоанета Иванова-Петрова',
   ];
   globalThis.fetch = makeFetch({
     me: DOCTOR,
     patients: {
       items: names.map((display_name, index) => ({
         id: `pg${index + 1}`,
-        mrn: `DEMO-00${index + 1}`,
+        mrn: `REC-00${index + 1}`,
         display_name,
-        provenance: 'synthetic',
-      })),
+            })),
       total: names.length,
       limit: 50,
       offset: 0,
@@ -2983,19 +4285,18 @@ await check('command menu arrows scroll the NEW active option into view with blo
 
 /* ------------------------------------------- long names + narrow-width structure */
 
-await check('long synthetic compound names render wrap-safe in cards/header; pagination keeps thumb targets', async () => {
-  // The real seed's longest name (scripts/seed_demo_data.py: DEMO-0013).
-  const LONG_NAME = 'Александър-Константин Димитров-Стоянов (демо)';
+await check('long compound names render wrap-safe in cards/header; pagination keeps thumb targets', async () => {
+  // The real seed's longest compound name (long MRN variant included).
+  const LONG_NAME = 'Александър-Константин Димитров-Стоянов';
   const LONG_PATIENT = {
     id: 'p13',
-    mrn: 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013',
+    mrn: 'REC-0013-EXTRA-LONG-RECORD-NUMBER-000013',
     display_name: LONG_NAME,
     given_name: 'Александър-Константин',
     family_name: 'Димитров-Стоянов',
     date_of_birth: '1949-04-22',
     sex: 'M',
-    provenance: 'synthetic',
-  };
+    };
 
   // Patient card (patients list): full name, wrap class applied.
   globalThis.fetch = makeFetch({ patients: { items: [LONG_PATIENT], total: 42, limit: 20, offset: 0 } });
@@ -3008,7 +4309,7 @@ await check('long synthetic compound names render wrap-safe in cards/header; pag
   assertContains(nameNode.textContent, LONG_NAME, 'the full long name must render, untruncated');
   assert(nameNode.classList.contains('patient-card__name'), 'the card name must keep its wrap class');
   const mrnNode = document.getElementById('patients-region').querySelector('.patient-card__mrn');
-  assertContains(mrnNode.textContent, 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render');
+  assertContains(mrnNode.textContent, 'REC-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render');
 
   // Pagination page buttons carry hit-slop: >=44px effective thumb targets
   // (the numbered buttons are visually ~38x34px).
@@ -3033,7 +4334,7 @@ await check('long synthetic compound names render wrap-safe in cards/header; pag
   const heading = document.getElementById('patient-heading');
   assertContains(heading.textContent, LONG_NAME, 'the full long name must render in the patient header');
   assert(heading.classList.contains('text-break'), 'the patient heading must carry the wrap utility');
-  assertContains(textOf(document.getElementById('demographics-region')), 'DEMO-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render in the header');
+  assertContains(textOf(document.getElementById('demographics-region')), 'REC-0013-EXTRA-LONG-RECORD-NUMBER-000013', 'the full MRN must render in the header');
 });
 
 await check('narrow-width structure: card-stacked tables and labelled keyboard-focusable scroll regions', async () => {
@@ -3042,11 +4343,13 @@ await check('narrow-width structure: card-stacked tables and labelled keyboard-f
   // regions focusable for keyboards/TV remotes). Real 320–430px layout is
   // browser-verified (see the checklist in DESIGN.md).
   globalThis.fetch = makeFetch({ patient: PATIENT, summary: SUMMARY, labs: LABS, prescriptions: PRESCRIPTIONS });
-  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region']);
+  const document = bootDom([...CHROME_IDS, 'page-body', 'patient-heading', 'patient-avatar', 'demographics-region', 'summary-region', 'labs-region', 'prescriptions-region', 'encounters-region', ...PATIENT_TAB_FIXTURE]);
   globalThis.location.search = '?id=p1';
   await freshPage('patient.js');
   await settle();
 
+  await document.getElementById('tab-labs').dispatch('click');
+  await settle();
   const scroller = document.getElementById('labs-region').querySelector('.table-scroll');
   assert(scroller, 'the labs table must live in a horizontal scroll container');
   assertEqualLocal(scroller.getAttribute('role'), 'region', 'the scroll container must be a labelled region');
@@ -3073,6 +4376,719 @@ await check('AI answer markdown tables get the same keyboard-focusable scroll-re
   assertEqualLocal(answerScroller.getAttribute('role'), 'region', 'the answer table scroller must be a labelled region');
   assertEqualLocal(answerScroller.getAttribute('tabindex'), '0', 'the answer table scroller must be keyboard/remote focusable');
   assertEqualLocal(answerScroller.getAttribute('aria-label'), 'Data table', 'the answer table scroller must carry a constant accessible name');
+});
+
+/* ============================================================ themes ==== */
+
+await check('error states use the themed 404 and connection illustrations', async () => {
+  const document = bootDom([...CHROME_IDS, 'error-host']);
+  const host = document.getElementById('error-host');
+  const describe = () => ({ title: 'Error', message: 'Something went wrong.', retryable: false });
+
+  ui.renderErrorState(host, { status: 404 }, { describe });
+  let art = host.querySelector('.state-panel__art');
+  assert(art, '404 error state missing illustration');
+  assertContains(art.getAttribute('src'), 'error-404.svg', 'wrong 404 illustration');
+
+  ui.renderErrorState(host, { status: 0 }, { describe });
+  art = host.querySelector('.state-panel__art');
+  assert(art, 'connection error state missing illustration');
+  assertContains(art.getAttribute('src'), 'error-connection.svg', 'wrong connection illustration');
+
+  ui.renderErrorState(host, { status: 403 }, { describe });
+  assert(!host.querySelector('.state-panel__art'), '403 state should not use the outage illustration');
+});
+
+await check('theme switcher persists Light/Dark/System and follows live OS changes', async () => {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key),
+  };
+  let prefersDark = false;
+  const listeners = [];
+  const document = bootDom([...CHROME_IDS]);
+  globalThis.matchMedia = (query) => ({
+    get matches() {
+      return query === '(prefers-color-scheme: dark)' ? prefersDark : false;
+    },
+    media: String(query),
+    addEventListener: (type, listener) => {
+      if (type === 'change') listeners.push(listener);
+    },
+    removeEventListener: () => {},
+  });
+  const theme = await import(`${JS}theme.js?theme-test=${Date.now()}`);
+  const root = document.documentElement;
+  assertEqualLocal(listeners.length, 1, 'system theme listener was not registered');
+
+  assertEqualLocal(root.getAttribute('data-theme'), 'light', 'system default should resolve to light');
+  assertEqualLocal(root.getAttribute('data-theme-mode'), 'system', 'system mode should be the default');
+
+  theme.setTheme('light');
+  assertEqualLocal(root.getAttribute('data-theme'), 'light', 'Light choice not applied');
+  assertEqualLocal(store.get('medicore-theme'), 'light', 'Light choice not persisted');
+
+  theme.setTheme('dark');
+  assertEqualLocal(root.getAttribute('data-theme'), 'dark', 'Dark choice not applied');
+  assertEqualLocal(store.get('medicore-theme'), 'dark', 'Dark choice not persisted');
+
+  theme.setTheme('system');
+  assertEqualLocal(root.getAttribute('data-theme-mode'), 'system', 'System choice not applied');
+  assertEqualLocal(root.getAttribute('data-theme'), 'light', 'System should reflect the current light OS');
+  assertEqualLocal(store.get('medicore-theme'), 'system', 'System choice not persisted');
+
+  prefersDark = true;
+  for (const listener of listeners) listener({ matches: true });
+  assertEqualLocal(root.getAttribute('data-theme'), 'dark', 'System mode did not follow a live OS change');
+  prefersDark = false;
+  for (const listener of listeners) listener({ matches: false });
+  assertEqualLocal(root.getAttribute('data-theme'), 'light', 'System mode did not follow the OS back to light');
+
+  const switcher = theme.mountSwitcher();
+  document.body.append(switcher);
+  const buttons = switcher.querySelectorAll('.theme-switcher__btn');
+  assertEqualLocal(buttons.length, 3, 'theme switcher must expose three modes');
+  assertEqualLocal(buttons.map((button) => button.dataset.themeMode).join(','), 'light,dark,system', 'theme modes/order wrong');
+  assert(buttons.every((button) => button.getAttribute('aria-label')), 'each theme button needs an accessible label');
+  assert(buttons.every((button) => button.getAttribute('title')), 'each theme button needs a tooltip');
+  const darkButton = buttons.find((button) => button.dataset.themeMode === 'dark');
+  await darkButton.dispatch('click');
+  assertEqualLocal(root.getAttribute('data-theme'), 'dark', 'switcher click did not apply Dark');
+  assertEqualLocal(darkButton.getAttribute('aria-pressed'), 'true', 'active theme must be pressed');
+
+  // A fresh module instance reads the persisted preference on a reload.
+  store.set('medicore-theme', 'dark');
+  const reloaded = await import(`${JS}theme.js?theme-reload=${Date.now()}`);
+  assertEqualLocal(root.getAttribute('data-theme'), 'dark', 'persisted dark preference not restored on reload');
+  assertEqualLocal(reloaded.getTheme().mode, 'dark', 'reloaded theme mode mismatch');
+});
+
+/* ============================================ appointments (calendar + voice) */
+
+const APPT_DOCTOR = {
+  ...DOCTOR,
+  permissions: [
+    ...DOCTOR.permissions,
+    'appointment:read',
+    'appointment:write',
+    'appointment:manage_availability',
+  ],
+};
+const APPT_PATIENT_WRITER = {
+  ...APPT_DOCTOR,
+  permissions: [...APPT_DOCTOR.permissions, 'patient:write'],
+};
+const APPT_ADMIN = {
+  ...CLIN_ADMIN,
+  permissions: [
+    ...CLIN_ADMIN.permissions,
+    'appointment:read',
+    'appointment:write',
+    'appointment:manage_availability',
+  ],
+};
+const APPT_NURSE = {
+  ...NURSE,
+  permissions: [...NURSE.permissions, 'appointment:read'],
+};
+const APPT_IDS = [
+  'appointments-context',
+  'doctor-picker',
+  'doctor-select',
+  'availability-open',
+  'appointment-new',
+  'voice-region',
+  'voice-help',
+  'voice-language',
+  'voice-record',
+  'voice-record-label',
+  'voice-transcribe',
+  'voice-clear',
+  'voice-timer',
+  'voice-transcript',
+  'voice-hint',
+  'voice-interpret',
+  'voice-status',
+  'voice-proposal',
+  {
+    id: 'view-switcher',
+    children: [
+      { tag: 'button', attrs: { 'data-view': 'month' }, text: 'Month' },
+      { tag: 'button', attrs: { 'data-view': 'week' }, text: 'Week' },
+      { tag: 'button', attrs: { 'data-view': 'day' }, text: 'Day' },
+      { tag: 'button', attrs: { 'data-view': 'upcoming' }, text: 'Upcoming' },
+    ],
+  },
+  'calendar-prev',
+  'calendar-today',
+  'calendar-next',
+  'appointments-refresh',
+  'appointments-range',
+  'appointments-status',
+  'appointments-loading',
+  'appointments-calendar',
+  'appointments-upcoming',
+];
+const CLINIC_TODAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Europe/Sofia',
+}).format(new Date());
+const APPT_START = new Date();
+const APPT_END = new Date(APPT_START.getTime() + 30 * 60 * 1000);
+const APPOINTMENT = {
+  id: 'a1',
+  patient_id: 'p1',
+  doctor_id: 'u1',
+  start_at: APPT_START.toISOString(),
+  end_at: APPT_END.toISOString(),
+  duration_minutes: 30,
+  appointment_type: 'Consultation',
+  status: 'scheduled',
+  notes: null,
+  patient_display_name: 'Ann Test',
+  patient_mrn: 'MRN-0001',
+  doctor_display_name: 'Dr Ada Example',
+  created_at: APPT_START.toISOString(),
+  updated_at: APPT_START.toISOString(),
+};
+const APPT_AVAILABILITY = {
+  doctor_id: 'u1',
+  timezone: 'Europe/Sofia',
+  default_duration_minutes: 30,
+  slot_increment_minutes: 30,
+  working_hours: [0, 1, 2, 3, 4].map((weekday) => ({
+    weekday,
+    start_time: '09:00:00',
+    end_time: '12:00:00',
+  })),
+  time_off: [],
+};
+const APPT_SLOTS = {
+  doctor_id: 'u1',
+  date: CLINIC_TODAY,
+  timezone: 'Europe/Sofia',
+  slots: [
+    { start_at: APPT_START.toISOString(), end_at: APPT_END.toISOString(), local_start: '09:00', local_end: '09:30', available: true, reason: 'available' },
+  ],
+};
+const APPT_PROPOSAL = {
+  patient: { id: 'p1', display_name: 'Ann Test', mrn: 'MRN-0001' },
+  patient_candidates: [{ id: 'p1', display_name: 'Ann Test', mrn: 'MRN-0001' }],
+  patient_query: 'Ann Test',
+  date: CLINIC_TODAY,
+  start_time: '09:00',
+  start_at: APPT_START.toISOString(),
+  end_at: APPT_END.toISOString(),
+  duration_minutes: 30,
+  appointment_type: 'Consultation',
+  notes: 'Follow-up',
+  timezone: 'Europe/Sofia',
+  missing_fields: [],
+  warnings: [],
+  can_confirm: true,
+  model: 'fake-appointment-model',
+  ai_generated: true,
+};
+
+function appointmentRoutes(calls, { createdAt = null, interpretBodies = null } = {}) {
+  return [
+    {
+      method: 'GET',
+      match: '/api/v1/appointments/config',
+      response: { timezone: 'Europe/Sofia', max_duration_minutes: 480, max_range_days: 62 },
+    },
+    {
+      method: 'GET',
+      match: '/api/v1/appointments/availability',
+      response: APPT_AVAILABILITY,
+    },
+    {
+      method: 'GET',
+      match: '/api/v1/appointments/slots',
+      response: APPT_SLOTS,
+    },
+    {
+      method: 'GET',
+      match: '/api/v1/appointments',
+      response: { items: [APPOINTMENT], total: 1, limit: 100, offset: 0 },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/interpret',
+      response: ({ body }) => {
+        if (interpretBodies) interpretBodies.push(body);
+        return APPT_PROPOSAL;
+      },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments',
+      response: ({ body }) => {
+        if (createdAt) createdAt.push(body);
+        return { status: 201, ok: true, body: APPOINTMENT };
+      },
+    },
+  ];
+}
+
+await check('appointments page renders the month calendar and role-aware nav', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls,
+    routes: appointmentRoutes(calls),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  assertContains(textOf(document.getElementById('site-nav')), 'Appointments', 'nav item missing');
+  assertContains(textOf(document.getElementById('appointments-context')), 'Europe/Sofia', 'clinic timezone missing');
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Ann Test', 'appointment missing from month view');
+  assertContains(textOf(document.getElementById('appointments-range')), 'Nov', 'month label missing');
+  assert(document.getElementById('appointments-calendar').querySelector('.calendar-grid'), 'month grid missing');
+  assert(!document.getElementById('appointment-new').hidden, 'new appointment must be visible for a writer');
+  assert(!document.getElementById('voice-region').hidden, 'voice panel must be visible for a writer');
+  assert(document.getElementById('doctor-picker').hidden, 'doctor picker must be hidden for a doctor');
+
+  const chip = document.getElementById('appointments-calendar').querySelector('.appointment-chip');
+  assert(chip, 'appointment chip missing');
+  await chip.dispatch('click');
+  await settle();
+  const doctorIdentity = document.getElementById('app-dialog-body').querySelector('.doctor-identity');
+  assert(doctorIdentity, 'appointment detail doctor identity missing');
+  const detailAvatar = doctorIdentity.querySelector('.avatar--photo');
+  assert(detailAvatar && detailAvatar.querySelector('img'), 'appointment detail doctor must show the demo portrait');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Close');
+});
+
+await check('appointment detail Reschedule and Cancel work for a doctor under deferred dialog close', async () => {
+  const calls = [];
+  const patches = [];
+  const cancels = [];
+  const nextStart = new Date(APPT_START.getTime() + 30 * 60 * 1000).toISOString();
+  const routes = [
+    {
+      method: 'GET',
+      match: '/api/v1/appointments/slots',
+      response: {
+        ...APPT_SLOTS,
+        slots: [
+          { start_at: APPT_START.toISOString(), end_at: APPT_END.toISOString(), local_start: '09:00', local_end: '09:30', available: true, reason: 'available' },
+          { start_at: nextStart, end_at: new Date(Date.parse(nextStart) + 30 * 60 * 1000).toISOString(), local_start: '09:30', local_end: '10:00', available: true, reason: 'available' },
+        ],
+      },
+    },
+    {
+      method: 'PATCH',
+      match: '/api/v1/appointments/a1',
+      response: ({ body }) => {
+        patches.push(body);
+        return { ...APPOINTMENT, ...body, start_at: body.start_at, duration_minutes: body.duration_minutes };
+      },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/a1/cancel',
+      response: () => {
+        cancels.push(true);
+        return { ...APPOINTMENT, status: 'cancelled' };
+      },
+    },
+    ...appointmentRoutes(calls),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  // Real browsers defer the native close callback inside a view transition.
+  // Reusing the shared dialog must wait for the close event, not race it.
+  document.startViewTransition = (update) => {
+    const done = Promise.resolve().then(() => {
+      return update();
+    });
+    return { updateCallbackDone: done, ready: done, finished: done, skipTransition() {} };
+  };
+
+  const chip = document.getElementById('appointments-calendar').querySelector('.appointment-chip');
+  assert(chip, 'appointment chip missing');
+  await chip.dispatch('click');
+  await settle();
+  await clickButton(document.getElementById('app-dialog-actions'), 'Reschedule');
+  await settle(30);
+  assertEqualLocal(document.getElementById('app-dialog-title').textContent, 'Reschedule appointment', 'reschedule form did not open after close');
+  assert(document.getElementById('app-dialog').open, 'reschedule dialog must stay open');
+
+  const slotButtons = document.getElementById('app-dialog-body').querySelectorAll('.slot-button');
+  assert(slotButtons.length >= 2, 'reschedule form must show selectable slots');
+  await slotButtons[1].dispatch('click');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Save changes');
+  await settle(60);
+  assertEqualLocal(patches.length, 1, 'reschedule PATCH missing');
+  assertEqualLocal(patches[0].start_at, nextStart, 'reschedule must send the newly selected time');
+  assertEqualLocal(document.getElementById('app-dialog').open, false, 'reschedule dialog must close after save');
+
+  const chipAgain = document.getElementById('appointments-calendar').querySelector('.appointment-chip');
+  assert(chipAgain, 'appointment chip missing after reschedule');
+  await chipAgain.dispatch('click');
+  await settle();
+  // The detail button opens a confirmation and its async handler stays pending
+  // until the user answers it; fire the click without awaiting the handler.
+  buttonByText(document.getElementById('app-dialog-actions'), 'Cancel appointment').dispatch('click', {});
+  await settle(30);
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'The time is released for other patients', 'cancel confirmation missing');
+  assert(document.getElementById('app-dialog').open, 'cancel confirmation must stay open');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Cancel appointment');
+  await settle(60);
+  assertEqualLocal(cancels.length, 1, 'cancel POST missing');
+  assertEqualLocal(document.getElementById('app-dialog').open, false, 'cancel dialog must close after confirmation');
+});
+
+await check('admin removes cancelled appointments and expired cancelled rows are pruned', async () => {
+  const calls = [];
+  const removed = [];
+  const staff = {
+    items: [{ id: 'u1', email: 'doctor@example.com', display_name: 'Dr Ada Example', roles: ['doctor'], is_active: true }],
+  };
+  const oldUpdated = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+  const freshCancelled = {
+    ...APPOINTMENT,
+    status: 'cancelled',
+    updated_at: new Date().toISOString(),
+  };
+  const oldCancelled = {
+    ...APPOINTMENT,
+    id: 'a2',
+    patient_display_name: 'Old Cancelled',
+    status: 'cancelled',
+    updated_at: oldUpdated,
+  };
+  let items = [freshCancelled, oldCancelled];
+  const routes = [
+    {
+      method: 'GET',
+      match: '/api/v1/appointments',
+      response: () => ({ items, total: items.length, limit: 100, offset: 0 }),
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/a1/remove-from-calendar',
+      response: () => {
+        removed.push('a1');
+        items = items.filter((item) => item.id !== 'a1');
+        return { status: 204, ok: true };
+      },
+    },
+    ...appointmentRoutes(calls),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_ADMIN, calls, staff, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const calendar = document.getElementById('appointments-calendar');
+  assertContains(textOf(calendar), 'Ann Test', 'fresh cancelled appointment missing');
+  assert(!textOf(calendar).includes('Old Cancelled'), 'expired cancelled appointment must be pruned');
+
+  const chip = calendar.querySelector('.appointment-chip');
+  await chip.dispatch('click');
+  await settle();
+  assertContains(
+    textOf(document.getElementById('app-dialog-actions')),
+    'Remove from calendar',
+    'admin remove action missing',
+  );
+  buttonByText(document.getElementById('app-dialog-actions'), 'Remove from calendar').dispatch('click', {});
+  await settle(30);
+  assertContains(
+    textOf(document.getElementById('app-dialog-body')),
+    'The cancelled appointment will no longer appear',
+    'remove confirmation missing',
+  );
+  await clickButton(document.getElementById('app-dialog-actions'), 'Remove from calendar');
+  await settle(60);
+  assertEqualLocal(removed.length, 1, 'remove API was not called');
+  assert(!textOf(document.getElementById('appointments-calendar')).includes('Ann Test'), 'removed appointment still rendered');
+
+  // Doctors may cancel, but only an Admin gets the immediate removal action.
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls: [],
+    routes: [
+      {
+        method: 'GET',
+        match: '/api/v1/appointments',
+        response: { items: [freshCancelled], total: 1, limit: 100, offset: 0 },
+      },
+      ...appointmentRoutes([]),
+    ],
+  });
+  const doctorDocument = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+  const doctorChip = doctorDocument
+    .getElementById('appointments-calendar')
+    .querySelector('.appointment-chip');
+  await doctorChip.dispatch('click');
+  await settle();
+  assert(
+    !textOf(doctorDocument.getElementById('app-dialog-actions')).includes('Remove from calendar'),
+    'doctor must not get the admin removal action',
+  );
+});
+
+await check('appointment form selects a slot and stores a custom Other visit type', async () => {
+  const calls = [];
+  const created = [];
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls,
+    patients: { items: [PATIENT], total: 1, limit: 8, offset: 0 },
+    routes: appointmentRoutes(calls, { createdAt: created }),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  await document.getElementById('appointment-new').dispatch('click');
+  await settle();
+  const search = document.getElementById('appointment-patient-search');
+  search.value = 'Ann';
+  await search.dispatch('input');
+  await settle(400);
+  const patientResult = document
+    .getElementById('app-dialog-body')
+    .querySelectorAll('.patient-result')[0];
+  assert(patientResult, 'patient search result missing');
+  await patientResult.dispatch('click');
+
+  const slotButton = document.getElementById('app-dialog-body').querySelector('.slot-button');
+  assert(slotButton, 'slot missing');
+  assert(!slotButton.disabled, 'available slot must be clickable');
+  await slotButton.dispatch('click');
+
+  const typeSelect = document.getElementById('appointment-type');
+  typeSelect.value = 'other';
+  await typeSelect.dispatch('change');
+  const customType = document.getElementById('appointment-type-custom');
+  assert(customType && !customType.hidden, 'custom visit type field missing for Other');
+  customType.value = 'Home visit';
+
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create appointment');
+  await settle(60);
+  assertEqualLocal(created.length, 1, 'custom-type appointment was not created');
+  assertEqualLocal(created[0].appointment_type, 'Home visit', 'custom visit type not sent');
+  assertEqualLocal(created[0].duration_minutes, 30, 'duration wrong');
+});
+
+await check('appointment picker creates and selects a new patient when none match', async () => {
+  const calls = [];
+  const createdPatients = [];
+  const createdAppointments = [];
+  const newPatient = {
+    ...PATIENT,
+    id: 'p-new',
+    mrn: 'MRN-NEW',
+    display_name: 'New Patient',
+    given_name: 'New',
+    family_name: 'Patient',
+    date_of_birth: '1992-03-04',
+    sex: 'female',
+    blood_type: 'O+',
+  };
+  const routes = [
+    {
+      method: 'GET',
+      match: '/api/v1/patients',
+      response: { items: [], total: 0, limit: 8, offset: 0 },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/patients',
+      response: ({ body }) => {
+        createdPatients.push(body);
+        return { status: 201, ok: true, body: newPatient };
+      },
+    },
+    ...appointmentRoutes(calls, { createdAt: createdAppointments }),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_PATIENT_WRITER, calls, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  await document.getElementById('appointment-new').dispatch('click');
+  await settle();
+  const search = document.getElementById('appointment-patient-search');
+  search.value = 'Nobody';
+  await search.dispatch('input');
+  await settle(400);
+
+  const body = document.getElementById('app-dialog-body');
+  assertContains(textOf(body), 'No matching patients', 'empty patient search state missing');
+  assertContains(textOf(body), 'Add new patient', 'create-patient fallback missing');
+  await clickButton(body, 'Add new patient');
+  await settle();
+  assertContains(textOf(body), 'Add a new patient', 'inline patient form missing');
+
+  document.getElementById('new-patient-given').value = 'New';
+  document.getElementById('new-patient-family').value = 'Patient';
+  document.getElementById('new-patient-dob').value = '1992-03-04';
+  document.getElementById('new-patient-sex').value = 'female';
+  document.getElementById('new-patient-blood-type').value = 'O+';
+  await clickButton(body, 'Create patient');
+  await settle(60);
+  assertEqualLocal(createdPatients.length, 1, 'patient create request missing');
+  assertEqualLocal(createdPatients[0].given_name, 'New', 'patient given name missing');
+  assertContains(document.getElementById('appointment-patient-search').value, 'New Patient', 'new patient not selected');
+
+  const slotButton = body.querySelector('.slot-button');
+  assert(slotButton, 'appointment slot missing after patient creation');
+  await slotButton.dispatch('click');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create appointment');
+  await settle(60);
+  assertEqualLocal(createdAppointments.length, 1, 'appointment create request missing');
+  assertEqualLocal(createdAppointments[0].patient_id, 'p-new', 'new patient not used for appointment');
+});
+
+await check('appointments page is a read-only clinic view for a nurse', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    me: APPT_NURSE,
+    calls,
+    routes: appointmentRoutes(calls),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  assertContains(textOf(document.getElementById('site-nav')), 'Appointments', 'nurse nav item missing');
+  assertContains(
+    textOf(document.getElementById('appointments-context')),
+    'Read-only clinic calendar',
+    'read-only context missing',
+  );
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Ann Test', 'clinic appointment missing');
+  assert(document.getElementById('appointment-new').hidden, 'nurse must not get a new-appointment button');
+  assert(document.getElementById('voice-region').hidden, 'nurse must not get voice scheduling');
+  assert(document.getElementById('availability-open').hidden, 'nurse must not get availability controls');
+  assert(document.getElementById('doctor-picker').hidden, 'nurse must not get the admin doctor picker');
+  assert(
+    !calls.some((call) => call.url.includes('/appointments/availability')),
+    'read-only nurse must not request availability',
+  );
+  assert(
+    !calls.some((call) => call.url.includes('/appointments/slots')),
+    'read-only nurse must not request slots',
+  );
+
+  const dayButton = document
+    .getElementById('view-switcher')
+    .querySelectorAll('[data-view]')
+    .find((node) => node.dataset.view === 'day');
+  await dayButton.dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Ann Test', 'nurse day schedule missing');
+  assert(
+    !textOf(document.getElementById('appointments-calendar')).includes('Available times'),
+    'nurse day view must not expose booking slots',
+  );
+  assert(
+    !calls.some((call) => call.url.includes('/appointments/slots')),
+    'nurse day view must not request slots',
+  );
+});
+
+await check('appointments admin day view, availability dialog, and voice proposal confirmation', async () => {
+  const calls = [];
+  const created = [];
+  const interpretBodies = [];
+  globalThis.fetch = makeFetch({
+    me: APPT_ADMIN,
+    calls,
+    staff: {
+      items: [{ id: 'u1', email: 'doctor@example.com', display_name: 'Dr Ada Example', roles: ['doctor'], is_active: true }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    },
+    routes: appointmentRoutes(calls, { createdAt: created, interpretBodies }),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  assert(!document.getElementById('doctor-picker').hidden, 'admin must see the doctor picker');
+  assertEqualLocal(document.getElementById('doctor-select').value, 'u1', 'admin doctor selection not applied');
+
+  const dayButton = document
+    .getElementById('view-switcher')
+    .querySelectorAll('[data-view]')
+    .find((node) => node.dataset.view === 'day');
+  await dayButton.dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Working hours', 'day view working hours missing');
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Available times', 'day view slots missing');
+
+  await document.getElementById('availability-open').dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Default duration', 'availability dialog missing');
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Use standard weekdays', 'standard week helper missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Cancel');
+  await settle();
+
+  await document.getElementById('appointment-new').dispatch('click');
+  await settle();
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Patient', 'new appointment form missing');
+  assertContains(textOf(document.getElementById('app-dialog-actions')), 'Create appointment', 'explicit create action missing');
+
+  const typeSelect = document.getElementById('appointment-type');
+  assert(typeSelect, 'visit type select missing');
+  assertEqualLocal(typeSelect.querySelectorAll('option').length, 19, 'visit catalogue incomplete');
+  assertEqualLocal(typeSelect.value, 'general', 'default visit type should be General Consultation');
+  typeSelect.value = 'new_patient';
+  await typeSelect.dispatch('change');
+  assertEqualLocal(document.getElementById('appointment-duration').value, '45', 'duration should follow New Patient Consultation');
+  typeSelect.value = 'other';
+  await typeSelect.dispatch('change');
+  const customType = document.getElementById('appointment-type-custom');
+  assert(customType && !customType.hidden, 'custom visit type input must appear for Other');
+
+  const slotButton = document.getElementById('app-dialog-body').querySelector('.slot-button');
+  assert(slotButton, 'available slot button missing');
+  assert(!slotButton.disabled, 'available slot must not be disabled');
+  assert(!slotButton.hasAttribute('disabled'), 'disabled=false must not leave a disabled attribute');
+  await slotButton.dispatch('click');
+  assert(slotButton.classList.contains('is-selected'), 'clicking a slot must select it');
+  assertEqualLocal(slotButton.getAttribute('aria-pressed'), 'true', 'selected slot must expose aria-pressed');
+
+  await clickButton(document.getElementById('app-dialog-actions'), 'Cancel');
+  await settle();
+
+  const transcript = document.getElementById('voice-transcript');
+  transcript.value = 'Book Ann Test tomorrow at 09:00.';
+  await transcript.dispatch('input');
+  await document.getElementById('voice-interpret').dispatch('click');
+  await settle(50);
+  assertContains(textOf(document.getElementById('voice-proposal')), 'AI-generated', 'proposal is not labelled AI-generated');
+  assertContains(textOf(document.getElementById('voice-proposal')), 'Review & create', 'proposal confirmation action missing');
+  const interpretCall = calls.find((call) => call.url.includes('/appointments/interpret'));
+  assert(interpretCall, 'interpret request missing');
+  assertContains(interpretCall.url, 'doctor_id=u1', 'admin interpret must be scoped to the selected doctor');
+  assertEqualLocal(interpretBodies[0].text, 'Book Ann Test tomorrow at 09:00.', 'transcript text not sent');
+
+  await clickButton(document.getElementById('voice-proposal'), 'Review & create');
+  await settle();
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Ann Test', 'proposal patient not prefilled');
+  assertContains(textOf(document.getElementById('app-dialog-actions')), 'Create appointment', 'confirmation form missing');
+
+  await clickButton(document.getElementById('app-dialog-actions'), 'Create appointment');
+  await settle(60);
+  assertEqualLocal(created.length, 1, `explicit confirmation did not create exactly one appointment (dialog: ${textOf(document.getElementById('app-dialog-body'))})`);
+  assertEqualLocal(created[0].patient_id, 'p1', 'created appointment patient wrong');
+  assertEqualLocal(created[0].doctor_id, 'u1', 'admin creation must target the selected doctor');
 });
 
 /* ------------------------------------------------------------------ report */

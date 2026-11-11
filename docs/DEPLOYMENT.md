@@ -14,7 +14,7 @@ Legend: `[ ]` = not yet done/verified.
 | Frontend | Cloudflare Pages (static, HTTPS) | plan limits exist; free forever not guaranteed |
 | Backend | Render free web service | sleeps after inactivity (cold starts ~30–60 s), monthly limits |
 | Database | Neon free PostgreSQL | autosuspends after inactivity (first-query latency), limited backups on free tier |
-| LLM (optional) | OpenCode Console inference API | free-tier models return **403 for non-OpenCode clients** — paid model or Go subscription required; otherwise pay-per-use with a budget cap |
+| LLM (optional) | OpenCode inference API | standard endpoint needs account credit or available free quota; `/go` needs an active Go subscription; budget cap recommended |
 
 Expected cost: **$0/month baseline** (free tiers) + optional LLM pay-per-use **with a
 spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
@@ -44,7 +44,8 @@ spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 6. [ ] Load the synthetic seed: `cd backend && uv run python ../scripts/seed_demo_data.py`
    *(verified locally (Phase 13); unverified against Neon until Phase 14)* with the
    `DEMO_*` env vars set (see §5). Seed data is fictional and labelled
-   `provenance: "synthetic"`.
+   `provenance: 'synthetic'` in the database only — the label is never serialized
+   into clinical payloads or shown in the UI.
 7. [ ] Verify: seeded demo accounts can log in and synthetic patients are listed.
 
 ## 3. Backend — Render (free web service)
@@ -105,12 +106,20 @@ real values.**
 | `MIGRATION_DATABASE_URL` | migration-only connection (elevated role) | local / CI, Render if migrated there | `postgresql+asyncpg://migrator:change-me@host/db` |
 | `SESSION_COOKIE_NAME` | session cookie name | Render | `cap_session` |
 | `SESSION_TTL_HOURS` | session lifetime | Render | `8` |
-| `LLM_ENABLED` | AI feature on/off kill switch | Render | `false` |
-| `LLM_API_BASE_URL` | OpenCode inference base URL | Render | `https://opencode.ai/inference` |
-| `LLM_API_KEY` | service-account key ("Models: Request" only) | Render (secret) | `oc_sk_replace_me` |
-| `LLM_MODEL` | default model | Render | `glm-5.3-flash` |
-| `LLM_MAX_TOOL_CALLS` | tool-call bound per question | Render | `4` |
+| `LLM_ENABLED` | optional kill switch; omit/`true` auto-enables when a key is present, `false` force-disables | Render | *(unset)* or `false` |
+| `LLM_API_BASE_URL` | OpenCode inference base URL (standard or Go) | Render | `https://opencode.ai/inference/go` |
+| `LLM_API_KEY` | service-account key ("Models: Request" only); present key auto-enables AI | Render (secret) | `oc_sk_replace_me` |
+| `LLM_MODEL` | default model | Render | `deepseek-v4.1-flash` (Go) / `gpt-6-luna` (standard) |
+| `LLM_MAX_TOOL_CALLS` | patient-scoped tool-call bound per question | Render | `4` |
+| `LLM_MAX_TOOL_CALLS_GENERAL` | general-lookup tool-call bound per question (clamped 1–20) | Render | `10` |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | LLM request timeout | Render | `45` |
+| `CLINIC_TIMEZONE` | IANA clinic timezone for working hours/display | Render | `Europe/Sofia` |
+| `WHISPER_BASE_URL` | private speech-service origin; empty disables voice | Render (optional) | `http://speech:8080` locally; private URL in a hosted setup |
+| `WHISPER_AUTH_MODE` | `none` / `bearer` / `gcp_iam` | Render (optional) | `none` on a private network |
+| `WHISPER_BEARER_TOKEN` | bearer token when that mode is used (secret) | Render (optional secret) | `replace-me` |
+| `WHISPER_AUDIENCE` | Cloud Run ID-token audience when `gcp_iam` is used | Render (optional) | `https://<speech-service-url>` |
+| `VOICE_MAX_UPLOAD_BYTES` | exact-route voice upload allowance (64 KiB–8 MiB) | Render (optional) | `4194304` |
+| `VOICE_MAX_DURATION_SECONDS` | maximum recording duration | Render (optional) | `60` |
 | `ALLOWED_ORIGINS` | CORS allowlist (single frontend origin) | Render | `https://<frontend-pages-domain>` |
 | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | seeds the Admin demo account (`clinical_admin`, all permissions) | seed-time env only | `admin@example.com` / `replace-me-at-seed-time` |
 | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | seeds the doctor demo account | seed-time env only | `doctor@example.com` / `replace-me-at-seed-time` |
@@ -118,6 +127,40 @@ real values.**
 
 Rules: never commit populated values; generate strong `APP_SECRET_KEY`, DB passwords,
 and demo passwords per environment; `DEMO_*` values are set only when running the seed.
+
+### Optional speech service
+
+Voice transcription is optional. If `WHISPER_BASE_URL` is unset, the endpoint
+returns `503 dependency_unavailable` and the manual calendar/transcript path
+works normally.
+
+Local Docker:
+
+```bash
+docker compose --profile speech up --build
+# compose points the app at http://speech:8080 by default; override in the
+# repo-root .env only when using another private speech origin.
+```
+
+The `speech` service has **no published host port**; it is reachable only on the
+compose network. Without the speech profile the app still starts and the voice
+endpoint fails closed with `503`; manual scheduling remains available. The image builds whisper.cpp v1.9.5 (checksum-pinned) and bakes
+in the checksum-verified Tiny multilingual model. The first build downloads the
+model and compiles the CPU engine, so it is slow.
+
+The backend image installs FFmpeg/FFprobe at runtime; no host FFmpeg is needed
+inside Docker. This makes the image larger — verify the host's image-size and
+build-time limits before relying on voice in a hosted environment. The global
+request body limit remains 1 MiB; only the exact
+`POST /api/v1/voice/transcriptions` route receives the configured voice
+allowance, hard-clamped to 8 MiB.
+
+Hosted speech: the code supports `WHISPER_AUTH_MODE=bearer` and
+`gcp_iam` (metadata ID token). Cloud Run deployment is **documented, not
+verified**; the current deployment target is Render + Cloudflare + Neon.
+Cross-cloud IAM (Render calling a private Cloud Run service) is a known blocker.
+Do not claim voice transcription works in a hosted environment until the speech
+service, IAM, and a real browser recording are verified end-to-end.
 
 ## 6. CORS, HTTPS, cookies, and the internal MCP boundary
 
@@ -135,10 +178,12 @@ and demo passwords per environment; `DEMO_*` values are set only when running th
 - [ ] **MCP is internal-only.** There is no public MCP route or transport. It runs inside
   the backend process and is unreachable from the internet. Verify by attempting to
   reach any MCP-looking path from outside — expect 404.
-- [ ] LLM is **optional**: the app must pass smoke tests with `LLM_ENABLED=false`. If
-  enabled, set a **budget cap** in the OpenCode Console on the service-account key
-  (restricted to "Models: Request"), and remember free-tier models return 403 for
-  external clients — configure a paid model or accept that the AI feature stays off.
+- [ ] LLM is **optional**: the app must pass smoke tests with no key or
+  `LLM_ENABLED=false`. If enabled, set a **budget cap** in the OpenCode Console on
+  the service-account key (restricted to "Models: Request"). Use
+  `https://opencode.ai/inference` with a funded/free-quota model, or
+  `https://opencode.ai/inference/go` with an active Go subscription; otherwise the
+  API returns `503 dependency_unavailable` with an actionable reason.
 
 ## 7. Verification checklist (mirrors PLAN.md Phase 15 smoke test)
 
@@ -150,6 +195,7 @@ Run against the **public deployed URL**, not localhost:
 - [ ] 4. Patient search finds a seeded synthetic patient.
 - [ ] 5. Patient detail page opens.
 - [ ] 6. Synthetic labs and prescriptions are readable.
+- [ ] 6a. Patient lab trends load for an authorized patient; empty/error states remain usable, and another patient's trend URL still returns the concealed `404 not_found` response.
 - [ ] 7. AI summary works if configured; otherwise the graceful unavailable/demo state shows.
 - [ ] 8. An unauthorized API operation is rejected by the backend (403/404), not just hidden.
 - [ ] 9. Admin panel is denied for a non-admin (403 at the API).
@@ -157,8 +203,12 @@ Run against the **public deployed URL**, not localhost:
 - [ ] 11. After logout, protected pages and API calls stop working (401).
 - [ ] 12. Reload: data still available (persistence across app restart).
 - [ ] 13. Network inspection: no DB credential, LLM key, or privileged secret in any response or asset.
-- [ ] 14. Logs and audit events show the key operations (login, denials, record reads, role changes).
-- [ ] 15. Visible synthetic-data / non-clinical-use notice is present.
+- [ ] 14. Logs and audit events show the key operations (login, denials, record reads, role changes, appointment mutations).
+- [ ] 15. No visible synthetic-data / non-clinical-use notice exists by design (2026-10-30 de-marking); confirm the product surface stays clean and disclosure remains documentation-only.
+- [ ] 16. Appointments: Doctor sees only their own calendar; Admin can select a doctor; Nurse receives `403` on appointment APIs (not just a hidden nav item).
+- [ ] 17. Manual create/reschedule/cancel works; a deliberately overlapping booking returns `409`; an out-of-hours booking returns `400`.
+- [ ] 18. Voice (only if `WHISPER_BASE_URL` is configured): a real browser can record, stop releases the microphone, the transcript is editable, the AI proposal creates nothing, and explicit confirmation creates exactly one appointment. Confirm the audio/transcript is absent from logs and the database.
+- [ ] 19. The edge preserves `Permissions-Policy: microphone=(self)`; otherwise browser recording is blocked even though the API works.
 
 Additional checks:
 

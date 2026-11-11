@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.admin import AuditEvent
@@ -35,6 +37,28 @@ from app.models.admin import AuditEvent
 logger = logging.getLogger(__name__)
 
 VALID_OUTCOMES = ("success", "denied", "error")
+
+
+def _publish_after_commit(session) -> None:  # noqa: ANN001
+    pending = session.info.pop("_system_log_pending", [])
+    if pending:
+        from app.logs.service import publish_audit_payload
+
+        for payload in pending:
+            publish_audit_payload(payload)
+
+
+def _discard_after_rollback(session) -> None:  # noqa: ANN001
+    session.info.pop("_system_log_pending", None)
+
+
+def _ensure_publish_hook(session: AsyncSession) -> None:
+    sync = session.sync_session
+    if sync.info.get("_system_log_hook"):
+        return
+    sqlalchemy_event.listen(sync, "after_commit", _publish_after_commit)
+    sqlalchemy_event.listen(sync, "after_rollback", _discard_after_rollback)
+    sync.info["_system_log_hook"] = True
 
 
 def _as_uuid(value: uuid.UUID | str | None) -> uuid.UUID | None:
@@ -71,6 +95,24 @@ async def write_audit_event(
     )
     db.add(event)
     await db.flush()
+    # Normalize now (before commit/expiry) and publish only after the caller
+    # commits. Rollbacks discard the pending payload, so the live stream never
+    # shows an audit event that was not persisted.
+    from app.logs.service import build_audit_event_payload
+
+    _ensure_publish_hook(db)
+    db.sync_session.info.setdefault("_system_log_pending", []).append(
+        build_audit_event_payload(
+            event_id=event.id,
+            created_at=event.created_at or datetime.now(timezone.utc),
+            action=event.action,
+            resource_type=event.resource_type,
+            resource_id=event.resource_id,
+            request_id=event.request_id,
+            outcome=event.outcome,
+            actor_user_id=event.actor_user_id,
+        )
+    )
     return event
 
 

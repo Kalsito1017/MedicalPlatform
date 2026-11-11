@@ -1,8 +1,9 @@
-"""`patients` schema models: synthetic patients, encounters, diagnoses, notes, assignments.
+"""`patients` schema models: patients, encounters, diagnoses, notes, assignments.
 
 Name fields are free UTF-8 text (apostrophes, accents, emoji, RTL all supported)
 and must never be validated with character-class restrictions. All data is
-synthetic demo data.
+synthetic (fictional; the `provenance` column records it for audit
+traceability and never serializes into an API payload).
 
 `Patient.blood_type` design decision: stored as TEXT constrained by
 `ck_patient_blood_type` to the eight ABO/Rh combinations (`A+` ... `O-`) plus
@@ -52,8 +53,10 @@ SCHEMA = "patients"
 class Patient(TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "patient"
     __table_args__ = (
-        # Synthetic-only guardrails enforced at the database level.
-        CheckConstraint("mrn LIKE 'DEMO-%'", name="ck_patient_mrn_synthetic"),
+        # Synthetic-only guardrails enforced at the database level (the MRN
+        # scheme is the neutral `MRN-` prefix; the provenance column is the
+        # audit-side origin label and never appears in a payload).
+        CheckConstraint("mrn LIKE 'MRN-%'", name="ck_patient_mrn_synthetic"),
         CheckConstraint("provenance = 'synthetic'", name="ck_patient_provenance_synthetic"),
         CheckConstraint("sex IN ('female', 'male', 'other', 'unknown')", name="ck_patient_sex"),
         # Closed ABO/Rh vocabulary; NULL = not recorded (see module docstring).

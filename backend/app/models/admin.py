@@ -24,6 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, validates
 
 from app.db.base import Base
@@ -150,6 +151,83 @@ class AuditEvent(Base):
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class Message(TimestampMixin, Base):
+    """Internal staff-to-staff message (sender/recipient own-inbox only).
+
+    No patient payloads, attachments, or external transport. The body is not
+    copied into audit events; `read_at` is set only by the recipient.
+    """
+
+    __tablename__ = "message"
+    __table_args__ = (
+        CheckConstraint("sender_id <> recipient_id", name="ck_message_not_self"),
+        Index("ix_message_recipient_created", "recipient_id", "created_at"),
+        Index("ix_message_sender_created", "sender_id", "created_at"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    sender_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recipient_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    subject: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+
+
+class SystemEvent(TimestampMixin, Base):
+    """Operational event (NOT the security audit trail).
+
+    Audit accountability stays in `admin.audit_event`; this table is the
+    bounded operational stream (voice/AI/system events). Payload metadata is
+    flat, allowlisted and bounded; never clinical/request bodies or secrets.
+    """
+
+    __tablename__ = "system_event"
+    __table_args__ = (
+        Index("ix_system_event_created_at", "created_at"),
+        Index("ix_system_event_severity_created", "severity", "created_at"),
+        Index("ix_system_event_category_created", "category", "created_at"),
+        Index("ix_system_event_event_type_created", "event_type", "created_at"),
+        Index("ix_system_event_actor_created", "actor_id", "created_at"),
+        CheckConstraint(
+            "severity IN ('info', 'success', 'warning', 'error', 'security')",
+            name="ck_system_event_severity",
+        ),
+        CheckConstraint(
+            "category IN ('auth', 'security', 'patients', 'encounters', 'labs', "
+            "'prescriptions', 'appointments', 'ai', 'mcp', 'voice', "
+            "'administration', 'system')",
+            name="ck_system_event_category",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.staff_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    resource_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    safe_metadata: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, default=dict)
 
 
 class IdempotencyRecord(Base):

@@ -85,6 +85,15 @@ jobs:
       - name: Static hygiene + api unit checks
         run: node frontend/tests/smoke.mjs
 
+      - name: Graphify chart unit checks
+        run: node frontend/tests/graphify.test.mjs
+
+      - name: Printable patient record checks
+        run: node frontend/tests/print-record.test.mjs
+
+      - name: Safe Markdown renderer checks
+        run: node frontend/tests/markdown.test.mjs
+
       - name: Render-path scenarios
         run: node frontend/tests/render-smoke.mjs
 

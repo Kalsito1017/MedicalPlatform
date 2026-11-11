@@ -23,7 +23,7 @@ Mapped to the phase/controls that implement each item.
 | Unicode names (apostrophes, accents, emoji, RTL) | UTF-8 throughout; ORM parameterized access; seeded synthetic names exercised in tests | Phase 3, 6, 12 |
 | Dosage/clinical values as precise decimals, never floats | `Numeric`/decimal columns for lab values and doses | Phase 3 |
 | Migrations that run forward and roll back | Alembic (up/down revisions) | Phase 3 |
-| Idempotent/resettable synthetic seed with provenance labeling | `scripts/seed_demo_data.py`; `provenance: "synthetic"` in every clinical payload | Phase 3, 6 |
+| Idempotent/resettable synthetic seed with provenance labeling | `scripts/seed_demo_data.py`; provenance recorded database-internally (`patients.patient.provenance`) and never serialized into clinical payloads | Phase 3, 6 |
 | Login handles `+` and valid characters in emails | Typed email validation accepting standard addresses; tests | Phase 5, 12 |
 | Rate limits and progressive lockouts on login | Login throttling, `429 rate_limited` + `Retry-After`, uniform errors | Phase 5 |
 | Secure HttpOnly cookies + SameSite + CSRF | `cap_session` HttpOnly/Secure/SameSite=Lax + double-submit CSRF | Phase 5 |
@@ -36,7 +36,7 @@ Mapped to the phase/controls that implement each item.
 | IDOR protection (changing an ID in the URL) | Per-request authz + `404` concealment + tests | Phase 6, 12 |
 | No self-role escalation; role changes authorized, validated, audited | Self-target → 403; `role:assign` + CSRF + audit events | Phase 5, 10 |
 | Nurse is least privilege (no staff/role/audit administration) | Matrix: `nurse` = clinical reads only; `clinical_admin` (Admin) holds every permission; self role assignment refused | Phase 5 |
-| MCP tools narrow, typed, read-only, allowlisted | Exactly 6 tools — `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`; no execute_sql/shell/filesystem, ever | Phase 7 |
+| MCP tools narrow, typed, read-only, allowlisted | Exactly 7 tools — `search_authorized_patients`, `get_patient_summary`, `get_patient_lab_results`, `get_recent_prescriptions`, `find_patients_by_lab`, `find_patients_by_medication`, `get_my_recent_patients`; no execute_sql/shell/filesystem, ever | Phase 7 |
 | Acting identity from verified auth context, never LLM argument | In-process session context; identity never a tool argument | Phase 7 |
 | Same authorization layer re-executed inside every MCP tool | Policy module re-checked per tool call | Phase 7 |
 | Query/result/time limits and safe errors on tools | Bounded args, capped results, timeouts, no stack traces | Phase 7 |
@@ -45,7 +45,7 @@ Mapped to the phase/controls that implement each item.
 | Protection against prompt injection | Untrusted-data treatment of prompts, tool allowlist, per-call authz (see `docs/SECURITY.md`) | Phase 8, 12 |
 | Model spend caps | OpenCode Console budget cap on the service-account key | Phase 8, 14 |
 | Human approval before irreversible AI actions | Not needed in this build: the AI toolset is strictly read-only and cannot trigger any state change | Phase 7–8 |
-| Clear labeling that AI output is not a diagnosis | `ai_generated: true` + disclaimer in every response; UI notice | Phase 8, 9 |
+| Clear labeling of AI output origin | `ai_generated: true` in every response; the product surface carries the single "AI-generated" badge on answers (no disclaimer copy by the 2026-10-30 de-marking decision) | Phase 8, 9 |
 | Audit events (login, logout, denials, record reads, MCP calls, staff/role changes) | `admin.audit_event` + `GET /api/v1/audit` | Phase 11 |
 | Audit records show who *viewed* a record | Patient-record reads are audited, not only writes | Phase 11 |
 | Structured logs, request/correlation IDs, redaction | `X-Request-Id` on every response; redacted structured logs | Phase 4, 11 |
@@ -66,7 +66,7 @@ Mapped to the phase/controls that implement each item.
 | No clinical data in local storage, analytics, browser console | Frontend rules; no third-party analytics | Phase 9 |
 | Keyboard navigation and accessible markup for primary workflows | Built in (formal audit deferred — see B) | Phase 9 |
 | Staff list/create/activate/roles; audited; CSRF-protected; last-admin protection; backend enforces all | Admin panel | Phase 10 |
-| Explicit statement: not clinically validated, not a medical device | README + `docs/SECURITY.md` non-claims + footer/About-dialog disclosure + provenance badges (header banner removed at owner request, 2026-10-26) | Done (docs + UI) |
+| Explicit statement: not clinically validated, not a medical device | README + `docs/SECURITY.md` non-claims (documentation only — all visible product disclosure was removed by the 2026-10-30 de-marking) | Done (docs) |
 | Architecture decision records | Decision log in `docs/ARCHITECTURE.md` | Done |
 | README that gets a new engineer running in under an hour | `README.md` | Done (commands verified in Phase 13: Docker build + E2E smoke) |
 | Documented data-retention and reset procedures | Demo-data reset in `docs/DEPLOYMENT.md` §9; retention deferred (see B) | Done (reset, Phase 13) |
@@ -105,9 +105,19 @@ Each item: why it matters, rough effort, prerequisite, what it takes.
 | B23 | **Cost alerts** | Pay-per-use LLM and future paid tiers can surprise | S | Provider billing setup | Billing alerts/thresholds on Render/Neon/OpenCode Console; periodic cost review |
 | B24 | **Connection pooling tuning, caching, background job queues** | Real data volumes and async work will need them | M | Real workload signals | PgBouncer/pooler config, cache invalidation design, queue with retries/dead-letter |
 | B25 | **Changelog, code-review/branching policy, dependency upgrade cadence, bus-factor measures** | Process maturity for a real team | S–M | Team process | CHANGELOG.md, branch protection, scheduled upgrades, shared ownership of accounts/domains |
-| B26 | **Privacy policy and terms matching actual data handling** | Expected of any public site | S | Final feature set | Draft + legal review; simple demo notice exists today |
+| B26 | **Privacy policy and terms matching actual data handling** | Expected of any public site | S | Final feature set | Draft + legal review; disclosure is documentation-only after the 2026-10-30 product de-marking |
 | B27 | **Regular access reviews** | Least privilege decays over time without review | S | Real user population | Quarterly review of `user_role` assignments and active accounts, documented sign-off |
 | B28 | **Stolen-laptop / compromised-credential response plan** | Password or device compromise currently has no playbook | S | B5 (session revocation UI), ops owner | Documented playbook: revoke sessions, rotate keys (procedure in `docs/SECURITY.md` §5), force password change, audit review |
+| B29 | **Speech accuracy/latency/memory benchmark** | Tiny multilingual was chosen for a CPU demo; no Bulgarian/English clinical-vocabulary benchmark exists | S–M | Target host + representative (synthetic) audio | WER/CER by language/accent, p50/p95 latency, peak RSS, thread/CPU tuning, documented accepted-use boundary |
+| B30 | **Real-browser MediaRecorder E2E** | Permission prompts, codec selection, and audio upload are not covered by the Node DOM shim | S | Playwright/Cypress with fake media stream | Headless browser with a fake microphone, permission allow/deny, webm/mp4 fallback, track-stop assertion, transcript → proposal → confirm flow |
+| B31 | **Hosted private speech service / Cloud Run IAM** | `gcp_iam` metadata-token fetch and cross-cloud invocation are implemented/documented but unverified | M | Cloud Run service, service accounts, audience | Deploy private speech service, grant `roles/run.invoker`, verify ID-token auth end-to-end, document cost/CPU limits |
+| B32 | **Shared voice/AI rate-limit store** | Voice and AI limiters are in-process per instance | S–M | Multi-instance deployment | Redis/Postgres sliding-window store, shared key semantics, tests, failure mode |
+| B33 | **Complete audit coverage for derived/read surfaces** | Successful AI-history reads, appointment list/detail reads, voice transcription, and print/export are not currently audited as distinct events | S–M | Audit schema/retention decision | Add metadata-only audit actions (`ai.history.read`, `appointment.read`, `voice.transcription`, `patient.export`), purpose/policy-version fields, tests, and docs |
+| B34 | **Tamper-resistant audit storage** | Audit rows are ordinary mutable PostgreSQL rows; the app role can alter them | M | Log/audit retention design | Append-only/WORM sink or hash-chained audit, restricted DB role, verification job, restore/retention procedure |
+| B35 | **Upload malware scanning/quarantine** | The voice route validates audio with FFprobe/FFmpeg but does not scan for malware | S–M | AV engine/sandbox | ClamAV or managed scanner, quarantine path, scan-result policy, tests; keep upload size/time bounds |
+| B36 | **Export permission, approval, and audit** | Any `patient:read` account can print the complete record; there is no separate export permission or approval/audit event | S–M | Clinical/admin policy decision | `patient:export` permission (role matrix), explicit export endpoint/event, volume/field/destination limits, approval for bulk export, tests |
+| B37 | **AI-history retention and permission invalidation** | `admin.ai_conversation` stores patient-linked Q/A/citations indefinitely and is not re-authorized when patient access changes | M | Retention/data-rights policy | Retention job, per-patient deletion/correction propagation, current-access re-check on history reads, cache/index invalidation, tests |
+| B38 | **Formal data inventory, owners, DPIA/clinical risk file** | The repo documents data flows but has no complete inventory, named owners, privacy impact assessment, or clinical risk assessment | M–L | Organizational/legal input | Inventory of categories/copies/vendors/regions/retention, named owners, DPIA/clinical risk assessment, review cadence |
 
 ---
 
@@ -117,14 +127,14 @@ Each item: why it matters, rough effort, prerequisite, what it takes.
 |---|---|
 | **Real patient data of any kind** | Requires separate security/privacy/legal/clinical/regulatory review and BAAs. The demo is synthetic-only by decision. |
 | **HIPAA compliance claims, BAAs** | Cannot be achieved by a free-tier demo; tracked as B20 for a real deployment. |
-| **Clinical decision-making / medical device functionality** | Not clinically validated; no regulatory path is being pursued. AI output is informational and labelled as such. |
+| **Clinical decision-making / medical device functionality** | Not clinically validated; no regulatory path is being pursued. AI output is informational and labelled AI-generated. |
 | **Multi-tenancy (for now)** | Single-tenant by documented decision (production-requirements line 38–39 permits documenting a single-tenant decision); B7 tracks the work if that changes. |
 | **PCI scope (card numbers, payments)** | Deliberately excluded — no payment data ever enters the system. Nothing to build; keep it that way. |
-| **File uploads** | The application has no file-upload feature by design; the production checklist's upload-scanning requirement is therefore moot. If uploads are ever added, the scanning/size-limit/storage controls become a prerequisite. |
+| **General file uploads** | The only upload is the single-purpose, bounded voice transcription route (audio only, 4 MiB default / 8 MiB hard cap, 60 s, private temp cleanup, no retention). A general file-upload feature (documents, images) remains out of scope; adding one requires malware scanning, storage policy, and retention controls first. |
 | **Encryption at rest beyond provider defaults** | Neon and the hosting providers encrypt data at rest by default; application-level envelope encryption is not needed for synthetic demo data (see B10/B21 for real-data work). |
 | **Impersonation / break-glass access** | PLAN.md §4 forbids break-glass in the demo; impersonation exists only as a reviewed future option (B6). |
 | **4-digit PIN or other single weak factor** | Explicitly rejected by the plan as an authentication method. |
-| **Executing tools for the LLM beyond the 4 read-only tools** (`execute_sql`, shell, filesystem) | Permanent architectural constraint, not a backlog item. Will not be added. |
+| **Executing tools for the LLM beyond the 7 read-only tools** (`execute_sql`, shell, filesystem) | Permanent architectural constraint, not a backlog item. Will not be added. |
 | **Shared demo accounts for real users** | Demo accounts are for demonstration only and are documented as shared/insecure-by-design. Production requires unique identities per user. |
 | **SSO/SCIM/MFA without an owning organization** | These require enterprise infrastructure and owners; listed as deferred (B1–B4) but effectively out of reach until the project has an organization behind it. |
 

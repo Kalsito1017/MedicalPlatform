@@ -1,6 +1,7 @@
 """Patient, encounter, lab, and prescription response payloads (docs/API.md).
 
-All clinical payloads carry "provenance": "synthetic". Numeric values serialize
+Data provenance is database-internal (audit traceability) and never
+serializes into a payload. Numeric values serialize
 as JSON strings (Decimal, never float). Name fields are free UTF-8 text and are
 returned verbatim.
 
@@ -21,16 +22,14 @@ patient-level facts into `PatientSummaryOut`'s derivation.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from app.schemas.common import Timestamp
-
-ProvenanceLabel = Literal["synthetic"]
 
 
 class DiagnosisOut(BaseModel):
@@ -42,7 +41,6 @@ class DiagnosisOut(BaseModel):
     name: str
     status: str
     onset_date: date | None = None
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class ClinicalNoteOut(BaseModel):
@@ -56,7 +54,6 @@ class ClinicalNoteOut(BaseModel):
     symptoms: str
     assessment: str
     proposed_plan: str
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class PrescriptionItemOut(BaseModel):
@@ -68,7 +65,6 @@ class PrescriptionItemOut(BaseModel):
     medication_name: str
     dose_amount: Decimal
     dose_unit: str
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class PatientOut(BaseModel):
@@ -83,13 +79,65 @@ class PatientOut(BaseModel):
     sex: str
     blood_type: str | None = None
     age_years: int | None = None  # derived from date_of_birth; never stored
-    provenance: ProvenanceLabel = "synthetic"
     created_at: Timestamp
     updated_at: Timestamp
     # Transport carriers (see module docstring): read-model attributes attached
     # by app.services.patients.get_patient, never serialized anywhere.
     diagnoses: list[DiagnosisOut] = Field(default_factory=list, exclude=True)
     latest_note: ClinicalNoteOut | None = Field(default=None, exclude=True)
+
+
+PATIENT_NAME_MAX = 200
+PATIENT_SEXES = ("female", "male", "other", "unknown")
+PATIENT_BLOOD_TYPES = (
+    "A+",
+    "A-",
+    "B+",
+    "B-",
+    "AB+",
+    "AB-",
+    "O+",
+    "O-",
+    "unknown",
+)
+
+
+class PatientCreate(BaseModel):
+    """Create a patient record. MRN and provenance are assigned server-side."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    given_name: str = Field(min_length=1, max_length=PATIENT_NAME_MAX)
+    family_name: str = Field(min_length=1, max_length=PATIENT_NAME_MAX)
+    display_name: str | None = Field(default=None, max_length=PATIENT_NAME_MAX)
+    date_of_birth: date | None = None
+    sex: Literal["female", "male", "other", "unknown"] = "unknown"
+    blood_type: Literal[
+        "A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-", "unknown"
+    ] | None = None
+
+    @field_validator("given_name", "family_name")
+    @classmethod
+    def _strip_required_name(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("name must not be blank")
+        return stripped
+
+    @field_validator("display_name")
+    @classmethod
+    def _strip_display_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
+
+    @field_validator("date_of_birth")
+    @classmethod
+    def _not_future(cls, value: date | None) -> date | None:
+        if value is not None and value > datetime.now(timezone.utc).date():
+            raise ValueError("date of birth cannot be in the future")
+        return value
 
 
 class EncounterOut(BaseModel):
@@ -102,7 +150,6 @@ class EncounterOut(BaseModel):
     summary: str
     weight_kg: Decimal | None = None  # per-visit vitals snapshot
     height_cm: Decimal | None = None
-    provenance: ProvenanceLabel = "synthetic"
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -123,9 +170,37 @@ class LabResultOut(BaseModel):
     status: str
     collected_at: Timestamp
     resulted_at: Timestamp | None = None
-    provenance: ProvenanceLabel = "synthetic"
     created_at: Timestamp
     updated_at: Timestamp
+
+
+class LabTrendPointOut(BaseModel):
+    """One chart point: a numeric result plus its own-range classification."""
+
+    collected_at: Timestamp
+    value_num: Decimal
+    flag: Literal["high", "low", "normal", "unclassified"]
+
+
+class LabTrendSeriesOut(BaseModel):
+    """Bounded series for one lab test."""
+
+    test_code: str
+    test_name: str
+    unit: str | None = None
+    ref_low: Decimal | None = None
+    ref_high: Decimal | None = None
+    points: list[LabTrendPointOut] = Field(default_factory=list)
+    abnormal_count: int = Field(ge=0)
+
+
+class LabTrendsOut(BaseModel):
+    """Chart-ready numeric lab trends for one authorized patient."""
+
+    patient_id: UUID
+    window_days: int = Field(ge=1, le=365)
+    series: list[LabTrendSeriesOut] = Field(default_factory=list)
+    truncated: bool
 
 
 class PrescriptionOut(BaseModel):
@@ -145,7 +220,6 @@ class PrescriptionOut(BaseModel):
     end_date: date | None = None
     prescriber_id: UUID | None = None
     items: list[PrescriptionItemOut] = Field(default_factory=list)
-    provenance: ProvenanceLabel = "synthetic"
     created_at: Timestamp
     updated_at: Timestamp
 
@@ -165,7 +239,6 @@ class ProblemOut(BaseModel):
     display_name: str
     status: str = "active"
     onset_date: date | None = None
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class VitalsOut(BaseModel):
@@ -176,7 +249,6 @@ class VitalsOut(BaseModel):
     measured_at: Timestamp | None = None
     previous_weight_kg: Decimal | None = None
     previous_measured_at: Timestamp | None = None
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class TreatmentItemOut(BaseModel):
@@ -186,7 +258,6 @@ class TreatmentItemOut(BaseModel):
     medication: str
     dose_amount: Decimal
     dose_unit: str
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class TreatmentOut(BaseModel):
@@ -203,7 +274,6 @@ class TreatmentOut(BaseModel):
     route: str
     frequency: str
     items: list[TreatmentItemOut] = Field(default_factory=list)
-    provenance: ProvenanceLabel = "synthetic"
 
 
 class PatientSummaryOut(BaseModel):
@@ -211,7 +281,7 @@ class PatientSummaryOut(BaseModel):
 
     Additive-only extension (2026-10-27): every pre-existing key
     (`patient`, `encounters`, `active_problems`, `problems`, `latest_labs`,
-    `active_prescriptions`, `provenance`) is unchanged; the new sections are
+    `active_prescriptions`) is unchanged; the new sections are
     derived in `_derive_sections` from the enriched service rows so the REST
     payload and the MCP tool output carry the same facts. Every list is bounded
     by app.services.patients constants. `problems` is a compatibility alias for
@@ -232,7 +302,6 @@ class PatientSummaryOut(BaseModel):
     assessment: str | None = None
     proposed_plan: str | None = None
     prescribed_treatment: list[TreatmentOut] = Field(default_factory=list)
-    provenance: ProvenanceLabel = "synthetic"
 
     @model_validator(mode="after")
     def _derive_sections(self) -> PatientSummaryOut:

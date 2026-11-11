@@ -40,6 +40,11 @@ def _assert_headers(response, *, https: bool = False) -> str:
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "no-referrer"
     assert response.headers["Cross-Origin-Opener-Policy"] == "same-origin"
+    # Microphone is same-origin only (voice scheduling); other sensors stay off.
+    permissions = response.headers["Permissions-Policy"]
+    assert "microphone=(self)" in permissions
+    assert "camera=()" in permissions
+    assert "geolocation=()" in permissions
     assert response.headers.get("X-Request-Id")
     if https:
         assert response.headers["Strict-Transport-Security"] == "max-age=31536000; includeSubDomains"
@@ -58,6 +63,40 @@ async def test_security_headers_on_static_pages_and_assets(client) -> None:
     _assert_headers(await client.get("/"))
     _assert_headers(await client.get("/index.html"))
     _assert_headers(await client.get("/assets/css/styles.css"))
+
+
+async def test_static_code_assets_revalidate_but_images_may_cache(client) -> None:
+    """Buildless JS/CSS updates must not be stuck behind an hour-long cache."""
+    for path in (
+        "/index.html",
+        "/assets/js/command-menu.js",
+        "/assets/css/styles.css",
+    ):
+        response = await client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers["Cache-Control"] == "no-cache", path
+    image = await client.get("/assets/images/error-404.svg")
+    assert image.status_code == 200
+    assert image.headers["Cache-Control"] == "public, max-age=3600"
+
+
+async def test_webp_static_assets_use_the_correct_media_type(client) -> None:
+    """WebP must not fall back to octet-stream under X-Content-Type-Options: nosniff."""
+    response = await client.get("/assets/images/doctor-background.webp")
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "image/webp"
+    _assert_headers(response)
+
+
+async def test_compressible_static_assets_are_gzipped(client) -> None:
+    response = await client.get(
+        "/assets/css/styles.css", headers={"Accept-Encoding": "gzip"}
+    )
+    assert response.status_code == 200
+    assert response.headers.get("content-encoding") == "gzip"
+    assert "accept-encoding" in response.headers.get("vary", "").lower()
+    # The security headers survive the compression wrapper.
+    _assert_headers(response)
 
 
 async def test_security_headers_on_unhandled_error_responses() -> None:
@@ -159,12 +198,19 @@ async def test_static_pages_served_with_correct_content_types(client) -> None:
     assert alias.text == direct.text
 
 
-async def test_navigation_fallback_serves_index_html(client) -> None:
-    """SPA-safe fallback for browser navigations only."""
+async def test_navigation_fallback_serves_the_custom_404_page(client) -> None:
+    """Browser navigations get the themed 404 page with a real 404 status."""
     fallback = await client.get("/some/missing/page", headers={"Accept": "text/html"})
-    assert fallback.status_code == 200
+    assert fallback.status_code == 404
     assert fallback.headers["content-type"].startswith("text/html")
-    assert fallback.text == (await client.get("/")).text
+    assert "Page not found" in fallback.text
+    assert "error-404.svg" in fallback.text
+    assert fallback.text == (await client.get("/404.html")).text
+
+    # Unknown paths without an HTML navigation still keep the JSON envelope.
+    api_like = await client.get("/some/missing/page")
+    assert api_like.status_code == 404
+    assert api_like.json()["error"]["code"] == "not_found"
 
 
 async def test_unknown_paths_keep_the_frozen_json_error_envelope(client) -> None:

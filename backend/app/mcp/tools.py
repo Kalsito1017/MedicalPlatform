@@ -107,7 +107,6 @@ PATIENT_FIELDS = {
     "sex",
     "blood_type",
     "age_years",
-    "provenance",
 }
 ENCOUNTER_FIELDS = {
     "id",
@@ -117,7 +116,6 @@ ENCOUNTER_FIELDS = {
     "summary",
     "weight_kg",
     "height_cm",
-    "provenance",
 }
 LAB_FIELDS = {
     "id",
@@ -132,7 +130,6 @@ LAB_FIELDS = {
     "ref_high",
     "status",
     "collected_at",
-    "provenance",
 }
 PRESCRIPTION_FIELDS = {
     "id",
@@ -147,10 +144,9 @@ PRESCRIPTION_FIELDS = {
     "start_date",
     "end_date",
     "items",
-    "provenance",
 }
-DIAGNOSIS_FIELDS = {"code", "name", "status", "onset_date", "provenance"}
-PROBLEM_FIELDS = {"code", "display_name", "status", "onset_date", "provenance"}
+DIAGNOSIS_FIELDS = {"code", "name", "status", "onset_date"}
+PROBLEM_FIELDS = {"code", "display_name", "status", "onset_date"}
 
 
 def truncate_text(value: str, max_length: int = TEXT_FIELD_MAX_LENGTH) -> str:
@@ -271,7 +267,6 @@ def _vitals_dict(encounters: list[Encounter]) -> dict[str, Any] | None:
         "measured_at": _iso_utc(latest.occurred_at),
         "previous_weight_kg": str(previous.weight_kg) if previous is not None else None,
         "previous_measured_at": _iso_utc(previous.occurred_at) if previous is not None else None,
-        "provenance": "synthetic",
     }
 
 
@@ -283,7 +278,6 @@ def _treatment_dict(rx: Prescription) -> dict[str, Any]:
             "medication": truncate_text(str(item.medication_name)),
             "dose_amount": str(item.dose_amount),
             "dose_unit": truncate_text(str(item.dose_unit)),
-            "provenance": "synthetic",
         }
         for item in (getattr(rx, "items", None) or [])[:SUMMARY_PRESCRIPTION_ITEMS_MAX]
     ]
@@ -295,7 +289,6 @@ def _treatment_dict(rx: Prescription) -> dict[str, Any]:
         "route": truncate_text(str(rx.route)),
         "frequency": truncate_text(str(rx.frequency)),
         "items": items,
-        "provenance": "synthetic",
     }
 
 
@@ -335,11 +328,11 @@ async def _authorize_patient(
 
 
 async def search_authorized_patients(
-    query: Annotated[str, Field(max_length=SEARCH_QUERY_MAX_LENGTH, description="Case-insensitive substring match on the synthetic display name or MRN. Empty string returns any patients.")],
+    query: Annotated[str, Field(max_length=SEARCH_QUERY_MAX_LENGTH, description="Case-insensitive substring match on the display name or MRN. Empty string returns any patients.")],
     limit: Annotated[int, Field(ge=SEARCH_LIMIT_MIN, le=SEARCH_LIMIT_MAX, description="Maximum patients to return (1-25).")] = SEARCH_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """Search the SYNTHETIC demo patients the current user is authorized to read.
+    """Search the patients the current user is authorized to read.
 
     Returns only patients the caller may see (id, MRN, display name, date of
     birth, sex). Callers without `patient:read` see an empty result. Never
@@ -383,7 +376,7 @@ async def get_patient_summary(
     limit: Annotated[int, Field(ge=SUMMARY_LIMIT_MIN, le=SUMMARY_LIMIT_MAX, description="Maximum recent encounters to include (1-25).")] = SUMMARY_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """Get the SYNTHETIC summary for one patient the current user may read.
+    """Get the clinical summary for one patient the current user may read.
 
     Includes demographics (blood type, derived age), recent encounters with the
     per-visit vitals snapshot (weight/height, previous weight for trend),
@@ -452,7 +445,6 @@ async def get_patient_summary(
             "active_prescriptions": [
                 _dump(PrescriptionOut, row, PRESCRIPTION_FIELDS) for row in active_prescriptions
             ],
-            "provenance": "synthetic",
         },
         citations=citations,
     )
@@ -463,7 +455,7 @@ async def get_patient_lab_results(
     limit: Annotated[int, Field(ge=LIST_LIMIT_MIN, le=LIST_LIMIT_MAX, description="Maximum lab results to return (1-50).")] = LIST_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """List recent SYNTHETIC lab results for one patient the current user may read.
+    """List recent lab results for one patient the current user may read.
 
     Most recently collected first (test code, name, value, unit, reference
     range, status, collected time). Requires `lab:read`. Missing results are
@@ -497,7 +489,7 @@ async def get_recent_prescriptions(
     limit: Annotated[int, Field(ge=LIST_LIMIT_MIN, le=LIST_LIMIT_MAX, description="Maximum prescriptions to return (1-50).")] = LIST_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """List recent SYNTHETIC prescriptions for one patient the current user may read.
+    """List recent prescriptions for one patient the current user may read.
 
     Newest start date first (medication, dose, route, frequency, status, start
     and end dates). Requires `prescription:read`. Missing prescriptions are
@@ -632,7 +624,7 @@ async def get_my_recent_patients(
     limit: Annotated[int, Field(ge=PANEL_LIMIT_MIN, le=PANEL_LIMIT_MAX, description="Maximum patient rows to return (1-50); `total` always reports the full visible count.")] = PANEL_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """List the SYNTHETIC patients that went through YOU in the last N days.
+    """List the patients that went through YOU in the last N days.
 
     "You" is the verified caller (never an argument). A patient is listed when,
     within the window, they had an encounter with you (practitioner match - the
@@ -728,7 +720,7 @@ async def get_my_recent_patients(
         "total": total,
     }
     if total == 0:
-        data["note"] = f"No synthetic patients went through you in the last {bound_days} days."
+        data["note"] = f"No patients went through you in the last {bound_days} days."
     elif total > len(rows):
         data["note"] = f"Showing {len(rows)} of {total} patients."
     return await _finish(
@@ -903,7 +895,7 @@ async def find_patients_by_lab(
     limit: Annotated[int, Field(ge=LOOKUP_LIMIT_MIN, le=LOOKUP_LIMIT_MAX, description="Maximum patient references to return (1-50).")] = LOOKUP_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """Find the SYNTHETIC patients with lab results for one known test code.
+    """Find the patients with lab results for one known test code.
 
     Returns only patient references (patient id, display name, MRN) plus a
     short `matched` reason (most recent matching result first, one row per
@@ -1013,7 +1005,7 @@ async def find_patients_by_medication(
     limit: Annotated[int, Field(ge=LOOKUP_LIMIT_MIN, le=LOOKUP_LIMIT_MAX, description="Maximum patient references to return (1-50).")] = LOOKUP_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
-    """Find the SYNTHETIC patients with prescriptions matching one medication.
+    """Find the patients with prescriptions matching one medication.
 
     Returns only patient references (patient id, display name, MRN) plus a
     short `matched` reason (most recent matching prescription first, one row

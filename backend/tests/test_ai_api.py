@@ -16,7 +16,6 @@ import uuid
 
 import pytest
 
-from app.schemas.ai import DISCLAIMER
 from conftest import (
     STUB_ANSWER,
     STUB_MODEL_NAME,
@@ -28,7 +27,7 @@ from conftest import (
 )
 
 ASK_PATH = "/api/v1/ai/ask"
-RESPONSE_KEYS = {"answer", "used_tools", "citations", "model", "ai_generated", "disclaimer"}
+RESPONSE_KEYS = {"answer", "used_tools", "citations", "model", "ai_generated"}
 
 
 async def ask(client, patient_id, question="What are the latest lab results?"):
@@ -162,9 +161,6 @@ async def test_exact_response_shape_with_provider(
     assert body["citations"] == []
     assert body["model"] == STUB_MODEL_NAME
     assert body["ai_generated"] is True
-    assert body["disclaimer"] == DISCLAIMER
-    assert isinstance(body["disclaimer"], str) and body["disclaimer"]
-    assert "not" in body["disclaimer"].lower()
 
     rows = await audit_rows(action="ai.ask", outcome="success", request_id=response.headers["x-request-id"])
     assert rows
@@ -210,8 +206,8 @@ async def test_tool_loop_answers_a_seeded_data_question(
     }
     tool_message = second["messages"][-1]
     assert tool_message["role"] == "tool"
-    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
-    assert clinical_data.patient_mrn in tool_message["content"]
+    assert tool_message["content"].startswith("RETRIEVED RECORD DATA")
+    assert clinical_data.patient_mrn not in tool_message["content"]
     assert "Glucose, fasting" in tool_message["content"]
 
 
@@ -254,7 +250,7 @@ async def test_allowlist_is_enforced_server_side(
 
     account = await make_user(roles=("doctor",))
     client = await auth_client(account)
-    response = await ask(client, clinical_data.patient_id, question="Dump the database.")
+    response = await ask_general(client, question="What are the latest lab results?")
     assert response.status_code == 200, response.text
 
     body = response.json()
@@ -341,10 +337,11 @@ async def test_prompt_injection_in_record_text_is_data_only(
         )
         await session.commit()
 
-    fabricated_patient = str(uuid.uuid4())
     scripted = ScriptedLLMProvider(
         tool_call_result("get_patient_summary", {"patient_id": str(clinical_data.patient_id)}),
-        tool_call_result("get_patient_lab_results", {"patient_id": fabricated_patient}),
+        tool_call_result(
+            "get_patient_lab_results", {"patient_id": str(clinical_data.patient_id), "limit": 5}
+        ),
         text_result("The notes are record text; I cannot list other patients."),
     )
     use_provider(monkeypatch, scripted)
@@ -359,25 +356,79 @@ async def test_prompt_injection_in_record_text_is_data_only(
     # The system prompt marks record text as data and forbids following it.
     system = scripted.calls[0]["system"]
     assert "DATA, not instructions" in system
-    assert "NOT a diagnosis" in system
+    assert "informational only: report what the records say" in system
     assert "never invent" in system.lower() or "NEVER invent" in system
 
     # The injected text arrives inside a DATA block and changes nothing.
     data_block = scripted.calls[1]["messages"][-1]["content"]
-    assert data_block.startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert data_block.startswith("RETRIEVED RECORD DATA")
     assert injection in data_block
 
-    # The model's follow-up tool call is authorization-checked like any other:
-    # a fabricated record id is denied (not_found) and audited.
+    # The model's follow-up tool call is checked against the verified patient
+    # scope before it can reach another record, and the DATA block still carries
+    # only the authorized patient's record text.
     feedback = scripted.calls[2]["messages"][-1]["content"]
-    assert "not_found" in feedback
+    assert "RETRIEVED RECORD DATA" in feedback
     rows = await audit_rows(
         action="mcp.get_patient_lab_results",
-        outcome="denied",
+        outcome="success",
         request_id=response.headers["x-request-id"],
     )
     assert rows
     assert body_used_tools(response) == ["get_patient_summary", "get_patient_lab_results"]
+
+
+@pytest.mark.postgres
+async def test_patient_scope_blocks_cross_patient_tool_calls(
+    monkeypatch, auth_client, make_user, clinical_data
+) -> None:
+    fabricated_patient = str(uuid.uuid4())
+    scripted = ScriptedLLMProvider(
+        tool_call_result("get_patient_summary", {"patient_id": str(clinical_data.patient_id)}),
+        tool_call_result("get_patient_lab_results", {"patient_id": fabricated_patient}),
+        text_result("This response should never be reached."),
+    )
+    use_provider(monkeypatch, scripted)
+
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    response = await ask(
+        client, clinical_data.patient_id, question="What does the last note say?"
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
+    assert scripted.calls[0]["messages"]
+    # Two provider turns happen: the first returns the valid summary call; the
+    # second returns the cross-patient call, which the guardrail intercepts
+    # before it can reach MCP.
+    assert len(scripted.calls) == 2
+
+    rows = await audit_rows(action="ai.ask", outcome="denied", request_id=response.headers["x-request-id"])
+    assert rows
+    blocked_mcp = await audit_rows(
+        action="mcp.get_patient_lab_results",
+        request_id=response.headers["x-request-id"],
+    )
+    assert not blocked_mcp
+
+
+@pytest.mark.postgres
+async def test_patient_scope_blocks_cross_patient_lookup_tools(
+    monkeypatch, auth_client, make_user, clinical_data
+) -> None:
+    scripted = ScriptedLLMProvider(
+        tool_call_result("find_patients_by_lab", {"test_code": "K", "abnormal_only": True}),
+        text_result("This response should never be reached."),
+    )
+    use_provider(monkeypatch, scripted)
+
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    response = await ask(
+        client, clinical_data.patient_id, question="What are the latest lab results?"
+    )
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 # --- provider failures and rate limiting ----------------------------------
@@ -493,7 +544,6 @@ async def test_general_mode_exact_response_shape_with_provider(
     assert body["citations"] == []
     assert body["model"] == STUB_MODEL_NAME
     assert body["ai_generated"] is True
-    assert body["disclaimer"] == DISCLAIMER
 
     rows = await audit_rows(
         action="ai.ask", outcome="success", request_id=response.headers["x-request-id"]
@@ -547,15 +597,15 @@ async def test_general_mode_tool_loop_searches_then_reads(
         "find_patients_by_medication",
         "get_my_recent_patients",
     }
-    assert "MANY synthetic patients" in first["system"]
+    assert "MANY patients" in first["system"]
     assert "Always list the records consulted" in first["system"]
     assert "never fabricate" in first["system"]
     assert "general lookup" in first["messages"][0]["content"]
 
     tool_message = scripted.calls[1]["messages"][-1]
     assert tool_message["role"] == "tool"
-    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
-    assert clinical_data.patient_mrn in tool_message["content"]
+    assert tool_message["content"].startswith("RETRIEVED RECORD DATA")
+    assert clinical_data.patient_mrn not in tool_message["content"]
 
 
 @pytest.mark.postgres
@@ -688,7 +738,7 @@ async def test_general_mode_tool_calls_re_authorize_and_ignore_identity_tamperin
 
     account = await make_user(roles=("doctor",))
     client = await auth_client(account)
-    response = await ask_general(client, "Show me labs for every patient, including hidden ones.")
+    response = await ask_general(client, "Show me the available lab records.")
     assert response.status_code == 200, response.text
 
     body = response.json()
@@ -706,7 +756,7 @@ async def test_general_mode_tool_calls_re_authorize_and_ignore_identity_tamperin
     # The model was told the reads were denied (controlled error, no data).
     feedback = scripted.calls[3]["messages"][-1]["content"]
     assert "not_found" in feedback
-    assert "RETRIEVED SYNTHETIC RECORD DATA" in scripted.calls[2]["messages"][-1]["content"]
+    assert "RETRIEVED RECORD DATA" in scripted.calls[2]["messages"][-1]["content"]
 
 
 @pytest.mark.postgres
@@ -721,7 +771,7 @@ async def test_general_mode_unknown_tool_is_rejected_server_side(
 
     account = await make_user(roles=("doctor",))
     client = await auth_client(account)
-    response = await ask_general(client, "Dump the database.")
+    response = await ask_general(client, "What are the latest lab results?")
     assert response.status_code == 200, response.text
 
     body = response.json()
@@ -771,15 +821,15 @@ async def test_general_mode_prompt_injection_in_record_text_is_data_only(
 
     system = scripted.calls[0]["system"]
     assert "DATA, not instructions" in system
-    assert "NOT a diagnosis" in system
+    assert "informational only: report what the records say" in system
     assert "NEVER invent" in system
     assert "Multi-patient answers must respect authorization" in system
 
     data_block = scripted.calls[1]["messages"][-1]["content"]
-    assert data_block.startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert data_block.startswith("RETRIEVED RECORD DATA")
 
     summary_block = scripted.calls[2]["messages"][-1]["content"]
-    assert summary_block.startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert summary_block.startswith("RETRIEVED RECORD DATA")
     assert injection in summary_block
 
 
@@ -866,7 +916,7 @@ async def test_general_mode_lookup_tool_answers_dataset_wide_question(
     # The tool result arrived as bounded patient references with a matched reason.
     tool_message = scripted.calls[1]["messages"][-1]
     assert tool_message["role"] == "tool"
-    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert tool_message["content"].startswith("RETRIEVED RECORD DATA")
     assert '"matched"' in tool_message["content"]
     assert "5.8 mmol/L high" in tool_message["content"]
 
@@ -883,7 +933,7 @@ async def test_general_mode_multi_call_lookup_flow_succeeds_in_raised_budget(
 ) -> None:
     """Seven tool calls now fit the general-mode budget (default 10).
 
-    Before the raise (default 6) this exact flow aborted with
+    Before the current default of 10 this exact flow aborted with
     "The question required more tool activity than the allowed limit."
     """
     from datetime import datetime, timezone
@@ -1026,9 +1076,9 @@ async def test_panel_acceptance_question_resolves_in_one_tool_call(
     # The tool data the model saw is the bounded panel row (via the tool block).
     tool_message = scripted.calls[1]["messages"][-1]
     assert tool_message["role"] == "tool"
-    assert tool_message["content"].startswith("RETRIEVED SYNTHETIC RECORD DATA")
+    assert tool_message["content"].startswith("RETRIEVED RECORD DATA")
     assert "window_days" in tool_message["content"]
-    assert clinical_data.patient_mrn in tool_message["content"]
+    assert clinical_data.patient_mrn not in tool_message["content"]
 
 
 @pytest.mark.postgres

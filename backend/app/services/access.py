@@ -1,7 +1,7 @@
 """Patient-access policy — ONE function, called by every clinical read.
 
 Demo policy (docs/API.md, docs/SECURITY.md): any active principal holding
-`patient:read` may read any SYNTHETIC patient in the demo dataset. There is no
+`patient:read` may read any patient in the dataset. There is no
 patient-level restriction beyond the permission check.
 
 Signature (binding design): ``check_patient_access(principal, patient_id)``.

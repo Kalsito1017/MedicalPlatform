@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>Sign in — MediCore Clinical Platform (synthetic demo)</title>
-  <meta name="description" content="MediCore Clinical Platform demonstration. Synthetic, fictional patient data only. Not clinically validated and not a medical device.">
+  <title>Sign in — MediCore Clinical Platform</title>
+  <meta name="description" content="Sign in to the MediCore Clinical Platform: search patients, review lab results and prescriptions, and manage staff access.">
   <link rel="icon" href="assets/images/favicon.svg">
+  <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
        resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
@@ -20,111 +21,107 @@
     window.__APP_CONFIG__ = window.__APP_CONFIG__ || {};
   </script>
 </head>
-<body>
-
+<body class="landing-page">
 
   <div id="global-status" class="global-status" role="status" aria-live="polite"></div>
 
-  <main id="main" class="container">
-    <div class="auth-layout">
-      <section class="auth-hero" aria-labelledby="hero-heading">
-        <span class="brand brand--lg" aria-hidden="true">
-          <span class="brand__mark">
-            <svg width="22" height="22" viewBox="0 0 32 32" focusable="false"><path d="M16 7v18M7 16h18" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
-          </span>
-          <span class="brand__text">
-            <span class="brand__name">MediCore</span>
-            <span class="brand__tag">Clinical Platform</span>
-          </span>
-        </span>
-        <h1 id="hero-heading">MediCore — Clinical Platform</h1>
-        <p class="lede">
-          A demonstration of a role-aware clinical AI platform. Sign in to search fictional
-          patients, inspect synthetic lab results and prescriptions, and see how role-based
-          access control shapes the interface.
-        </p>
-        <div>
-          <h2>What this demo is</h2>
-          <ul class="info-rows">
-            <li class="info-row">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
-              <span>Every patient, encounter, lab, and prescription is <strong>fictional synthetic data</strong>.</span>
-            </li>
-            <li class="info-row">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
-              <span>Access is enforced server-side by role: doctor, nurse, admin.</span>
-            </li>
-            <li class="info-row">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12 2.5 2.5 4.5-5"/></svg>
-              <span>Security-relevant actions are audited on the backend.</span>
-            </li>
-          </ul>
-        </div>
-        <div>
-          <h2>What this demo is not</h2>
-          <ul class="info-rows">
-            <li class="info-row info-row--stop">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
-              <span>Not clinically validated, not a medical device, and not for real patient care.</span>
-            </li>
-            <li class="info-row info-row--stop">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
-              <span>Not a place to enter real personal or health information — demo accounts are shared and public.</span>
-            </li>
-            <li class="info-row info-row--stop">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 4.5 21 19.5H3z"/><path d="M12 10v4"/><path d="M12 16.8v.2"/></svg>
-              <span>AI-generated answers (where enabled) are informational only and are labelled as AI-generated.</span>
-            </li>
-          </ul>
-        </div>
-      </section>
+  <div class="landing-shell">
+    <div class="landing-ambient" aria-hidden="true">
+      <div class="landing-ambient__photo"></div>
+    </div>
 
-      <div>
-        <section class="card auth-card" id="login-card" aria-labelledby="login-heading">
-          <h2 class="card__title" id="login-heading">Sign in</h2>
-          <div id="login-status" class="auth-status"></div>
-          <form id="login-form" novalidate>
-            <div class="field">
-              <label for="email">Email</label>
-              <input id="email" name="email" type="email" autocomplete="email"
-                     inputmode="email" spellcheck="false" required
-                     aria-describedby="email-error">
-              <p class="field-error" id="email-error" hidden></p>
-            </div>
-            <div class="field">
-              <label for="password">Password</label>
-              <input id="password" name="password" type="password"
-                     autocomplete="current-password" required
-                     aria-describedby="password-error">
-              <p class="field-error" id="password-error" hidden></p>
-            </div>
-            <button class="btn btn-primary btn-block" type="submit" id="login-submit">Sign in</button>
-          </form>
-          <p class="card__note">
-            Use the synthetic demo account issued with this deployment. Credentials are never
-            stored in this site and never appear in the browser after sign-in.
+    <header class="landing-header">
+      <span class="brand brand--lg landing-brand" aria-label="MediCore Clinical Platform">
+        <span class="brand__mark" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 32 32" focusable="false"><path d="M16 7v18M7 16h18" stroke="currentColor" stroke-width="5" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand__text">
+          <span class="brand__name">MediCore</span>
+          <span class="brand__tag">Clinical Intelligence. Human Care.</span>
+        </span>
+      </span>
+    </header>
+
+    <main id="main" class="landing-main">
+      <div class="landing-grid">
+        <section class="auth-hero landing-hero" aria-labelledby="hero-heading">
+          <h1 id="hero-heading">
+            <span class="landing-hero__line">MediCore <span class="landing-hero__dash" aria-hidden="true"></span></span>
+            <span class="landing-hero__line">Clinical Platform</span>
+          </h1>
+          <p class="lede landing-lede">
+            The role-aware clinical AI platform for modern care teams. Search
+            patients, lab results, and prescriptions — faster, smarter, with the
+            right answers in the right context.
           </p>
         </section>
 
-        <section class="card auth-card" id="signed-in-card" aria-labelledby="signed-in-heading" hidden>
-          <h2 class="card__title" id="signed-in-heading">You are signed in</h2>
-        </section>
-      </div>
-    </div>
-  </main>
+        <div class="landing-auth">
+          <section class="card auth-card landing-card" id="login-card" aria-labelledby="login-heading">
+            <h2 class="card__title landing-card__title" id="login-heading">Sign in</h2>
+            <p class="landing-card__subtitle">Access your clinical workspace.</p>
+            <div id="login-status" class="auth-status"></div>
+            <form id="login-form" novalidate>
+              <div class="field">
+                <label for="email">Email</label>
+                <div class="input-icon">
+                  <span class="input-icon__glyph" aria-hidden="true">
+                    <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m4 7 8 6 8-6"/></svg>
+                  </span>
+                  <input id="email" name="email" type="email" autocomplete="email"
+                         inputmode="email" spellcheck="false" required
+                         class="input-icon__input" placeholder="you@hospital.org"
+                         aria-describedby="email-error">
+                </div>
+                <p class="field-error" id="email-error" hidden></p>
+              </div>
+              <div class="field">
+                <label for="password">Password</label>
+                <div class="input-icon input-icon--password">
+                  <span class="input-icon__glyph" aria-hidden="true">
+                    <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+                  </span>
+                  <input id="password" name="password" type="password"
+                         autocomplete="current-password" required
+                         class="input-icon__input" placeholder="Enter your password"
+                         aria-describedby="password-error">
+                  <button class="input-icon__toggle" type="button" id="password-toggle"
+                          aria-label="Show password" aria-pressed="false" aria-controls="password">
+                    <svg class="icon icon--sm password-toggle__show" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6z"/><circle cx="12" cy="12" r="2.6"/></svg>
+                    <svg class="icon icon--sm password-toggle__hide" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m3 3 18 18"/><path d="M10.6 6.2A10.7 10.7 0 0 1 12 6c6 0 9.5 6 9.5 6a15.6 15.6 0 0 1-3 3.4"/><path d="M6.3 6.8A16.7 16.7 0 0 0 2.5 12s3.5 6 9.5 6a10.7 10.7 0 0 0 4.2-.9"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+                  </button>
+                </div>
+                <p class="field-error" id="password-error" hidden></p>
+              </div>
+              <button class="btn btn-primary btn-block landing-submit" type="submit" id="login-submit">
+                <span>Sign in</span>
+                <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>
+              </button>
+            </form>
+            <p class="landing-card__secure">
+              <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+              Role-based access with server-side audit logging.
+            </p>
+            <p class="card__note landing-card__note">
+              Use the account issued with this deployment. Credentials are never
+              stored in this site and never appear in the browser after sign-in.
+            </p>
+          </section>
 
-  <footer class="site-footer">
-    <div class="container site-footer__inner">
-      <p class="footer-note">
-        MediCore — synthetic-data demonstration. Not clinically validated, not a
-        medical device, and not for clinical use. All records are fictional.
-      </p>
-      <ul class="footer-links">
-        <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-        <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
-      </ul>
-    </div>
-  </footer>
+          <section class="card auth-card landing-card" id="signed-in-card" aria-labelledby="signed-in-heading" hidden>
+            <h2 class="card__title landing-card__title" id="signed-in-heading">You are signed in</h2>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer class="landing-footer">
+      <div class="landing-footer__inner">
+        <button type="button" class="link-button landing-footer__link" data-open-about>About MediCore</button>
+        <a class="landing-footer__link" href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a>
+      </div>
+    </footer>
+  </div>
 
   <script type="module" src="assets/js/login.js"></script>
 </body>

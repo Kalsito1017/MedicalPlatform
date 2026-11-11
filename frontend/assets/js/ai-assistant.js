@@ -1,13 +1,13 @@
 // ---------------------------------------------------------------------------
-// ai-assistant.js — top-level AI Assistant page: general lookups over the
-// synthetic demo records ("which patients are on metformin?").
+// ai-assistant.js — top-level AI Assistant page: general lookups across
+// patient records ("which patients are on metformin?").
 // Endpoint (docs/API.md): POST /api/v1/ai/ask with { question } (no patient_id
-// = general lookup mode; the patient page rail sends patient_id for the
+// = general lookup mode; the AI Patient tab sends patient_id for the
 // patient-scoped mode and is unchanged).
 // The page is a chat surface: user questions on the right, AI-generated answers
 // on the left with source chips and record citations, a composer with an
 // inline send button (inside the textarea box) + cancel + 2000-character
-// counter, and every state the rail has: loading, cancel, 503 "AI assistant
+// counter, and every state the AI Patient tab has: loading, cancel, 503 "AI assistant
 // unavailable", 429 with a retry countdown, and errors via
 // api.describeApiError (network/offline included).
 // Composer keys: Enter sends, Shift+Enter inserts a new line (hinted on the
@@ -25,7 +25,7 @@ import * as api from './api.js';
 import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
-import * as commandMenu from './command-menu.js';
+import * as commandMenu from './command-menu.js?v=20261109j';
 import * as markdown from './markdown.js';
 import * as prefetch from './prefetch.js';
 import * as ui from './ui.js';
@@ -36,7 +36,7 @@ const QUESTION_MAX = 2000;
 const SUGGESTED_QUESTIONS = [
   'Which patients have abnormal potassium results?',
   'Which patients are on metformin?',
-  'Which synthetic patients have the most recent lab results?',
+  'Which patients have the most recent lab results?',
   'Which patients went through me in the last 7 days?',
 ];
 
@@ -163,15 +163,18 @@ function chatMeta(text) {
 }
 
 function citationLabel(citation) {
-  if (typeof citation === 'string') return `Synthetic record reference: ${citation}`;
+  if (typeof citation === 'string') return `Record reference: ${citation}`;
   if (citation && typeof citation === 'object') {
     const type = citation.type || citation.resource_type || citation.kind;
     const id = citation.id || citation.resource_id || citation.record_id;
-    if (type && id) return `Synthetic ${String(type).replace(/_/g, ' ')} ${id}`;
-    if (id) return `Synthetic record reference: ${id}`;
-    return 'Synthetic record reference';
+    if (type && id) {
+      const kind = String(type).replace(/_/g, ' ');
+      return `${kind.charAt(0).toUpperCase()}${kind.slice(1)} ${id}`;
+    }
+    if (id) return `Record reference: ${id}`;
+    return 'Record reference';
   }
-  return 'Synthetic record reference';
+  return 'Record reference';
 }
 
 function citationHref(citation, knownPatientId) {
@@ -216,14 +219,12 @@ function renderAiAnswer(container, payload) {
   const answer = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
   const usedTools = Array.isArray(payload && payload.used_tools) ? payload.used_tools : [];
   const citations = Array.isArray(payload && payload.citations) ? payload.citations : [];
-  const disclaimer = payload && typeof payload.disclaimer === 'string' ? payload.disclaimer.trim() : '';
   const model = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
   const answeredAt = ui.formatDateTime(new Date().toISOString()) || '';
 
   const bubble = chatBubble('assistant',
     ui.el('div', { class: 'badge-list' },
-      ui.el('span', { class: 'badge badge--synthetic', text: 'AI-generated' }),
-      ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),
+      ui.el('span', { class: 'badge badge--ai', text: 'AI-generated' }),
     ),
   );
   bubble.prepend(ui.assistantTurnHead());
@@ -233,15 +234,6 @@ function renderAiAnswer(container, payload) {
   const answerNode = answer ? markdown.answerBody(answer) : null;
   bubble.append(
     answerNode || ui.el('p', { class: 'text-muted', text: 'The assistant returned no answer text.' }),
-  );
-
-  bubble.append(
-    ui.el('div', { class: 'alert alert--info', role: 'note' },
-      ui.el('p', {
-        text: 'AI-generated synthetic-demo assistance about synthetic demo data \u2014 not a diagnosis or treatment recommendation.',
-      }),
-      disclaimer ? ui.el('p', { text: disclaimer }) : null,
-    ),
   );
 
   if (usedTools.length > 0) {
@@ -266,7 +258,7 @@ function renderAiAnswer(container, payload) {
   );
 
   container.append(bubble);
-  setAiStatus('Answer received. AI-generated synthetic-demo assistance \u2014 not a diagnosis or treatment recommendation.');
+  setAiStatus('Answer received. AI-generated answer.');
 }
 
 function renderAiUnavailable(container) {
@@ -275,7 +267,7 @@ function renderAiUnavailable(container) {
       ui.el('h3', { class: 'state-panel__title', text: 'AI assistant unavailable' }),
       ui.el('p', {
         class: 'state-panel__text',
-        text: 'The AI assistant is switched off or unreachable in this deployment. This demo runs without a language model unless one is configured, so assistant answers can be unavailable. Everything else on this page keeps working, and you can try again later.',
+        text: 'The AI assistant is switched off or unreachable in this deployment. It runs without a language model unless one is configured, so assistant answers can be unavailable. Everything else on this page keeps working, and you can try again later.',
       }),
     ),
   );
@@ -413,21 +405,20 @@ async function askAssistant() {
   const turn = ui.el('div', { class: 'ai-turn', role: 'status' });
   region.append(turn);
   // Heart loader for the answer turn (DESIGN.md "Heart loader"): the state
-  // panel keeps the assistant avatar and the status text, the anatomical heart
-  // pulses in the answer region until the Markdown answer arrives. The
+  // panel keeps the status text; the anatomical heart pulses in the answer
+  // region until the Markdown answer arrives. The
   // blur-region/ready classes drive the answer's sharpen-in on arrival.
   turn.classList.add('blur-region', 'is-loading');
   turn.classList.remove('is-ready');
   turn.append(
     ui.el('div', { class: 'state-panel' },
       ui.el('div', { class: 'state-panel__media' },
-        ui.assistantAvatar({ size: 'lg' }),
         ui.heartLoader({ size: 'lg', label: '' }),
       ),
       ui.el('p', { class: 'state-panel__title', text: 'Consulting the assistant\u2026' }),
       ui.el('p', {
         class: 'state-panel__text',
-        text: 'The assistant is searching the synthetic records your account may read.',
+        text: 'The assistant is searching the records your account may read.',
       }),
     ),
   );

@@ -8,8 +8,9 @@
  * against a DOM shim and a stubbed backend (see that file's header).
  *
  * What this covers without a browser or a backend:
- *   1. Static hygiene of the app assets (no console logging, no web storage of
- *      data, no external/third-party resources, required page chrome).
+ *   1. Static hygiene of the app assets (no console logging, no clinical/session
+ *      web storage — only the theme preference — no external resources,
+ *      required page chrome).
  *   2. Every ES module parses and is import-safe outside the browser.
  *   3. api.js unit behaviour: URL building, CSRF cookie parsing, error mapping.
  *   4. api.js request behaviour against a stubbed fetch (headers, credentials,
@@ -26,6 +27,10 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
 const jsDir = path.join(frontendRoot, 'assets', 'js');
+// The only sanctioned web-storage use is the theme preference; theme-init.js
+// is a classic pre-paint script, not an ES module.
+const THEME_STORAGE_FILES = new Set(['theme-init.js', 'theme.js']);
+const CLASSIC_SCRIPTS = new Set(['theme-init.js']);
 
 const results = [];
 
@@ -50,6 +55,31 @@ function assertEqual(actual, expected, message) {
 
 const out = (text) => process.stdout.write(text);
 
+/* ------------------------------------------------------ de-marking hygiene */
+// Decision (owner, 2026-10-30; DESIGN.md "De-marking"): the product surface
+// carries no origin labelling and no disclaimer copy. The banned fragments are
+// assembled from string pieces so this test file does not itself contain the
+// banned literals (a raw sweep over the tree stays clean). The first fragment
+// is word-bounded and excludes the "demographics" family so standard patient
+// demographics terminology is deliberately NOT matched. Code comments are
+// exempt (they are stripped before matching) but were reworded anyway;
+// DESIGN.md is an internal document and still records the data provenance.
+const DEMARKED_COPY = new RegExp(
+  [
+    `de${'mo'}(?!gra)`,
+    `\\bде${'мо'}\\b`,
+    `syn${'thetic'}`,
+    `not for ${'clinical'}`,
+    `not a ${'diagnosis'}`,
+    `medical ${'device'}`,
+    `informational ${'only'}`,
+    `clinical ${'review'}`,
+    `not ${'real'}`,
+    `de${'monstrat'}`,
+  ].join('|'),
+  'i',
+);
+
 /** Strip block comments and full-line // comments before hygiene matching. */
 function stripComments(source) {
   return source
@@ -65,7 +95,7 @@ const htmlFiles = (await readdir(frontendRoot)).filter((f) => f.endsWith('.html'
 const jsFiles = (await readdir(jsDir)).filter((f) => f.endsWith('.js')).sort();
 
 await check('all expected pages exist', () => {
-  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html']) {
+  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'appointments.html', 'admin.html', 'analytics.html', 'messages.html', 'system-logs.html', '404.html']) {
     assert(htmlFiles.includes(page), `missing ${page}`);
   }
 });
@@ -75,21 +105,85 @@ for (const file of jsFiles) {
   await check(`assets/js/${file}: no console logging`, () => {
     assert(!/console\s*\./.test(source), 'contains console.* usage');
   });
-  await check(`assets/js/${file}: no web storage usage`, () => {
-    assert(!/(local|session)Storage/.test(source), 'touches localStorage/sessionStorage');
-  });
+  if (!THEME_STORAGE_FILES.has(file)) {
+    await check(`assets/js/${file}: no web storage usage`, () => {
+      assert(!/(local|session)Storage/.test(source), 'touches localStorage/sessionStorage');
+    });
+  }
 }
+
+await check('custom error illustration assets and 404 page are present', async () => {
+  for (const file of ['error-404.svg', 'error-connection.svg']) {
+    const exists = await readFile(path.join(frontendRoot, 'assets', 'images', file)).then(
+      () => true,
+      () => false,
+    );
+    assert(exists, `missing error illustration ${file}`);
+  }
+  const page = await readFile(path.join(frontendRoot, '404.html'), 'utf8');
+  for (const marker of [
+    'id="main"',
+    'Page not found',
+    'assets/images/error-404.svg',
+    'assets/js/theme-init.js',
+    'data-open-about',
+  ]) {
+    assert(page.includes(marker), `404.html missing ${marker}`);
+  }
+  const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
+  assert(uiSource.includes('error-404.svg'), 'ui.renderErrorState missing 404 illustration');
+  assert(uiSource.includes('error-connection.svg'), 'ui.renderErrorState missing connection illustration');
+  const backend = await readFile(path.join(frontendRoot, '..', 'backend', 'app', 'main.py'), 'utf8');
+  assert(backend.includes('status_code=404'), 'navigation fallback must serve 404.html with status 404');
+});
+
+await check('doctor demo portraits are local and restricted to the doctor role', async () => {
+  for (const file of ['doctor-1.jpg', 'doctor-2.jpg', 'doctor-3.jpg', 'doctor-4.jpg']) {
+    const exists = await readFile(path.join(frontendRoot, 'assets', 'images', 'doctors', file)).then(
+      () => true,
+      () => false,
+    );
+    assert(exists, `missing doctor portrait ${file}`);
+  }
+  const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
+  assert(uiSource.includes('avatarForUser'), 'missing role-aware avatar helper');
+  assert(uiSource.includes("roles.includes('doctor')"), 'doctor portraits must be gated on the doctor role');
+  assert(uiSource.includes('assets/images/doctors/doctor-1.jpg'), 'doctor portrait pool missing');
+});
+
+await check('the repeated full-width page footer is removed', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(!source.includes('class="site-footer'), `${file} still renders the removed full-width footer`);
+  }
+  const landing = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  assert(landing.includes('class="landing-footer"'), 'landing footer missing');
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(!css.includes('.site-footer {'), 'dead site-footer CSS should be removed');
+});
+
+await check('theme storage is limited to the sanitized preference key', async () => {
+  for (const file of THEME_STORAGE_FILES) {
+    const source = await readFile(path.join(jsDir, file), 'utf8');
+    assert(source.includes('medicore-theme') || source.includes('THEME_STORAGE_KEY'), `${file} missing theme key`);
+    assert(!/patient|clinical|record|diagnos|prescription/i.test(source), `${file} must not store clinical data`);
+  }
+});
 
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: required chrome present`, () => {
     assert(source.includes('lang="en"'), 'missing lang attribute');
-    assert(source.includes('data-open-about'), 'missing "About this demo" control');
+    assert(source.includes('data-open-about'), 'missing "About" control');
     assert(source.includes('mailto:'), 'missing issue-reporting mailto');
     assert(source.includes('id="main"'), 'missing main landmark');
     assert(source.includes('name="viewport"'), 'missing viewport meta');
     assert(source.includes('window.__APP_CONFIG__'), 'missing config override hook');
     assert(source.includes('assets/css/styles.css'), 'missing stylesheet link');
+    const themeIndex = source.indexOf('assets/js/theme-init.js');
+    const cssIndex = source.indexOf('assets/css/styles.css');
+    assert(themeIndex >= 0, 'missing pre-paint theme bootstrap');
+    assert(themeIndex < cssIndex, 'theme bootstrap must run before the stylesheet');
   });
   await check(`${file}: no external resources`, () => {
     const refs = source.match(/(?:src|href)\s*=\s*"(https?:\/\/[^"]+)"/g) || [];
@@ -108,8 +202,9 @@ await check('patient.html: AI assistant panel is labelled and bounded', async ()
   assert(source.includes('id="ai-question-form"'), 'missing AI question form');
   assert(source.includes('id="ai-char-count"'), 'missing character counter');
   assert(source.includes('id="ai-cancel"'), 'missing cancel control');
-  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing AI non-diagnosis label');
   assert(source.includes('2000'), 'missing question limit copy');
+  assert(!source.includes('ai-card__disclaimer'), 'the AI panel must not carry a disclaimer block');
+  assert(!source.includes('ai-card__pill'), 'the AI panel must not carry an informational-only pill');
 });
 
 await check('admin.js: high-impact actions carry explicit consequence copy', async () => {
@@ -124,8 +219,8 @@ await check('admin.js: high-impact actions carry explicit consequence copy', asy
 await check('patient.js: AI output is labelled AI-generated and size bounded', async () => {
   const source = await readFile(path.join(jsDir, 'patient.js'), 'utf8');
   assert(source.includes('AI-generated'), 'missing AI-generated label');
-  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing non-diagnosis label');
   assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
+  assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
 });
 
 await check('ai.html: AI Assistant page is labelled and bounded', async () => {
@@ -133,17 +228,51 @@ await check('ai.html: AI Assistant page is labelled and bounded', async () => {
   assert(source.includes('id="ai-question-form"'), 'missing AI question form');
   assert(source.includes('id="ai-char-count"'), 'missing character counter');
   assert(source.includes('id="ai-cancel"'), 'missing cancel control');
-  assert(source.includes('INFORMATIONAL ONLY'), 'missing informational-only pill');
-  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing AI non-diagnosis label');
   assert(source.includes('2000'), 'missing question limit copy');
+  assert(!source.includes('ai-card__disclaimer'), 'the AI card must not carry a disclaimer block');
+  assert(!source.includes('ai-card__pill'), 'the AI card must not carry an informational-only pill');
 });
 
 await check('ai-assistant.js: general lookup sends no patient_id and labels AI output', async () => {
   const source = stripComments(await readFile(path.join(jsDir, 'ai-assistant.js'), 'utf8'));
   assert(source.includes('AI-generated'), 'missing AI-generated label');
-  assert(source.includes('not a diagnosis or treatment recommendation'), 'missing non-diagnosis label');
   assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
   assert(!/patient_id\s*:/.test(source), 'general lookup must never send patient_id');
+  assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
+});
+
+await check('appointments.html: calendar, voice, and availability surfaces present', async () => {
+  const source = await readFile(path.join(frontendRoot, 'appointments.html'), 'utf8');
+  for (const marker of [
+    'id="view-switcher"',
+    'id="appointments-calendar"',
+    'id="appointments-upcoming"',
+    'id="voice-record"',
+    'id="voice-transcript"',
+    'id="voice-interpret"',
+    'id="availability-open"',
+    'id="appointment-new"',
+  ]) {
+    assert(source.includes(marker), `appointments.html missing ${marker}`);
+  }
+  assert(!/style\s*=/.test(source), 'appointments.html must not use inline styles');
+});
+
+await check('appointments.js: clinic timezone, MediaRecorder, and explicit confirmation', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'appointments.js'), 'utf8'));
+  for (const marker of [
+    "const CLINIC_TZ = 'Europe/Sofia'",
+    'navigator.mediaDevices.getUserMedia',
+    'window.MediaRecorder',
+    'stopVoiceStream',
+    "api.postForm('/voice/transcriptions'",
+    "api.post('/appointments/interpret'",
+    "api.post('/appointments'",
+    'Create appointment',
+  ]) {
+    assert(source.includes(marker), `appointments.js missing ${marker}`);
+  }
+  assert(!/localStorage|sessionStorage|console\s*\./.test(source), 'voice/calendar must not persist or log');
 });
 
 const entryModules = {
@@ -152,12 +281,38 @@ const entryModules = {
   'patients.html': 'patients.js',
   'patient.html': 'patient.js',
   'ai.html': 'ai-assistant.js',
+  'appointments.html': 'appointments.js',
+  '404.html': 'error-page.js',
   'admin.html': 'admin.js',
   'analytics.html': 'analytics.js',
+  'messages.html': 'messages.js',
+  'system-logs.html': 'system-logs.js',
 };
-const DYNAMIC_IDS = new Set(['app-dialog']);
+const DYNAMIC_IDS = new Set([
+  'app-dialog',
+  'new-patient-given',
+  'new-patient-family',
+  'new-patient-dob',
+  'new-patient-sex',
+  'new-patient-blood-type',
+  'new-patient-error',
+  'message-recipient',
+  'message-subject',
+  'message-body',
+  'message-compose-error',
+]);
 const CHROME_IDS = ['global-status', 'site-nav', 'user-area', 'nav-toggle'];
-const SHELL_PAGES = ['dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'admin.html', 'analytics.html'];
+const SHELL_PAGES = [
+  'dashboard.html',
+  'patients.html',
+  'patient.html',
+  'ai.html',
+  'appointments.html',
+  'admin.html',
+  'analytics.html',
+  'messages.html',
+  'system-logs.html',
+];
 
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
@@ -182,7 +337,7 @@ for (const file of htmlFiles) {
     }
   });
 
-  if (file !== 'index.html') {
+  if (file !== 'index.html' && file !== '404.html') {
     await check(`${file}: shared chrome ids present`, () => {
       for (const id of CHROME_IDS) {
         assert(source.includes(`id="${id}"`), `missing chrome element #${id}`);
@@ -193,6 +348,70 @@ for (const file of htmlFiles) {
 
 /* ------------------------------------------------- 1c. design-system hygiene */
 
+function cssBlock(css, selector) {
+  const index = css.indexOf(selector);
+  if (index < 0) throw new Error(`missing CSS selector ${selector}`);
+  const start = css.indexOf('{', index) + 1;
+  const end = css.indexOf('}', start);
+  return css.slice(start, end);
+}
+
+function colorTokens(block) {
+  const tokens = {};
+  for (const match of block.matchAll(/--color-([a-z-]+):\s*(#[0-9a-fA-F]{6});/g)) {
+    tokens[match[1]] = match[2];
+  }
+  return tokens;
+}
+
+function relativeLuminance(hex) {
+  const channels = [1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  const linear = channels.map((value) =>
+    value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
+  );
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(foreground, background) {
+  const a = relativeLuminance(foreground);
+  const b = relativeLuminance(background);
+  const lighter = Math.max(a, b);
+  const darker = Math.min(a, b);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function assertContrast(tokens, foreground, background, minimum, label) {
+  const ratio = contrastRatio(tokens[foreground], tokens[background]);
+  assert(
+    ratio >= minimum,
+    `${label}: ${foreground} vs ${background} contrast ${ratio.toFixed(2)} < ${minimum}`
+  );
+}
+
+await check('light and dark color tokens meet WCAG AA contrast', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  const light = colorTokens(cssBlock(css, ':root {'));
+  const dark = colorTokens(cssBlock(css, ":root[data-theme='dark'] {"));
+  for (const [name, tokens] of [
+    ['light', light],
+    ['dark', dark],
+  ]) {
+    assertContrast(tokens, 'text', 'canvas', 7, `${name} primary text`);
+    assertContrast(tokens, 'text-body', 'canvas', 4.5, `${name} body text`);
+    assertContrast(tokens, 'text-muted', 'canvas', 4.5, `${name} secondary text`);
+    assertContrast(tokens, 'text-muted', 'surface', 4.5, `${name} secondary text on cards`);
+    assertContrast(tokens, 'danger-text', 'danger-soft', 4.5, `${name} error text`);
+    assertContrast(tokens, 'warn-text', 'warn-soft', 4.5, `${name} warning text`);
+    assertContrast(tokens, 'success-text', 'success-soft', 4.5, `${name} success text`);
+    assertContrast(tokens, 'text', 'surface', 7, `${name} primary text on cards`);
+    assertContrast(tokens, 'action-contrast', 'action', 4.5, `${name} primary action text`);
+  }
+  assert(
+    css.includes('.field input::placeholder') && css.includes('color: var(--color-text-muted)'),
+    'placeholders must use the accessible muted token'
+  );
+});
+
 await check('styles.css defines the design tokens and motion safety', async () => {
   const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
   for (const token of ['--color-primary', '--color-canvas', '--font-sans', '--space-4', '--radius-lg', '--shadow-1']) {
@@ -200,6 +419,9 @@ await check('styles.css defines the design tokens and motion safety', async () =
   }
   assert(css.includes('prefers-reduced-motion'), 'missing prefers-reduced-motion handling');
   assert(css.includes('prefers-color-scheme: dark'), 'missing dark-scheme token set');
+  assert(css.includes(":root[data-theme='dark']"), 'missing explicit dark token selector');
+  assert(css.includes(":root[data-theme='light']"), 'missing explicit light token selector');
+  assert(css.includes(':root:not([data-theme])'), 'missing no-JS system fallback');
   const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
   assert(!/https?:\/\//.test(code), 'external URL referenced from the stylesheet');
   assert(!/@import\s+url\(/.test(code), 'external CSS import found');
@@ -290,7 +512,7 @@ await check('heart loader is the app-wide loader; skeletons and the emoji ticker
   assert(css.includes('@keyframes heart-beat'), 'the lub-dub heartbeat keyframes missing');
   assert(css.includes('.heart-loader--sm') && css.includes('.heart-loader--lg'), 'heart loader sizes missing');
   assert(uiSource.includes('assets/images/heart-loader.png'), 'ui.js must reference the heart PNG');
-  for (const file of ['dashboard.html', 'patients.html', 'patient.html', 'admin.html', 'analytics.html']) {
+  for (const file of ['dashboard.html', 'patients.html', 'patient.html', 'appointments.html', 'admin.html', 'analytics.html']) {
     const source = await readFile(path.join(frontendRoot, file), 'utf8');
     assert(source.includes('assets/images/heart-loader.png'), `${file} static loading fallback must show the heart`);
   }
@@ -336,11 +558,35 @@ await check('styles.css defines the wave UI-B pattern utilities', async () => {
   assert(!/https?:\/\//.test(code), 'external URL referenced from the stylesheet');
 });
 
+await check('styles.css defines the restrained motion system', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const marker of [
+    '--motion-stagger: 30ms',
+    '--motion-exit: 160ms',
+    '@keyframes row-in',
+    '@keyframes settle-in',
+    '@keyframes success-pulse',
+    '@keyframes command-menu-in',
+    '@keyframes sheet-in',
+    '::view-transition-old(vt-record-panels)',
+    '::view-transition-new(vt-command-menu)',
+    'mask-image: linear-gradient',
+    'transform: scale(1.12)',
+    'overscroll-behavior: contain',
+  ]) {
+    assert(css.includes(marker), `styles.css missing ${marker}`);
+  }
+});
+
 await check('pages declare modulepreload hints for the shared module graph', async () => {
   for (const file of htmlFiles) {
     const source = await readFile(path.join(frontendRoot, file), 'utf8');
     assert(source.includes('rel="modulepreload"'), `${file} missing modulepreload hints`);
     assert(source.includes('assets/js/ui.js'), `${file} must warm the ui.js module`);
+    if (file === '404.html') {
+      assert(source.includes('assets/js/theme.js'), '404.html must warm the theme module');
+      continue;
+    }
     assert(source.includes('assets/js/api.js'), `${file} must warm the api.js module`);
   }
 });
@@ -436,18 +682,129 @@ await check('patient.html: redesigned patient detail structures present', async 
     'class="card patient-header"',
     'id="patient-avatar"',
     'role="tablist"',
+    'id="tab-ai-patient"',
+    'id="panel-ai-patient"',
+    'id="ai-patient-context"',
     'class="ai-card"',
-    'INFORMATIONAL ONLY',
-    'class="ai-card__disclaimer"',
+    'AI Patient',
   ]) {
     assert(source.includes(marker), `missing ${marker}`);
   }
 });
 
-await check('index.html: brand panel and info-row disclosures present', async () => {
-  const source = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
-  for (const marker of ['class="auth-hero"', 'class="info-rows"', 'What this demo is', 'What this demo is not', 'MediCore']) {
+await check('patient.html: print / save-as-PDF action and print container present', async () => {
+  const source = await readFile(path.join(frontendRoot, 'patient.html'), 'utf8');
+  for (const marker of [
+    'id="print-patient-record"',
+    'Print / Save as PDF',
+    'id="print-status"',
+    'id="print-record"',
+    'assets/css/print.css',
+    'media="print"',
+    'type="button"',
+    'aria-describedby="print-status"',
+  ]) {
     assert(source.includes(marker), `missing ${marker}`);
+  }
+  const styles = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(
+    /\.print-record\s*\{[^}]*display:\s*none/s.test(styles),
+    'styles.css must hide the print record on screen',
+  );
+});
+
+await check('print.css defines an A4 report and hides the application shell', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'print.css'), 'utf8');
+  for (const marker of [
+    '@page',
+    'size: A4 portrait',
+    '@media print',
+    '.print-record',
+    '.app-shell',
+    'display: none !important',
+    'display: table-header-group',
+    'break-inside: avoid',
+    '.print-row--abnormal',
+    '@bottom-right',
+  ]) {
+    assert(css.includes(marker), `print.css missing ${marker}`);
+  }
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert(!/https?:\/\//.test(code), 'print.css must not reference external resources');
+});
+
+await check('print-record.js stays safe and on-demand', async () => {
+  const source = stripComments(await readFile(path.join(jsDir, 'print-record.js'), 'utf8'));
+  for (const marker of [
+    'fetchAllPages',
+    'prepareAndPrint',
+    'win.print',
+    'printWindow',
+    'PrintLoadError',
+  ]) {
+    assert(source.includes(marker), `print-record.js missing ${marker}`);
+  }
+  for (const banned of ['innerHTML', 'insertAdjacentHTML', 'localStorage', 'sessionStorage', 'style.setProperty']) {
+    assert(!source.includes(banned), `print-record.js must not use ${banned}`);
+  }
+  assert(!/https?:\/\//.test(source), 'print-record.js must not reference external resources');
+});
+
+await check('index.html: brand panel and sign-in form present', async () => {
+  const source = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  for (const marker of [
+    'class="auth-hero',
+    'id="login-form"',
+    'MediCore',
+    'id="password-toggle"',
+    'class="landing-shell"',
+    'Role-based access with server-side audit logging.',
+  ]) {
+    assert(source.includes(marker), `missing ${marker}`);
+  }
+  assert(!source.toLowerCase().includes('hipaa'), 'the landing page must not claim HIPAA compliance');
+});
+
+await check('hidden and disabled boolean attributes cannot be overridden accidentally', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(
+    /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/.test(css),
+    'the hidden attribute must beat component display rules (e.g. the loading block)',
+  );
+  const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
+  assert(uiSource.includes('BOOLEAN_ATTRIBUTES'), 'ui.el must special-case boolean attributes');
+  assert(uiSource.includes("key === 'readOnly'"), 'ui.el must map readOnly to the readonly attribute');
+});
+
+await check('landing page uses the local blurred care-team background', async () => {
+  const html = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  assert(html.includes('class="landing-ambient__photo"'), 'missing decorative photo layer');
+  assert(/landing-ambient[\s\S]*aria-hidden="true"/.test(html), 'photo layer must stay decorative');
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(css.includes("url('../images/doctor-background.png')"), 'CSS must keep the PNG fallback');
+  assert(css.includes("url('../images/doctor-background.webp')"), 'CSS must reference the optimized WebP');
+  assert(css.includes('image-set('), 'CSS must use image-set for the WebP/PNG fallback');
+  assert(/\.landing-ambient__photo[\s\S]*filter:\s*blur\(/.test(css), 'photo layer must be blurred');
+  for (const file of ['doctor-background.png', 'doctor-background.webp']) {
+    const image = await readFile(path.join(frontendRoot, 'assets', 'images', file)).then(
+      () => true,
+      () => false,
+    );
+    assert(image, `missing local doctor background image: ${file}`);
+  }
+});
+
+await check('product surface carries no de-marked labelling or disclaimer copy', async () => {
+  // Static de-marking hygiene (see DEMARKED_COPY above): every shipped string
+  // surface — HTML source (text, attributes, meta) and JS/CSS sources with
+  // comments stripped — must stay free of the banned fragments. The single
+  // kept content-origin label is the "AI-generated" badge on answers.
+  const cssFiles = ['css/styles.css'].map((f) => path.join('assets', f));
+  for (const rel of [...htmlFiles, ...jsFiles.map((f) => path.join('assets', 'js', f)), ...cssFiles]) {
+    const raw = await readFile(path.join(frontendRoot, rel), 'utf8');
+    const source = rel.endsWith('.html') ? raw : stripComments(raw);
+    const match = source.match(DEMARKED_COPY);
+    assert(!match, `${rel} contains de-marked copy: ${JSON.stringify(match && match[0])}`);
   }
 });
 
@@ -480,6 +837,12 @@ await check('analytics page + module use pure CSS/SVG charts with no external re
   assert(moduleSource.includes("'aria-label'"), 'charts must carry aria-label summaries');
   assert(moduleSource.includes('visually-hidden'), 'charts must ship hidden data tables');
   assert(moduleSource.includes("'stroke-dasharray'"), 'the donut arc must be an attribute, not a style');
+  assert(!moduleSource.includes('.style.'), 'analytics.js must not write inline styles');
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  const analyticsCss = css.slice(css.indexOf('analytics dashboard extension'));
+  assert(analyticsCss.includes('.analytics-chart-grid'), 'analytics chart grid CSS missing');
+  assert(analyticsCss.includes('@media (max-width: 720px)'), 'analytics needs a narrow-screen breakpoint');
+  assert(analyticsCss.includes('grid-template-columns: 1fr'), 'analytics charts must collapse to one column');
 });
 
 await check('analytics nav and palette command are permission-gated in the shared modules', async () => {
@@ -543,7 +906,7 @@ await check('styles.css keeps 320px windows and 200% zoom overflow-free', async 
     const escaped = selector.replace(/\./g, '\\.').replace(/\s+/g, '\\s+');
     assert(
       new RegExp(`${escaped}[^{]*\\{[^}]*overflow-wrap: anywhere`).test(css),
-      `${selector} must wrap long synthetic names (Bulgarian compound names, long MRNs) instead of overflowing`,
+      `${selector} must wrap long names (Bulgarian compound names, long MRNs) instead of overflowing`,
     );
   }
 });
@@ -682,10 +1045,19 @@ await check('ui.withViewTransition falls back gracefully and wraps updates', () 
 });
 
 for (const file of jsFiles) {
+  if (CLASSIC_SCRIPTS.has(file)) continue;
   await check(`assets/js/${file}: parses and imports in Node`, async () => {
     await import(path.join(jsDir, file));
   });
 }
+
+await check('theme-init.js is valid classic script syntax', async () => {
+  const source = await readFile(path.join(jsDir, 'theme-init.js'), 'utf8');
+  assert(source.includes("setAttribute('data-theme'"), 'theme bootstrap must set data-theme');
+  assert(source.includes("setAttribute('data-theme-mode'"), 'theme bootstrap must set data-theme-mode');
+  assert(source.includes('medicore-theme'), 'theme bootstrap must use the persisted key');
+  assert(source.includes('prefers-color-scheme: dark'), 'theme bootstrap must support system mode');
+});
 
 /* ------------------------------------------------------------- 3. api.js units */
 
@@ -762,6 +1134,26 @@ await check('request sends credentials, JSON, and X-CSRF-Token on non-GET', asyn
   assertEqual(call.init.headers['X-CSRF-Token'], 'token-9', 'CSRF header');
   assertEqual(call.init.headers['Content-Type'], 'application/json', 'content type');
   assertEqual(call.init.body, '{"email":"a@b.co","password":"x"}', 'request body');
+});
+
+await check('postForm sends multipart FormData without forcing a JSON content type', async () => {
+  const calls = [];
+  globalThis.document = { cookie: 'csrf_token=token-9' };
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse(200, { text: 'ok' });
+  };
+  const form = new FormData();
+  form.append('language', 'en');
+  form.append('file', new Blob(['audio'], { type: 'audio/webm' }), 'clip.webm');
+  await api.postForm('/voice/transcriptions', form);
+  const call = calls[0];
+  assertEqual(call.url, '/api/v1/voice/transcriptions', 'voice route URL');
+  assertEqual(call.init.method, 'POST', 'voice method');
+  assert(call.init.body === form, 'FormData must be passed through unchanged');
+  assert(!('Content-Type' in call.init.headers), 'FormData must set its own boundary');
+  assertEqual(call.init.headers['X-CSRF-Token'], 'token-9', 'voice CSRF header');
+  assert(call.init.headers['Idempotency-Key'], 'voice mutation needs an idempotency key');
 });
 
 await check('request omits CSRF header on GET and when cookie is absent', async () => {

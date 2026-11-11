@@ -30,6 +30,12 @@ from time import monotonic
 from typing import Any, Callable
 
 from app.config import Settings
+from app.llm.guardrails import (
+    enforce_tool_scope,
+    minimize_tool_payload,
+    normalize_and_validate_input,
+    validate_output,
+)
 from app.llm.prompt import (
     assistant_tool_call_message,
     system_prompt,
@@ -115,6 +121,7 @@ async def run_assistant(
     tool call in both modes - the loop never widens it.
     """
     patient_scoped = patient_id is not None
+    question = normalize_and_validate_input(question)
     max_rounds = (
         max(1, int(settings.llm_max_tool_calls))
         if patient_scoped
@@ -149,6 +156,7 @@ async def run_assistant(
             answer = result.text.strip()
             if not answer:
                 raise LLMUnavailable(EMPTY_ANSWER_MESSAGE)
+            validate_output(answer, citations=citations)
             return AssistantOutcome(
                 answer=answer,
                 model=result.model or provider.model_name,
@@ -165,8 +173,11 @@ async def run_assistant(
             tool_calls_made += 1
             if tool_calls_made > max_rounds:
                 raise ToolLoopAbort(TOO_COMPLEX_MESSAGE)
+            enforce_tool_scope(call.name, call.arguments, patient_id=patient_id)
             outcome = await mcp.call_tool(call.name, call.arguments, tool_context)
-            messages.append(tool_result_message(call.id, outcome.model_payload))
+            messages.append(
+                tool_result_message(call.id, minimize_tool_payload(outcome.model_payload))
+            )
             if outcome.tool_name in allowlist:
                 if outcome.tool_name not in used_tools:
                     used_tools.append(outcome.tool_name)

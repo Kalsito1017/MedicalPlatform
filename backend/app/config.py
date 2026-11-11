@@ -14,8 +14,9 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr, ValidationError, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Log record fields whose values must never appear in logs.
@@ -29,6 +30,10 @@ SENSITIVE_FIELD_MARKERS: tuple[str, ...] = (
     "session",
 )
 REDACTED = "[REDACTED]"
+
+# Absolute ceiling for the route-specific voice upload allowance. The body-size
+# middleware clamps the configured value to this constant.
+VOICE_MAX_UPLOAD_HARD_LIMIT = 8 * 1024 * 1024
 
 _DSN_CREDENTIALS_RE = re.compile(r"(://[^/\s:@]+):[^/\s@]+@")
 
@@ -72,12 +77,101 @@ class Settings(BaseSettings):
     csrf_cookie_name: str = "csrf_token"
 
     # --- LLM (optional; the app runs fully without it) ---
-    llm_enabled: bool = False
+    # None = auto: enabled when LLM_API_KEY is present. False = explicit kill
+    # switch. True = require a key (still fails closed if it is missing).
+    llm_enabled: bool | None = None
+    # OpenCode Go endpoint (requires an active Go subscription). The standard
+    # https://opencode.ai/inference endpoint remains documented for funded keys.
     llm_api_base_url: str = "https://opencode.ai/inference/go"
     llm_api_key: SecretStr | None = None
     llm_model: str = ""
     llm_max_tool_calls: int = 4
     llm_request_timeout_seconds: int = 45
+
+    # --- Scheduling / clinic timezone ---
+    clinic_timezone: str = "Europe/Sofia"
+
+    # --- Voice transcription (optional self-hosted whisper.cpp) ---
+    whisper_base_url: str | None = None
+    whisper_timeout_seconds: int = 45
+    whisper_model_name: str = "tiny"
+    whisper_auth_mode: Literal["none", "bearer", "gcp_iam"] = "none"
+    whisper_bearer_token: SecretStr | None = None
+    whisper_audience: str | None = None
+    # Hard cap for the single route that may exceed the global 1 MiB body limit.
+    # The middleware clamps to this value, so a bad environment value cannot
+    # open an unbounded upload path.
+    voice_max_upload_bytes: int = 4 * 1024 * 1024
+    voice_max_duration_seconds: int = 60
+    voice_ffmpeg_timeout_seconds: int = 30
+
+    @field_validator("clinic_timezone")
+    @classmethod
+    def _validate_clinic_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ValueError("CLINIC_TIMEZONE must be a valid IANA timezone name.") from exc
+        return value
+
+    @field_validator("voice_max_upload_bytes")
+    @classmethod
+    def _validate_voice_upload_size(cls, value: int) -> int:
+        if not 64 * 1024 <= value <= VOICE_MAX_UPLOAD_HARD_LIMIT:
+            raise ValueError(
+                "VOICE_MAX_UPLOAD_BYTES must be between 65536 and "
+                f"{VOICE_MAX_UPLOAD_HARD_LIMIT} bytes."
+            )
+        return value
+
+    @field_validator("voice_max_duration_seconds")
+    @classmethod
+    def _validate_voice_duration(cls, value: int) -> int:
+        if not 1 <= value <= 300:
+            raise ValueError("VOICE_MAX_DURATION_SECONDS must be between 1 and 300.")
+        return value
+
+    @field_validator("whisper_timeout_seconds", "voice_ffmpeg_timeout_seconds")
+    @classmethod
+    def _validate_voice_timeouts(cls, value: int) -> int:
+        if not 1 <= value <= 120:
+            raise ValueError("Voice timeouts must be between 1 and 120 seconds.")
+        return value
+
+    @field_validator("whisper_base_url")
+    @classmethod
+    def _validate_whisper_base_url(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        parsed = urlparse(value.strip())
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.path not in ("", "/")
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "WHISPER_BASE_URL must be an http(s) origin without credentials, path, or query."
+            )
+        return value.strip().rstrip("/")
+
+    @model_validator(mode="after")
+    def _validate_whisper_auth(self) -> "Settings":
+        if self.whisper_auth_mode == "bearer" and (
+            self.whisper_bearer_token is None
+            or not self.whisper_bearer_token.get_secret_value().strip()
+        ):
+            raise ValueError(
+                "WHISPER_BEARER_TOKEN is required when WHISPER_AUTH_MODE=bearer."
+            )
+        if self.whisper_auth_mode == "gcp_iam" and not (self.whisper_audience or "").strip():
+            raise ValueError(
+                "WHISPER_AUDIENCE is required when WHISPER_AUTH_MODE=gcp_iam."
+            )
+        return self
 
     # --- Demo bootstrap (seed time only; never real credentials) ---
     demo_admin_email: str | None = None

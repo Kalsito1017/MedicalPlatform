@@ -32,7 +32,7 @@ function toastRegion() {
   return region;
 }
 
-const TOAST_EXIT_MS = 160;
+const TOAST_EXIT_MS = 144;
 
 function detach(region, node) {
   if (!region || !node) return;
@@ -64,7 +64,7 @@ function scheduleDismiss(region, node, duration) {
 /**
  * Show a toast. Options:
  *   message      — required, plain professional copy.
- *   tone         — 'info' (default) | 'error'.
+ *   tone         — 'info' (default) | 'success' | 'error'.
  *   actionLabel  — optional action button label (e.g. 'Undo').
  *   onAction     — async handler for the action button; the toast dismisses
  *                  when it resolves and stays (with an error toast) when it

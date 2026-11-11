@@ -24,6 +24,10 @@ KNOWN_ACTIONS = {
     "authz.denied",
     "patient.read",
     "patient.summary.read",
+    "patient.create",
+    "patient.delete",
+    "message.send",
+    "message.read",
     "labs.read",
     "prescriptions.read",
     "staff.create",
@@ -52,6 +56,16 @@ KNOWN_ACTIONS = {
     "mcp.find_patients_by_medication",
     "mcp.get_my_recent_patients",
     "mcp.unknown_tool",
+    # Appointments (2026-11-09): scheduling mutations and the AI proposal
+    # attempt are metadata-only events (never notes, transcripts, or model text).
+    "appointment.create",
+    "appointment.update",
+    "appointment.reschedule",
+    "appointment.cancel",
+    "appointment.remove_from_calendar",
+    "appointment.denied",
+    "appointment.availability.update",
+    "appointment.ai.propose",
 }
 
 

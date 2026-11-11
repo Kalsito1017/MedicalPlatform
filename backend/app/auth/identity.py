@@ -13,11 +13,10 @@ from __future__ import annotations
 
 from fastapi import Request
 
-from app.auth.sessions import load_session
+from app.auth.sessions import load_session_with_roles
 from app.authorization.policy import Principal, permissions_for_roles
 from app.db.base import get_session_factory
 from app.errors import Unauthenticated
-from app.services.staff import get_user_roles
 
 
 def client_ip(request: Request) -> str | None:
@@ -42,11 +41,10 @@ async def resolve_principal(request: Request) -> Principal | None:
     if not raw_token:
         return None
     async with get_session_factory()() as db:
-        resolved = await load_session(db, raw_token)
+        resolved = await load_session_with_roles(db, raw_token)
         if resolved is None:
             return None
-        _session_row, user = resolved
-        roles = tuple(sorted(await get_user_roles(db, user.id)))
+        _session_row, user, roles = resolved
     principal = Principal(
         user_id=str(user.id),
         roles=roles,

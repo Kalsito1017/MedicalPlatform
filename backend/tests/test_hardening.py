@@ -13,6 +13,7 @@ from __future__ import annotations
 import io
 import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -43,6 +44,13 @@ SECURITY_DOC_AUDIT_ACTIONS = {
     "session.revoke_all",
     "role.grant",
     "role.revoke",
+    "appointment.create",
+    "appointment.update",
+    "appointment.reschedule",
+    "appointment.cancel",
+    "appointment.denied",
+    "appointment.availability.update",
+    "appointment.ai.propose",
 }
 
 
@@ -131,6 +139,70 @@ async def test_security_doc_audit_inventory_is_emitted(
         f"/api/v1/patients/{clinical_data.patient_id}/prescriptions",
     ):
         assert (await client.get(path)).status_code == 200, path
+
+    # --- Appointment scheduling (availability, create, edit, cancel) ----
+    availability = await client.put(
+        "/api/v1/appointments/availability",
+        json={
+            "default_duration_minutes": 30,
+            "slot_increment_minutes": 30,
+            "working_hours": [
+                {"weekday": day, "start_time": "00:00:00", "end_time": "23:59:00"}
+                for day in range(7)
+            ],
+            "time_off": [],
+        },
+        headers=csrf_headers(client),
+    )
+    assert availability.status_code == 200, availability.text
+    start_at = (datetime.now(timezone.utc) + timedelta(days=2)).replace(
+        hour=10, minute=0, second=0, microsecond=0
+    )
+    created_appointment = await client.post(
+        "/api/v1/appointments",
+        json={
+            "patient_id": str(clinical_data.patient_id),
+            "start_at": start_at.isoformat(),
+            "duration_minutes": 30,
+        },
+        headers=csrf_headers(client),
+    )
+    assert created_appointment.status_code == 201, created_appointment.text
+    appointment_id = created_appointment.json()["id"]
+    updated_appointment = await client.patch(
+        f"/api/v1/appointments/{appointment_id}",
+        json={"notes": "Inventory update"},
+        headers=csrf_headers(client),
+    )
+    assert updated_appointment.status_code == 200, updated_appointment.text
+    rescheduled = await client.patch(
+        f"/api/v1/appointments/{appointment_id}",
+        json={"start_at": (start_at + timedelta(hours=1)).isoformat()},
+        headers=csrf_headers(client),
+    )
+    assert rescheduled.status_code == 200, rescheduled.text
+    cancelled = await client.post(
+        f"/api/v1/appointments/{appointment_id}/cancel", headers=csrf_headers(client)
+    )
+    assert cancelled.status_code == 200, cancelled.text
+    denied = await client.post(
+        "/api/v1/appointments",
+        json={
+            "patient_id": str(uuid.uuid4()),
+            "start_at": (start_at + timedelta(days=1)).isoformat(),
+            "duration_minutes": 30,
+        },
+        headers=csrf_headers(client),
+    )
+    assert denied.status_code == 404
+    proposal = await client.post(
+        "/api/v1/appointments/interpret",
+        json={"text": "Book a follow-up appointment next Monday at 10:00."},
+        headers=csrf_headers(client),
+    )
+    # The demo test environment has no LLM configured: the endpoint fails
+    # closed and still records the proposal attempt (never the text).
+    assert proposal.status_code == 503
 
     # --- Permission denial ----------------------------------------------
     assert (await client.get("/api/v1/staff")).status_code == 403

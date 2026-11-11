@@ -7,6 +7,11 @@ later wave builds.
 | Permission        | doctor | nurse | clinical_admin (Admin) |
 |-------------------|--------|-------|------------------------|
 | patient:read      | yes    | yes   | yes                    |
+| patient:write     | yes    | no    | yes                    |
+| patient:delete    | no     | no    | yes                    |
+| message:read      | yes    | no    | yes                    |
+| message:write     | yes    | no    | yes                    |
+| logs:read         | no     | no    | yes                    |
 | lab:read          | yes    | yes   | yes                    |
 | prescription:read | yes    | yes   | yes                    |
 | staff:read        | no     | no    | yes                    |
@@ -37,6 +42,11 @@ from app.errors import Forbidden, Unauthenticated
 
 PermissionLiteral = Literal[
     "patient:read",
+    "patient:write",
+    "patient:delete",
+    "message:read",
+    "message:write",
+    "logs:read",
     "lab:read",
     "prescription:read",
     "staff:read",
@@ -44,6 +54,9 @@ PermissionLiteral = Literal[
     "role:assign",
     "audit:read",
     "analytics:read",
+    "appointment:read",
+    "appointment:write",
+    "appointment:manage_availability",
 ]
 
 RoleLiteral = Literal["doctor", "nurse", "clinical_admin"]
@@ -51,6 +64,11 @@ RoleLiteral = Literal["doctor", "nurse", "clinical_admin"]
 
 class Permission(str, Enum):
     PATIENT_READ = "patient:read"
+    PATIENT_WRITE = "patient:write"
+    PATIENT_DELETE = "patient:delete"
+    MESSAGE_READ = "message:read"
+    MESSAGE_WRITE = "message:write"
+    LOGS_READ = "logs:read"
     LAB_READ = "lab:read"
     PRESCRIPTION_READ = "prescription:read"
     STAFF_READ = "staff:read"
@@ -58,6 +76,9 @@ class Permission(str, Enum):
     ROLE_ASSIGN = "role:assign"
     AUDIT_READ = "audit:read"
     ANALYTICS_READ = "analytics:read"
+    APPOINTMENT_READ = "appointment:read"
+    APPOINTMENT_WRITE = "appointment:write"
+    APPOINTMENT_MANAGE_AVAILABILITY = "appointment:manage_availability"
 
 
 class Role(str, Enum):
@@ -74,8 +95,14 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
     Role.DOCTOR.value: frozenset(
         {
             Permission.PATIENT_READ.value,
+            Permission.PATIENT_WRITE.value,
+            Permission.MESSAGE_READ.value,
+            Permission.MESSAGE_WRITE.value,
             Permission.LAB_READ.value,
             Permission.PRESCRIPTION_READ.value,
+            Permission.APPOINTMENT_READ.value,
+            Permission.APPOINTMENT_WRITE.value,
+            Permission.APPOINTMENT_MANAGE_AVAILABILITY.value,
         }
     ),
     Role.NURSE.value: frozenset(
@@ -83,6 +110,8 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             Permission.PATIENT_READ.value,
             Permission.LAB_READ.value,
             Permission.PRESCRIPTION_READ.value,
+            # Read-only clinic schedule; write/availability remain doctor/admin.
+            Permission.APPOINTMENT_READ.value,
         }
     ),
     Role.CLINICAL_ADMIN.value: frozenset(ALL_PERMISSIONS),

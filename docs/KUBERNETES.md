@@ -212,8 +212,8 @@ Secret `app-secret` via `envFrom`); the canonical list is `.env.example` and
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | Secret | DB bootstrap (first start of `db-0`) and DSN credentials |
 | `SESSION_COOKIE_NAME` / `SESSION_TTL_HOURS` | ConfigMap | Session cookie name and lifetime |
 | `CSRF_COOKIE_NAME` | ConfigMap | CSRF cookie name |
-| `LLM_ENABLED` | ConfigMap | `false` by default — AI features degrade gracefully |
-| `LLM_API_BASE_URL` / `LLM_MODEL` / `LLM_MAX_TOOL_CALLS` / `LLM_REQUEST_TIMEOUT_SECONDS` | ConfigMap | LLM endpoint/model/budget tuning |
+| `LLM_ENABLED` | ConfigMap | explicit kill switch; remove it or set `true` to auto-enable AI when `LLM_API_KEY` is present |
+| `LLM_API_BASE_URL` / `LLM_MODEL` / `LLM_MAX_TOOL_CALLS` / `LLM_MAX_TOOL_CALLS_GENERAL` / `LLM_REQUEST_TIMEOUT_SECONDS` | ConfigMap | LLM endpoint/model/budget tuning (`LLM_MAX_TOOL_CALLS_GENERAL=10` by default) |
 | `LLM_API_KEY` | Secret (optional) | Only when AI is enabled; omitted by default |
 | `DEMO_ADMIN_*` / `DEMO_DOCTOR_*` / `DEMO_NURSE_*` | Secret | Seed-time demo logins (synthetic, never real credentials) |
 | `ALLOWED_ORIGINS` | ConfigMap | CORS allow-list (must include the local URL) |
@@ -224,7 +224,7 @@ Secret `app-secret` via `envFrom`); the canonical list is `.env.example` and
 **Enabling the LLM (optional).** The app is fully functional without it. To
 turn AI features on: put `LLM_API_KEY` into `k8s/secret.yaml` (uncomment the
 line in the template, or re-run `LLM_API_KEY=... scripts/k8s/gen-secret.sh`
-with `FORCE=1`), set `LLM_ENABLED: "true"` in `k8s/configmap.yaml`, re-apply
+with `FORCE=1`), remove/set `LLM_ENABLED: "true"` in `k8s/configmap.yaml`, re-apply
 both, and `kubectl --context docker-desktop rollout restart deployment/app
 -n clinical`.
 

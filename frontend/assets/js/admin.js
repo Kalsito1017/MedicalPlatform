@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// admin.html page module — staff administration for the synthetic demo.
+// admin.html page module — staff administration.
 // Endpoints (docs/API.md):
 //   GET    /api/v1/staff                        -> Page {items,total,limit,offset}
 //   POST   /api/v1/staff                        -> 201 {user, generated_password}
@@ -22,7 +22,7 @@
 import * as api from './api.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
-import * as commandMenu from './command-menu.js';
+import * as commandMenu from './command-menu.js?v=20261109j';
 import * as prefetch from './prefetch.js';
 import * as toast from './toast.js';
 import * as ui from './ui.js';
@@ -36,9 +36,9 @@ const ROLE_KEYS = ['doctor', 'nurse', 'clinical_admin'];
 
 // Role consequences, stated in the confirmation dialog before every grant.
 const ROLE_ABILITY = {
-  doctor: 'view patient records and clinical data permitted by the demo policy (labs and prescriptions)',
+  doctor: 'view patient records and clinical data permitted by the access policy (labs and prescriptions)',
   nurse: 'view permitted patient information and clinical data (least privilege, with no staff or audit administration)',
-  clinical_admin: 'do everything in the demo: view clinical data, manage staff accounts and roles, read the audit log, and view analytics',
+  clinical_admin: 'do everything in this deployment: view clinical data, manage staff accounts and roles, read the audit log, and view analytics',
 };
 
 const state = {
@@ -174,7 +174,7 @@ function renderStaffRow(user) {
   const cells = [
     ui.el('td', { 'data-label': 'Staff member' },
       ui.el('div', { class: 'cell-stack' },
-        ui.avatar(user.display_name || user.email || '?', { size: 'sm' }),
+        ui.avatarForUser(user, { size: 'sm' }),
         ui.el('div', { class: 'cell-stack__text' },
           ui.el('span', { class: 'cell-stack__primary', text: user.display_name || 'Not recorded' }),
           ui.el('span', { class: 'cell-stack__secondary', text: user.email || 'Not recorded' }),
@@ -202,7 +202,7 @@ function renderStaffTable() {
   if (state.users.length === 0) {
     ui.renderEmptyState(region, {
       title: 'No staff accounts',
-      message: 'This demo database has no staff accounts yet. Create one above.',
+      message: 'There are no staff accounts yet. Create one above.',
       headingTag: 'h3',
     });
     return;
@@ -396,7 +396,7 @@ async function restoreRole(user, role) {
     cache.invalidate('/staff');
     if (updated && updated.id) replaceUser(updated);
     announceStatus('staff-status', `Restored: ${ui.roleLabel(role)} is held by ${user.display_name} again.`);
-    toast.showToast({ message: 'Restored.' });
+    toast.showToast({ message: 'Restored.', tone: 'success' });
   } catch (error) {
     rollbackOptimistic(previous);
     announceError('staff-status', error);
@@ -470,7 +470,7 @@ async function restoreActive(user) {
     cache.invalidate('/staff');
     if (updated && updated.id) replaceUser(updated);
     announceStatus('staff-status', `${user.display_name} can sign in again.`);
-    toast.showToast({ message: 'Restored.' });
+    toast.showToast({ message: 'Restored.', tone: 'success' });
   } catch (error) {
     rollbackOptimistic(previous);
     announceError('staff-status', error);
@@ -522,7 +522,7 @@ function showOneTimePassword(user, password) {
       ui.el('div', { class: 'alert alert--info', role: 'alert' },
         ui.el('p', { text: 'This is shown once. Store it now.' }),
         ui.el('p', {
-          text: 'The demo backend stores only a hash and will never show this password again. Do not use real credentials in this demo.',
+          text: 'The backend stores only a hash and will never show this password again.',
         }),
       ),
       ui.el('div', { class: 'field' },
@@ -708,7 +708,7 @@ function renderAudit(page) {
   if (items.length === 0) {
     ui.renderEmptyState(region, {
       title: 'No audit events',
-      message: 'No audit events have been recorded in this demo database yet.',
+      message: 'No audit events have been recorded yet.',
       headingTag: 'h3',
     });
     return;

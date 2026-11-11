@@ -40,7 +40,17 @@ async def test_login_success_sets_cookies_and_returns_payload(make_client, make_
     assert payload["email"] == account.email
     assert payload["display_name"] == "Demo Doctor Fixture"
     assert payload["roles"] == ["doctor"]
-    assert set(payload["permissions"]) == {"patient:read", "lab:read", "prescription:read"}
+    assert set(payload["permissions"]) == {
+        "patient:read",
+        "patient:write",
+        "message:read",
+        "message:write",
+        "lab:read",
+        "prescription:read",
+        "appointment:read",
+        "appointment:write",
+        "appointment:manage_availability",
+    }
     assert payload["is_active"] is True
     assert uuid.UUID(payload["id"]) == account.id
 
@@ -203,12 +213,13 @@ async def test_me_401_anonymous_and_200_authenticated(make_client, api_login, ma
     payload = response.json()
     assert payload["id"] == str(account.id)
     assert payload["roles"] == ["nurse"]
-    # Nurse is least privilege (owner decision, 2026-10-26): clinical reads
-    # only — no staff:read, no audit:read, no admin-panel permissions.
+    # Nurse is least privilege: clinical reads plus read-only appointments —
+    # no staff:read, no audit:read, no appointment writes/availability.
     assert set(payload["permissions"]) == {
         "patient:read",
         "lab:read",
         "prescription:read",
+        "appointment:read",
     }
 
 

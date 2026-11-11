@@ -27,11 +27,11 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models.admin import StaffUser, UserSession
+from app.models.admin import Role, StaffUser, UserRole, UserSession
 
 # Minimum interval between `last_seen_at` writes for one session (write
 # amplification guard; does not affect expiry enforcement).
@@ -82,31 +82,59 @@ async def create_session(
     return raw_token, session
 
 
-async def load_session(db: AsyncSession, raw_token: str) -> tuple[UserSession, StaffUser] | None:
-    """Resolve a raw cookie token to (session row, staff user) or None.
+async def load_session_with_roles(
+    db: AsyncSession, raw_token: str
+) -> tuple[UserSession, StaffUser, tuple[str, ...]] | None:
+    """Resolve a raw cookie token to (session, user, role keys) in one query.
 
-    Returns None for unknown, revoked, or expired sessions and for users that
-    are inactive or soft-deleted. Refreshes `last_seen_at` (throttled) when the
-    session resolves.
+    The session/user/roles join is the hot path for every authenticated
+    request. Keeping it to one round trip avoids the former session + user +
+    roles trio while preserving the same deny-by-default checks: unknown,
+    revoked, or expired sessions and inactive or soft-deleted users all return
+    None. Refreshes `last_seen_at` (throttled) when the session resolves.
     """
     if not raw_token:
         return None
     token_hash = hash_session_token(raw_token)
-    row = await db.scalar(select(UserSession).where(UserSession.token_hash == token_hash))
+    role_keys = func.array_agg(Role.key).label("role_keys")
+    row = (
+        await db.execute(
+            select(UserSession, StaffUser, role_keys)
+            .join(StaffUser, StaffUser.id == UserSession.user_id)
+            .outerjoin(UserRole, UserRole.user_id == StaffUser.id)
+            .outerjoin(Role, Role.id == UserRole.role_id)
+            .where(
+                UserSession.token_hash == token_hash,
+                StaffUser.is_active.is_(True),
+                StaffUser.not_deleted(),
+            )
+            .group_by(UserSession.id, StaffUser.id)
+        )
+    ).first()
     if row is None:
         return None
+    session, user, roles = row
     now = _now()
-    if row.revoked_at is not None or row.expires_at <= now:
+    if session.revoked_at is not None or session.expires_at <= now:
         return None
-    user = await db.scalar(
-        select(StaffUser).where(StaffUser.id == row.user_id, StaffUser.is_active.is_(True), StaffUser.not_deleted())
-    )
-    if user is None:
-        return None
-    if (now - row.last_seen_at).total_seconds() >= _LAST_SEEN_WRITE_INTERVAL_SECONDS:
-        row.last_seen_at = now
+    if (now - session.last_seen_at).total_seconds() >= _LAST_SEEN_WRITE_INTERVAL_SECONDS:
+        session.last_seen_at = now
         await db.flush()
-    return row, user
+    clean_roles = tuple(sorted({str(role) for role in (roles or []) if role}))
+    return session, user, clean_roles
+
+
+async def load_session(db: AsyncSession, raw_token: str) -> tuple[UserSession, StaffUser] | None:
+    """Resolve a raw cookie token to (session row, staff user) or None.
+
+    Compatibility wrapper around :func:`load_session_with_roles`; callers that
+    need the principal's roles should use the richer function directly.
+    """
+    resolved = await load_session_with_roles(db, raw_token)
+    if resolved is None:
+        return None
+    session, user, _roles = resolved
+    return session, user
 
 
 async def revoke_session(db: AsyncSession, raw_token: str) -> bool:

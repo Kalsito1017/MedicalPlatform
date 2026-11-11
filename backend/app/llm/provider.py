@@ -22,14 +22,21 @@ stack traces, response bodies, headers, or keys):
 - transient failures (network error, timeout, 5xx) retry ONCE, then raise
   `LLMTimeout` / `LLMUnavailable`,
 - 429 raises `LLMRateLimited` with the provider's Retry-After (never retried),
-- 403 raises `LLMUnavailable` (known cause: free-tier models return HTTP 403
-  for non-OpenCode clients - a paid model is required),
+  except the OpenCode free-usage limit, which is a non-retryable account quota
+  and maps to an actionable `LLMUnavailable`,
+- 401/402/403/404 map to actionable `LLMUnavailable`/`LLMRejected` messages
+  (invalid key, insufficient funds, missing Go subscription/model access,
+  unknown model) without echoing the provider body or key,
 - other 4xx raise `LLMRejected` (never retried),
 - malformed responses raise `LLMUnavailable`.
+
+The provider always sends an `x-opencode-session` header (caller session id or
+a per-instance generated id), as required by the OpenCode inference routing.
 """
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol, Sequence, runtime_checkable
 
@@ -38,18 +45,37 @@ from pydantic import SecretStr
 
 from app.config import Settings
 
-DEFAULT_LLM_MODEL = "mimo-v2.6-pro"
+DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
 DEFAULT_MAX_RETRIES = 1  # at most ONE retry, and only on transient failures
 
 FREE_TIER_403_MESSAGE = (
-    "The configured AI model is not available to this service. "
-    "Free-tier models return HTTP 403 for non-OpenCode clients - configure a paid model (LLM_MODEL)."
+    "The configured AI model is not available to this service. Use a paid model "
+    "with account credit or an active OpenCode Go plan (LLM_MODEL / LLM_API_BASE_URL)."
+)
+GO_SUBSCRIPTION_MESSAGE = (
+    "The configured API key has no active OpenCode Go subscription. Use "
+    "LLM_API_BASE_URL=https://opencode.ai/inference with a funded model, or "
+    "activate OpenCode Go and use https://opencode.ai/inference/go."
+)
+INVALID_KEY_MESSAGE = (
+    "The AI API key was rejected. Check LLM_API_KEY in the server environment and restart the service."
+)
+INSUFFICIENT_FUNDS_MESSAGE = (
+    "The AI provider account has insufficient funds. Add credit or use a funded "
+    "OpenCode Go plan, then restart the service."
+)
+FREE_QUOTA_MESSAGE = (
+    "The free model usage limit has been reached. Use a paid model with account "
+    "credit or activate OpenCode Go."
+)
+MODEL_NOT_FOUND_MESSAGE = (
+    "The configured AI model was not found for this key. Check LLM_MODEL and LLM_API_BASE_URL."
 )
 UNAVAILABLE_MESSAGE = "The AI assistant is temporarily unavailable. Please try again later."
 TIMEOUT_MESSAGE = "The AI assistant did not respond in time. Please try again."
 RATE_LIMITED_MESSAGE = "The AI assistant is at capacity. Please retry after the indicated delay."
-REJECTED_MESSAGE = "The AI provider rejected this request."
+REJECTED_MESSAGE = "The AI provider rejected this request. Check LLM_MODEL and LLM_API_BASE_URL."
 MALFORMED_MESSAGE = "The AI provider returned an unusable response."
 
 
@@ -154,6 +180,9 @@ class OpenCodeProvider:
         self._timeout = timeout
         self._transport = transport
         self._max_retries = max_retries
+        # OpenCode routes requests more efficiently with a session id. Always
+        # send one (per provider instance) even when the caller omits it.
+        self._default_session_id = uuid.uuid4().hex
         self.model_name = model or DEFAULT_LLM_MODEL
 
     @property
@@ -182,12 +211,11 @@ class OpenCodeProvider:
         headers = {
             "Authorization": f"Bearer {self._api_key.get_secret_value()}",
             "Content-Type": "application/json",
-            # OpenCode Go clients identify themselves and send a stable session id
+            # OpenCode clients identify themselves and send a stable session id
             # per conversation (documented client requirements).
             "User-Agent": "clinical-ai-platform/1.0",
+            "x-opencode-session": session_id or self._default_session_id,
         }
-        if session_id:
-            headers["x-opencode-session"] = session_id
 
         attempts = self._max_retries + 1
         last_error: LLMError = LLMUnavailable(UNAVAILABLE_MESSAGE)
@@ -205,10 +233,26 @@ class OpenCodeProvider:
                 continue
 
             status = response.status_code
-            if status == 429:
-                raise LLMRateLimited(RATE_LIMITED_MESSAGE, retry_after=_retry_after(response))
+            detail = _provider_error_text(response)
+            if status == 401:
+                raise LLMUnavailable(INVALID_KEY_MESSAGE)
+            if status == 402:
+                raise LLMUnavailable(INSUFFICIENT_FUNDS_MESSAGE)
             if status == 403:
+                if "go subscription" in detail:
+                    raise LLMUnavailable(GO_SUBSCRIPTION_MESSAGE)
                 raise LLMUnavailable(FREE_TIER_403_MESSAGE)
+            if status == 404:
+                raise LLMRejected(MODEL_NOT_FOUND_MESSAGE)
+            if status == 429:
+                if "free usage" in detail or "freeusagelimit" in detail:
+                    raise LLMUnavailable(FREE_QUOTA_MESSAGE)
+                raise LLMRateLimited(RATE_LIMITED_MESSAGE, retry_after=_retry_after(response))
+            if status == 400 and "model is unavailable" in detail:
+                raise LLMRejected(
+                    "The configured AI model is currently unavailable. Try another "
+                    "LLM_MODEL or the matching LLM_API_BASE_URL."
+                )
             if 400 <= status < 500:
                 raise LLMRejected(REJECTED_MESSAGE)
             if status >= 500:
@@ -217,6 +261,22 @@ class OpenCodeProvider:
             return _parse_completion(response, fallback_model=self.model_name)
 
         raise last_error
+
+
+def _provider_error_text(response: httpx.Response) -> str:
+    """Extract error type/message for classification only; never echo it."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        return " ".join(
+            str(error.get(key, "")) for key in ("type", "message", "code")
+        ).lower()
+    if error is not None:
+        return str(error).lower()
+    return ""
 
 
 def _retry_after(response: httpx.Response) -> int | None:
@@ -270,11 +330,19 @@ def _parse_completion(response: httpx.Response, *, fallback_model: str) -> LLMRe
 def build_provider(settings: Settings) -> LLMProvider:
     """The single provider factory (swap providers here).
 
-    Returns NullProvider when the optional LLM feature is disabled or no API
-    key is configured - the platform must stay fully functional without an LLM.
+    `LLM_ENABLED=None` (the default) auto-enables the provider when a key is
+    present; `LLM_ENABLED=false` is an explicit kill switch. A missing/blank
+    key always returns NullProvider, so the platform stays functional without
+    an LLM.
     """
     key = settings.llm_api_key
-    if not settings.llm_enabled or key is None or not key.get_secret_value().strip():
+    key_value = key.get_secret_value().strip() if key is not None else ""
+    if (
+        settings.llm_enabled is False
+        or not key_value
+        or key_value.startswith("oc_sk_replace")
+        or key_value in {"replace-me", "change-me"}
+    ):
         return NullProvider()
     return OpenCodeProvider(
         api_key=key,

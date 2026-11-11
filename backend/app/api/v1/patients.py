@@ -5,15 +5,16 @@ Every endpoint:
   2. calls `services.access.check_patient_access` (the ONE patient-access seam),
   3. writes exactly one audit event per request (outcome `success` on 200,
      `denied` on the concealed/missing 404 — never confirm existence with 403),
-  4. returns typed, bounded payloads carrying "provenance": "synthetic".
+  4. returns typed, bounded payloads (data provenance stays database-internal).
 
-All data is synthetic demo data. Nothing here writes clinical records.
+All data is synthetic (fictional). The only write here is patient creation;
+encounters, labs and prescriptions remain read-only on these endpoints.
 """
 from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.deps import DbSession, Pagination, RequestId, reject_unknown_query
 from app.audit.logger import write_audit_event
@@ -24,6 +25,8 @@ from app.schemas.common import Page
 from app.schemas.patient import (
     EncounterOut,
     LabResultOut,
+    LabTrendsOut,
+    PatientCreate,
     PatientOut,
     PatientSummaryOut,
     PrescriptionOut,
@@ -58,6 +61,76 @@ async def _audit_read(
         ip=client_ip(request),
     )
     await db.commit()
+
+
+@router.post("/patients", response_model=PatientOut, status_code=201)
+async def create_patient(
+    body: PatientCreate,
+    request: Request,
+    db: DbSession,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("patient:write")),
+) -> PatientOut:
+    """Create a synthetic patient record with a server-assigned MRN."""
+    patient = await patients_service.create_patient(
+        db,
+        given_name=body.given_name,
+        family_name=body.family_name,
+        display_name=body.display_name,
+        date_of_birth=body.date_of_birth,
+        sex=body.sex,
+        blood_type=body.blood_type,
+    )
+    await write_audit_event(
+        db,
+        actor_user_id=principal.user_uuid,
+        action="patient.create",
+        resource_type="patient",
+        resource_id=str(patient.id),
+        outcome="success",
+        request_id=request_id,
+        ip=client_ip(request),
+    )
+    await db.commit()
+    return PatientOut.model_validate(patient)
+
+
+@router.delete("/patients/{patient_id}", status_code=204, response_class=Response)
+async def delete_patient(
+    patient_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("patient:delete")),
+) -> Response:
+    """Admin-only soft delete; child clinical/scheduling history is retained."""
+    patient = await patients_service.get_patient_base(db, patient_id)
+    if patient is None:
+        await write_audit_event(
+            db,
+            actor_user_id=principal.user_uuid,
+            action="patient.delete",
+            resource_type="patient",
+            resource_id=str(patient_id),
+            outcome="denied",
+            request_id=request_id,
+            ip=client_ip(request),
+        )
+        await db.commit()
+        raise NotFound()
+    await patients_service.soft_delete_patient(db, patient)
+    await write_audit_event(
+        db,
+        actor_user_id=principal.user_uuid,
+        action="patient.delete",
+        resource_type="patient",
+        resource_id=str(patient_id),
+        outcome="success",
+        request_id=request_id,
+        ip=client_ip(request),
+    )
+    await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/patients", response_model=Page[PatientOut])
@@ -102,7 +175,7 @@ async def get_patient(
     principal: Principal = Depends(require_permission("patient:read")),
 ) -> PatientOut:
     allowed = await check_patient_access(principal, patient_id, db=db)
-    patient = await patients_service.get_patient(db, patient_id) if allowed else None
+    patient = await patients_service.get_patient_base(db, patient_id) if allowed else None
     if patient is None:
         await _audit_read(
             db,
@@ -174,6 +247,51 @@ async def get_patient_summary(
     )
 
 
+@router.get("/patients/{patient_id}/encounters", response_model=Page[EncounterOut])
+async def get_patient_encounters(
+    patient_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    pagination: Pagination,
+    request_id: RequestId,
+    _unknown: None = Depends(reject_unknown_query("limit", "offset")),
+    principal: Principal = Depends(require_permission("patient:read")),
+) -> Page[EncounterOut]:
+    """Complete paginated encounter history for one authorized patient."""
+    allowed = await check_patient_access(principal, patient_id, db=db)
+    if not allowed:
+        await _audit_read(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="patient.read",
+            resource_type="patient",
+            resource_id=str(patient_id),
+            outcome="denied",
+        )
+        raise NotFound()
+    items, total = await patients_service.list_encounters_page(
+        db, patient_id, limit=pagination.limit, offset=pagination.offset
+    )
+    await _audit_read(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="patient.read",
+        resource_type="patient",
+        resource_id=str(patient_id),
+        outcome="success",
+    )
+    return Page[EncounterOut](
+        items=[EncounterOut.model_validate(item) for item in items],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
 @router.get("/patients/{patient_id}/labs", response_model=Page[LabResultOut])
 async def get_patient_labs(
     patient_id: uuid.UUID,
@@ -216,6 +334,59 @@ async def get_patient_labs(
         limit=pagination.limit,
         offset=pagination.offset,
     )
+
+
+@router.get("/patients/{patient_id}/labs/trends", response_model=LabTrendsOut)
+async def get_patient_lab_trends(
+    patient_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    request_id: RequestId,
+    days: int = Query(
+        default=labs_service.TREND_DAYS_DEFAULT,
+        ge=labs_service.TREND_DAYS_MIN,
+        le=labs_service.TREND_DAYS_MAX,
+    ),
+    tests: str | None = Query(
+        default=None,
+        max_length=labs_service.TREND_TESTS_QUERY_MAX_LENGTH,
+    ),
+    _unknown: None = Depends(reject_unknown_query("days", "tests")),
+    principal: Principal = Depends(require_permission("lab:read")),
+) -> LabTrendsOut:
+    """Bounded chart-ready numeric lab trends for one authorized patient."""
+    allowed = await check_patient_access(principal, patient_id, db=db)
+    if not allowed:
+        await _audit_read(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="labs.read",
+            resource_type="patient",
+            resource_id=str(patient_id),
+            outcome="denied",
+        )
+        raise NotFound()
+
+    test_codes = labs_service.parse_trend_test_codes(tests)
+    payload = await labs_service.get_lab_trends(
+        db,
+        patient_id,
+        days=days,
+        test_codes=test_codes,
+    )
+    await _audit_read(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="labs.read",
+        resource_type="patient",
+        resource_id=str(patient_id),
+        outcome="success",
+    )
+    return LabTrendsOut.model_validate(payload)
 
 
 @router.get("/patients/{patient_id}/prescriptions", response_model=Page[PrescriptionOut])

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -38,6 +39,9 @@ class EndpointCase:
     needs_conversation: bool = False
     target_roles: tuple[str, ...] = ()
     role_path: str = "doctor"
+    # Appointment probes need role-aware scoping: an Admin must name a doctor,
+    # while a Doctor may never name another doctor (the route answers 403).
+    query_kind: str | None = None
 
 
 MATRIX: tuple[EndpointCase, ...] = (
@@ -45,12 +49,36 @@ MATRIX: tuple[EndpointCase, ...] = (
     EndpointCase("POST", "/api/v1/auth/logout", AUTHENTICATED, 204),
     EndpointCase("GET", "/api/v1/auth/me", AUTHENTICATED, 200),
     EndpointCase("GET", "/api/v1/patients", "patient:read", 200),
+    EndpointCase(
+        "POST", "/api/v1/patients", "patient:write", 201, body_kind="patient_create"
+    ),
+    EndpointCase(
+        "DELETE",
+        "/api/v1/patients/{patient_id}",
+        "patient:delete",
+        204,
+        needs_patient=True,
+    ),
     EndpointCase("GET", "/api/v1/patients/{patient_id}", "patient:read", 200, needs_patient=True),
     EndpointCase(
         "GET", "/api/v1/patients/{patient_id}/summary", "patient:read", 200, needs_patient=True
     ),
     EndpointCase(
+        "GET",
+        "/api/v1/patients/{patient_id}/encounters",
+        "patient:read",
+        200,
+        needs_patient=True,
+    ),
+    EndpointCase(
         "GET", "/api/v1/patients/{patient_id}/labs", "lab:read", 200, needs_patient=True
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/patients/{patient_id}/labs/trends",
+        "lab:read",
+        200,
+        needs_patient=True,
     ),
     EndpointCase(
         "GET",
@@ -91,6 +119,104 @@ MATRIX: tuple[EndpointCase, ...] = (
         role_path="doctor",
     ),
     EndpointCase("GET", "/api/v1/audit", "audit:read", 200),
+    EndpointCase("GET", "/api/v1/admin/logs", "logs:read", 200),
+    EndpointCase("GET", "/api/v1/admin/logs/stream", "logs:read", 200),
+    EndpointCase("GET", "/api/v1/messages", "message:read", 200),
+    EndpointCase("GET", "/api/v1/messages/recipients", "message:read", 200),
+    EndpointCase(
+        "POST",
+        "/api/v1/messages",
+        "message:write",
+        201,
+        body_kind="message_send",
+    ),
+    EndpointCase("POST", "/api/v1/messages/{message_id}/read", "message:read", 404),
+    # Appointments: doctors are scoped to their own calendar server-side; the
+    # write probes use unknown ids, so an authorized caller reaches the route
+    # and receives the concealment 404 while a forbidden caller gets 403.
+    EndpointCase("GET", "/api/v1/appointments/config", "appointment:read", 200),
+    EndpointCase(
+        "GET",
+        "/api/v1/appointments",
+        "appointment:read",
+        200,
+        query_kind="appointments_list",
+    ),
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments",
+        "appointment:write",
+        404,
+        body_kind="appointment_create",
+    ),
+    # AI interpretation only proposes. With the LLM disabled in tests the
+    # authorized path stops at the dependency gate (503); the probe proves the
+    # permission split without invoking a model.
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments/interpret",
+        "appointment:write",
+        503,
+        body_kind="appointment_interpret",
+        query_kind="interpret",
+    ),
+    EndpointCase(
+        "GET", "/api/v1/appointments/{appointment_id}", "appointment:read", 404
+    ),
+    EndpointCase(
+        "PATCH",
+        "/api/v1/appointments/{appointment_id}",
+        "appointment:write",
+        404,
+        body_kind="appointment_update",
+    ),
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments/{appointment_id}/cancel",
+        "appointment:write",
+        404,
+    ),
+    # Admin-only calendar visibility change. The route itself requires
+    # appointment:write + the Admin role; analytics:read is used here as the
+    # existing Admin-only matrix marker so Doctor/Nurse probes expect 403.
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments/{appointment_id}/remove-from-calendar",
+        "analytics:read",
+        404,
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/appointments/availability",
+        "appointment:read",
+        200,
+        query_kind="doctor_scoped",
+    ),
+    EndpointCase(
+        "PUT",
+        "/api/v1/appointments/availability",
+        "appointment:manage_availability",
+        200,
+        body_kind="availability_write",
+        query_kind="doctor_scoped",
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/appointments/slots",
+        "appointment:read",
+        200,
+        query_kind="slots",
+    ),
+    # Voice scheduling is part of the appointment-write surface. The probe
+    # uploads an empty file: authorized callers reach the bounded audio
+    # validation (400), while a forbidden role never reads the body (403).
+    EndpointCase(
+        "POST",
+        "/api/v1/voice/transcriptions",
+        "appointment:write",
+        400,
+        body_kind="voice_upload",
+    ),
     # Wave U (admin analytics): one bounded read-only overview, Admin only.
     EndpointCase("GET", "/api/v1/analytics/summary", "analytics:read", 200),
     EndpointCase(
@@ -117,7 +243,9 @@ MATRIX: tuple[EndpointCase, ...] = (
 )
 
 
-async def _build_request(case: EndpointCase, *, clinical_data, make_user):
+async def _build_request(
+    case: EndpointCase, *, clinical_data, make_user, actor_role: str | None = None
+):
     path = case.template
     if case.needs_patient:
         path = path.format(patient_id=clinical_data.patient_id)
@@ -128,6 +256,28 @@ async def _build_request(case: EndpointCase, *, clinical_data, make_user):
         path = path.format(user_id=target.id, role=case.role_path)
     if case.needs_conversation:
         path = path.format(conversation_id=uuid.uuid4())
+    if "{appointment_id}" in path:
+        path = path.format(appointment_id=uuid.uuid4())
+    if "{message_id}" in path:
+        path = path.format(message_id=uuid.uuid4())
+
+    now = datetime.now(timezone.utc)
+    params: dict[str, str] | None = None
+    if case.query_kind == "appointments_list":
+        params = {
+            "start": (now - timedelta(days=1)).isoformat(),
+            "end": (now + timedelta(days=30)).isoformat(),
+        }
+    elif case.query_kind in {"doctor_scoped", "slots", "interpret"}:
+        params = {}
+        if case.query_kind == "slots":
+            params["date"] = (now + timedelta(days=2)).date().isoformat()
+        if actor_role in {"clinical_admin", "nurse"}:
+            # Admin and read-only nurse may act/read across doctors and must
+            # name one for scoped availability/slot probes; a Doctor probe
+            # deliberately omits doctor_id so the route scopes to the caller.
+            target = await make_user(roles=("doctor",))
+            params["doctor_id"] = str(target.id)
 
     body: dict | None = None
     if case.body_kind == "login":
@@ -146,13 +296,58 @@ async def _build_request(case: EndpointCase, *, clinical_data, make_user):
             "patient_id": str(clinical_data.patient_id),
             "question": "What are the latest lab results for this synthetic patient?",
         }
-    return path, body
+    elif case.body_kind == "message_send":
+        target = await make_user(roles=("doctor",))
+        body = {
+            "recipient_id": str(target.id),
+            "subject": "Matrix message",
+            "body": "Matrix-only internal message.",
+        }
+    elif case.body_kind == "patient_create":
+        body = {
+            "given_name": "Probe" + uuid.uuid4().hex[:8],
+            "family_name": "Patient",
+            "sex": "unknown",
+        }
+    elif case.body_kind == "appointment_create":
+        # Unknown patient: an authorized caller reaches the concealment 404,
+        # a forbidden caller is stopped by the permission dependency.
+        body = {
+            "patient_id": str(uuid.uuid4()),
+            "start_at": (now + timedelta(days=7)).isoformat(),
+            "duration_minutes": 30,
+        }
+        if actor_role == "clinical_admin":
+            body["doctor_id"] = str(uuid.uuid4())
+    elif case.body_kind == "appointment_interpret":
+        body = {"text": "Book an appointment tomorrow at 10:00 for the patient."}
+    elif case.body_kind == "appointment_update":
+        body = {}
+    elif case.body_kind == "availability_write":
+        body = {
+            "default_duration_minutes": 30,
+            "slot_increment_minutes": 30,
+            "working_hours": [],
+            "time_off": [],
+        }
+    return path, body, params
 
 
-async def _call(client, case: EndpointCase, path: str, body: dict | None):
+async def _call(
+    client,
+    case: EndpointCase,
+    path: str,
+    body: dict | None,
+    params: dict[str, str] | None = None,
+):
     kwargs = {"headers": csrf_headers(client)}
-    if body is not None:
+    if case.body_kind == "voice_upload":
+        kwargs["data"] = {"language": "en"}
+        kwargs["files"] = {"file": ("empty.webm", b"", "audio/webm")}
+    elif body is not None:
         kwargs["json"] = body
+    if params is not None:
+        kwargs["params"] = params
     return await client.request(case.method, path, **kwargs)
 
 
@@ -201,9 +396,13 @@ def test_every_v1_route_is_declared_in_the_matrix(app) -> None:
 async def test_anonymous_requests_get_401(case, clinical_data, make_user, make_client) -> None:
     if case.permission == PUBLIC:
         pytest.skip("public endpoint: covered in test_auth_api")
+    if case.template.endswith("/stream"):
+        pytest.skip("SSE endpoint covered by dedicated system-log tests")
     client = await make_client()
-    path, body = await _build_request(case, clinical_data=clinical_data, make_user=make_user)
-    response = await _call(client, case, path, body)
+    path, body, params = await _build_request(
+        case, clinical_data=clinical_data, make_user=make_user
+    )
+    response = await _call(client, case, path, body, params)
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "unauthenticated"
 
@@ -218,10 +417,14 @@ async def test_anonymous_requests_get_401(case, clinical_data, make_user, make_c
 async def test_role_permission_matrix_at_api_layer(
     case, role, clinical_data, make_user, auth_client
 ) -> None:
+    if case.template.endswith("/stream"):
+        pytest.skip("SSE endpoint covered by dedicated system-log tests")
     account = await make_user(roles=(role,))
     client = await auth_client(account)
-    path, body = await _build_request(case, clinical_data=clinical_data, make_user=make_user)
-    response = await _call(client, case, path, body)
+    path, body, params = await _build_request(
+        case, clinical_data=clinical_data, make_user=make_user, actor_role=role
+    )
+    response = await _call(client, case, path, body, params)
 
     if has_permission([role], case.permission):
         assert response.status_code == case.success_status, response.text
@@ -242,8 +445,10 @@ async def test_authenticated_only_endpoints_accept_every_role(
 ) -> None:
     account = await make_user(roles=(role,))
     client = await auth_client(account)
-    path, body = await _build_request(case, clinical_data=clinical_data, make_user=make_user)
-    response = await _call(client, case, path, body)
+    path, body, params = await _build_request(
+        case, clinical_data=clinical_data, make_user=make_user, actor_role=role
+    )
+    response = await _call(client, case, path, body, params)
     assert response.status_code == case.success_status, response.text
 
 
@@ -298,6 +503,42 @@ async def test_nurse_reads_clinical_data_but_has_no_admin_panel_access(
     client = await auth_client(account)
     assert (await client.get("/api/v1/patients")).status_code == 200
     assert (await client.get(f"/api/v1/patients/{clinical_data.patient_id}/labs")).status_code == 200
+
+    # Nurse now has read-only clinic appointments: list/config are readable,
+    # every write/availability route remains forbidden.
+    now = datetime.now(timezone.utc)
+    appointments = await client.get(
+        "/api/v1/appointments",
+        params={
+            "start": now.isoformat(),
+            "end": (now + timedelta(days=7)).isoformat(),
+        },
+    )
+    assert appointments.status_code == 200, appointments.text
+    assert (await client.get("/api/v1/appointments/config")).status_code == 200
+    assert (
+        await client.post(
+            "/api/v1/appointments",
+            json={
+                "patient_id": str(clinical_data.patient_id),
+                "start_at": (now + timedelta(days=2)).isoformat(),
+                "duration_minutes": 30,
+            },
+            headers=csrf_headers(client),
+        )
+    ).status_code == 403
+    assert (
+        await client.put(
+            "/api/v1/appointments/availability",
+            json={
+                "default_duration_minutes": 30,
+                "slot_increment_minutes": 30,
+                "working_hours": [],
+                "time_off": [],
+            },
+            headers=csrf_headers(client),
+        )
+    ).status_code == 403
 
     assert (await client.get("/api/v1/staff")).status_code == 403  # no staff:read
     assert (await client.get("/api/v1/audit")).status_code == 403  # no audit:read

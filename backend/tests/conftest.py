@@ -390,7 +390,7 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
             [
                 Patient(
                     id=patient_id,
-                    mrn=f"DEMO-T{token}A",
+                    mrn=f"MRN-T{token}A",
                     display_name=patient_name,
                     given_name="Fixture",
                     family_name=f"Alpha {token}",
@@ -400,7 +400,7 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
                 ),
                 Patient(
                     id=empty_patient_id,
-                    mrn=f"DEMO-T{token}B",
+                    mrn=f"MRN-T{token}B",
                     display_name=empty_patient_name,
                     given_name="Fixture",
                     family_name=f"Beta {token}",
@@ -410,7 +410,7 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
                 ),
                 Patient(
                     id=soft_deleted_patient_id,
-                    mrn=f"DEMO-T{token}C",
+                    mrn=f"MRN-T{token}C",
                     display_name=f"Fixture Gone {token}",
                     given_name="Fixture",
                     family_name=f"Gone {token}",
@@ -429,21 +429,21 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
                     patient_id=patient_id,
                     occurred_at=datetime(2026, 10, 1, 9, 30, tzinfo=timezone.utc),
                     encounter_type="annual exam",
-                    summary=f"Synthetic demo encounter {token}. Fictional data, not for clinical use.",
+                    summary=f"Fixture encounter {token}.",
                 ),
                 Encounter(
                     id=old_encounter_id,
                     patient_id=patient_id,
                     occurred_at=datetime(2026, 9, 1, 14, 0, tzinfo=timezone.utc),
                     encounter_type="lab draw",
-                    summary=f"Synthetic demo encounter {token} (older).",
+                    summary=f"Fixture encounter {token} (older).",
                 ),
                 Encounter(
                     id=soft_deleted_encounter_id,
                     patient_id=patient_id,
                     occurred_at=datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
                     encounter_type="urgent care visit",
-                    summary=f"Soft-deleted synthetic encounter {token}.",
+                    summary=f"Soft-deleted fixture encounter {token}.",
                     deleted_at=now,
                 ),
             ]
@@ -556,7 +556,7 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
         token=token,
         patient_id=patient_id,
         patient_name=patient_name,
-        patient_mrn=f"DEMO-T{token}A",
+        patient_mrn=f"MRN-T{token}A",
         empty_patient_id=empty_patient_id,
         empty_patient_name=empty_patient_name,
         soft_deleted_patient_id=soft_deleted_patient_id,
@@ -575,7 +575,7 @@ async def clinical_data(db_engine) -> AsyncIterator[ClinicalData]:
 # ---------------------------------------------------------------------------
 
 STUB_MODEL_NAME = "stub-model"
-STUB_ANSWER = "Stub AI answer about synthetic demo data."
+STUB_ANSWER = "Stub AI answer about patient records."
 
 
 class ScriptedLLMProvider:
@@ -653,7 +653,12 @@ def stub_ai_provider(monkeypatch) -> ScriptedLLMProvider:
     `ScriptedLLMProvider` with tool-call steps, or `NullProvider`).
     """
     from app.api.v1 import ai as ai_api
+    from app.llm.provider import NullProvider
+    from app.services import appointment_ai
 
     provider = ScriptedLLMProvider()
     monkeypatch.setattr(ai_api, "build_provider", lambda settings: provider)
+    # Appointment interpretation has its own provider factory and reads the
+    # ambient settings; keep it deterministic/offline like the AI endpoint.
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: NullProvider())
     return provider

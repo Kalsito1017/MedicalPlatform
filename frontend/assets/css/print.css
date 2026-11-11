@@ -1,0 +1,434 @@
+/* ===========================================================================
+   print.css — dedicated A4 patient-record layout.
+
+   Loaded only by patient.html with media="print". The screen application is
+   hidden; only #print-record is rendered. All content is built by
+   assets/js/print-record.js using text nodes, never untrusted HTML.
+   ========================================================================= */
+
+@page {
+  size: A4 portrait;
+  margin: 27mm 14mm 18mm 14mm;
+
+  /* Progressive enhancement: browsers that support @page margin boxes will
+     print a page number. Chrome ignores these boxes, so the fixed footer below
+     also identifies the document. */
+  @bottom-center {
+    content: "MediCore · Patient Medical Record";
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 7.5pt;
+    color: #555;
+  }
+
+  @bottom-right {
+    content: "Page " counter(page) " of " counter(pages);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 7.5pt;
+    color: #555;
+  }
+}
+
+@media print {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+    background: #ffffff !important;
+    color: #111111 !important;
+  }
+
+  /* Hide the entire application shell, including the sidebar, topbar, tabs,
+     patient screen header, AI panel, footer, dialogs and transient UI. */
+  .app-shell,
+  .site-footer,
+  #global-status,
+  #toast-region,
+  .dialog,
+  .command-menu,
+  .skip-link,
+  .print-trigger,
+  .print-status {
+    display: none !important;
+  }
+
+  .print-record {
+    display: block !important;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    background: #ffffff;
+    color: #111111;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 9.5pt;
+    line-height: 1.45;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .print-record *,
+  .print-record *::before,
+  .print-record *::after {
+    box-sizing: border-box;
+  }
+
+  .print-record a {
+    color: #111111;
+    text-decoration: none;
+  }
+
+  /* Running header: repeated on each printed page where the browser repeats
+     fixed-position elements. The first-page report body carries the same
+     identity again in the patient block, so the report remains identifiable
+     if a browser prints the running header only once. */
+  .print-running-head {
+    position: fixed;
+    top: 7mm;
+    right: 14mm;
+    left: 14mm;
+    z-index: 2;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10mm;
+    padding-bottom: 2.5mm;
+    border-bottom: 1px solid #777777;
+    background: #ffffff;
+  }
+
+  .print-running-brand {
+    margin: 0;
+    font-size: 10pt;
+    font-weight: 800;
+    letter-spacing: -0.01em;
+    color: #111111;
+  }
+
+  .print-running-brand span {
+    display: block;
+    margin-top: 0.5mm;
+    font-size: 7pt;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #555555;
+  }
+
+  .print-running-title {
+    margin: 0;
+    font-size: 8.5pt;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #333333;
+    text-align: right;
+  }
+
+  .print-running-identity {
+    margin: 1mm 0 0;
+    font-size: 8pt;
+    color: #333333;
+    text-align: right;
+  }
+
+  .print-running-identity strong {
+    color: #111111;
+  }
+
+  .print-running-foot {
+    position: fixed;
+    right: 14mm;
+    bottom: 7mm;
+    left: 14mm;
+    z-index: 2;
+    display: flex;
+    justify-content: space-between;
+    gap: 10mm;
+    padding-top: 2mm;
+    border-top: 1px solid #aaaaaa;
+    background: #ffffff;
+    color: #555555;
+    font-size: 7.5pt;
+  }
+
+  .print-doc {
+    margin: 0;
+    padding: 0;
+  }
+
+  .print-doc-header {
+    margin: 0 0 7mm;
+    padding-bottom: 4mm;
+    border-bottom: 2px solid #222222;
+  }
+
+  .print-doc-header h1 {
+    margin: 0;
+    color: #111111;
+    font-size: 20pt;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  .print-doc-header p {
+    margin: 1.5mm 0 0;
+    color: #444444;
+    font-size: 9pt;
+  }
+
+  .print-section {
+    margin: 0 0 7mm;
+  }
+
+  .print-section h2 {
+    margin: 0 0 3mm;
+    padding-bottom: 1.5mm;
+    border-bottom: 1px solid #333333;
+    color: #111111;
+    font-size: 12pt;
+    line-height: 1.2;
+    letter-spacing: 0.02em;
+    break-after: avoid;
+  }
+
+  .print-section--labs {
+    break-before: page;
+  }
+
+  .print-section--small {
+    break-inside: avoid;
+  }
+
+  .print-facts {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2mm 8mm;
+    margin: 0;
+  }
+
+  .print-fact {
+    display: grid;
+    grid-template-columns: 34mm 1fr;
+    gap: 3mm;
+    padding: 1.2mm 0;
+    border-bottom: 1px dotted #cccccc;
+  }
+
+  .print-fact dt {
+    color: #555555;
+    font-size: 8pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .print-fact dd {
+    margin: 0;
+    color: #111111;
+    overflow-wrap: anywhere;
+  }
+
+  .print-narrative {
+    margin: 0;
+    color: #111111;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .print-narrative + .print-narrative {
+    margin-top: 2.5mm;
+  }
+
+  .print-subhead {
+    margin: 4mm 0 1.5mm;
+    color: #333333;
+    font-size: 9pt;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    break-after: avoid;
+  }
+
+  .print-list {
+    margin: 0;
+    padding-left: 5mm;
+    color: #111111;
+  }
+
+  .print-list li + li {
+    margin-top: 1mm;
+  }
+
+  .print-empty {
+    margin: 0;
+    color: #666666;
+    font-style: italic;
+  }
+
+  .print-meta {
+    margin: 0;
+    color: #555555;
+    font-size: 8pt;
+  }
+
+  .print-table {
+    width: 100%;
+    margin: 0;
+    border-collapse: collapse;
+    border-spacing: 0;
+    color: #111111;
+    font-size: 8.2pt;
+    line-height: 1.35;
+  }
+
+  .print-table caption {
+    margin-bottom: 1.5mm;
+    color: #555555;
+    font-size: 8pt;
+    text-align: left;
+  }
+
+  .print-table thead {
+    display: table-header-group;
+  }
+
+  .print-table tr {
+    break-inside: avoid;
+  }
+
+  .print-table th,
+  .print-table td {
+    padding: 1.8mm 1.8mm;
+    border-bottom: 1px solid #cccccc;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+  }
+
+  .print-table th {
+    border-bottom: 1px solid #666666;
+    background: #efefef;
+    color: #222222;
+    font-size: 7.2pt;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .print-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .print-table .print-num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .print-table .print-date {
+    white-space: nowrap;
+  }
+
+  /* Abnormal results are distinguishable without colour: the row gets a
+     heavy left rule, bold text, and an explicit HIGH/LOW flag. */
+  .print-row--abnormal td {
+    font-weight: 700;
+  }
+
+  .print-row--abnormal td:first-child {
+    border-left: 2.5px solid #111111;
+    padding-left: 2.5mm;
+  }
+
+  .print-flag {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .print-flag--high,
+  .print-flag--low {
+    text-decoration: underline;
+    text-underline-offset: 0.6mm;
+  }
+
+  .print-status-text {
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .print-status-text--inactive {
+    font-weight: 400;
+  }
+
+  .print-encounter {
+    margin: 0 0 4mm;
+    padding: 0 0 3mm;
+    border-bottom: 1px solid #dddddd;
+    break-inside: avoid;
+  }
+
+  .print-encounter:last-child {
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: 0;
+  }
+
+  .print-encounter__head {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 2mm 6mm;
+    margin-bottom: 1.5mm;
+  }
+
+  .print-encounter__type {
+    margin: 0;
+    color: #111111;
+    font-weight: 700;
+    font-size: 9pt;
+  }
+
+  .print-encounter__date {
+    margin: 0;
+    color: #555555;
+    font-size: 8pt;
+    white-space: nowrap;
+  }
+
+  .print-encounter__summary {
+    margin: 0;
+    color: #111111;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .print-vitals {
+    margin: 1.5mm 0 0;
+    color: #444444;
+    font-size: 8pt;
+  }
+
+  .print-rule {
+    margin: 4mm 0;
+    border: 0;
+    border-top: 1px solid #aaaaaa;
+  }
+
+  /* Keep long tables readable: never allow a data row to split mid-row. */
+  .print-table td,
+  .print-table th {
+    orphans: 3;
+    widows: 3;
+  }
+
+  .print-record .visually-hidden {
+    position: static !important;
+    width: auto !important;
+    height: auto !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    clip: auto !important;
+    clip-path: none !important;
+    white-space: normal !important;
+  }
+}

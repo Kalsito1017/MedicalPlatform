@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // ai-history.js — shared conversation-history surface for both AI entry points
-// (the AI Assistant page and the patient rail).
+// (the AI Assistant page and the AI Patient tab).
 // API (docs/API.md "AI assistant"): GET /api/v1/ai/conversations returns ONLY
 // the caller's own exchanges (newest first; optional patient filter via the
 // patient-scoped entry point) and DELETE /api/v1/ai/conversations clears the
@@ -78,7 +78,8 @@ function citationsBlock(citations) {
     ui.el('p', { class: 'field-hint', text: 'Records consulted:' }),
     ui.el('ul', { class: 'compact-list' },
       citations.map((citation) => {
-        const label = `Synthetic ${String(citation.type || 'record').replace(/_/g, ' ')} ${citation.id}`;
+        const kind = String(citation.type || 'record').replace(/_/g, ' ');
+        const label = `${kind.charAt(0).toUpperCase()}${kind.slice(1)} ${citation.id}`;
         return ui.el('li', {},
           citation.type === 'patient'
             ? ui.el('a', { href: `patient.html?id=${encodeURIComponent(citation.id)}`, text: label })
@@ -120,15 +121,9 @@ export function historyEntryNode(entry, { compact = false } = {}) {
     ui.el('div', { class: 'chat-bubble chat-bubble--assistant' },
       ui.assistantTurnHead(),
       ui.el('div', { class: 'badge-list' },
-        ui.el('span', { class: 'badge badge--synthetic', text: 'AI-generated' }),
-        ui.el('span', { class: 'badge badge--neutral', text: 'Synthetic demo data' }),
+        ui.el('span', { class: 'badge badge--ai', text: 'AI-generated' }),
       ),
       answerParagraphs(answer),
-      ui.el('div', { class: 'alert alert--info', role: 'note' },
-        ui.el('p', {
-          text: 'AI-generated synthetic-demo assistance about synthetic demo data \u2014 not a diagnosis or treatment recommendation.',
-        }),
-      ),
       tools.length > 0
         ? ui.el('div', { class: 'ai-sources' },
           ui.el('p', { class: 'field-hint', text: 'Sources consulted:' }),

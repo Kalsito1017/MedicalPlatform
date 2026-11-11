@@ -2,8 +2,9 @@
 
 A browser-based clinical AI demo: a vanilla HTML/CSS/JS frontend, a FastAPI backend with
 role-based authorization and audit logging, a PostgreSQL database of **synthetic**
-patient records, and an internal MCP server that lets an optional LLM answer questions
-about those records through four narrow, read-only tools. It is built with
+patient records, an appointment calendar with optional self-hosted whisper.cpp voice
+scheduling, and an internal MCP server that lets an optional LLM answer questions
+about those records through seven narrow, read-only tools. It is built with
 production-grade foundations (deny-by-default authorization, server-side sessions,
 parameterized queries, audit events) as a publicly deployable demo.
 
@@ -20,7 +21,9 @@ posted here only after deployment succeeds (Phase 15). No URL is claimed until t
 **Status:** in active development. The Phase 1 deliverables (architecture, security, and
 API-contract documentation) are written; implementation phases are landing per
 `PLAN.md` (the lead maintains the phase tracker there). Local/Docker commands below are
-verified as of Phase 13; hosted-deployment commands stay marked until Phase 14/15.
+verified as of Phase 13; the appointment/voice path is verified locally on 2026-11-09
+(real FFmpeg + private whisper.cpp image, no real browser). Hosted-deployment commands
+stay marked until Phase 14/15.
 
 ---
 
@@ -34,16 +37,24 @@ Browser ──HTTPS──> Cloudflare Pages (frontend/, static, buildless)
                               ┌───────────────────────────┼──────────────────────┐
                               v                           v                      v (optional,
                      Neon (PostgreSQL)          internal MCP server       OpenCode Console
-                     admin/patients/            (4 read-only tools,       inference API,
-                     laboratory/medications     same authz layer)         server-side key)
+                     admin/patients/            (7 read-only tools,       inference API,
+                     laboratory/medications/    same authz layer)         server-side key)
+                     scheduling
+                                                          │
+                                             optional private speech service
+                                             (whisper.cpp Tiny, CPU, no public port;
+                                              see docs/SPEECH_RECOGNITION.md)
 ```
 
 Hard rules: the browser and the LLM never touch the database; the MCP server is
 internal-only and gets no privileged credentials; acting identity always comes from the
 verified server-side session; every patient-data operation goes through one shared
-authorization layer. Full detail: **`docs/ARCHITECTURE.md`**. Permissions:
-**`docs/SECURITY.md`**. API contract: **`docs/API.md`**. Presentation/defense overview
-(problem, example questions, agent-vs-REST comparison, diagrams): **`docs/CONCEPT.md`**.
+authorization layer. Appointment writes are revalidated under PostgreSQL advisory locks;
+the AI can only propose an appointment and a doctor must confirm it. Full detail:
+**`docs/ARCHITECTURE.md`**. Permissions: **`docs/SECURITY.md`**. API contract:
+**`docs/API.md`**. Voice design/limits: **`docs/SPEECH_RECOGNITION.md`**.
+Presentation/defense overview (problem, example questions, agent-vs-REST comparison,
+diagrams): **`docs/CONCEPT.md`**.
 
 ---
 
@@ -68,7 +79,8 @@ cd MedicalPlatform
 # 2. Configure environment (placeholder values — fill them in; never commit .env)
 cp .env.example .env
 # edit .env: set APP_SECRET_KEY, DATABASE_URL (match docker-compose db credentials),
-# DEMO_* accounts, and leave LLM_ENABLED=false for now
+# DEMO_* accounts. The LLM auto-enables when LLM_API_KEY is set; leave the
+# key blank (or set LLM_ENABLED=false) when you do not want AI calls.
 
 # 3. Start the local database (named volume, persists across restarts)
 docker compose up -d db
@@ -117,6 +129,11 @@ docker compose up -d --build            # fresh database; migrations run on star
 docker compose run --rm app python /app/scripts/seed_demo_data.py
 
 docker compose down                     # stop; data persists in the postgres_data volume
+
+# Optional voice transcription (private whisper.cpp; no published speech port):
+docker compose --profile speech up --build
+# compose already points the app at http://speech:8080; without this profile
+# the voice endpoint returns 503 and manual scheduling still works
 ```
 
 Data persistence: PostgreSQL data lives in the named volume `postgres_data` and survives
@@ -124,8 +141,9 @@ Data persistence: PostgreSQL data lives in the named volume `postgres_data` and 
 explicit volume removal) deletes it. See `docs/DEPLOYMENT.md` §9 for the full reset /
 retention procedure and `docs/TROUBLESHOOTING.md` for failures.
 
-Synthetic demo dataset: the seed loads **45 fictional patients** (obviously demo-labeled
-`DEMO-XXXX` MRNs) with 2–6 encounters, 6–12 lab results, and 0–5 prescriptions each,
+Synthetic demo dataset: the seed loads **45 fictional patients** (neutral
+`MRN-XXXX` identifiers; the synthetic origin is recorded database-internally and
+is not shown in the product surface) with 2–6 encounters, 6–12 lab results, and 0–5 prescriptions each,
 plus a 15-entry fictional medication catalog. The dataset is **Bulgarian-language**:
 patient and staff names, clinical notes, encounter summaries, diagnoses, lab test names,
 and medication names are natural Bulgarian (Cyrillic UTF-8), while machine identifiers
@@ -144,15 +162,16 @@ remember a shared public account gives no real accountability.
 
 | Account | Env variables | Role | Permissions (see `docs/SECURITY.md` for the full matrix) |
 |---|---|---|---|
-| Doctor | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | `doctor` | `patient:read`, `lab:read`, `prescription:read` |
-| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `lab:read`, `prescription:read` (least privilege) |
-| Admin | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | `clinical_admin` | **all**: `patient:read`, `lab:read`, `prescription:read`, `staff:read`, `staff:manage`, `role:assign`, `audit:read`, `analytics:read` |
+| Doctor | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | `doctor` | `patient:read`, `patient:write`, `message:read`, `message:write`, `lab:read`, `prescription:read`, `appointment:read`, `appointment:write`, `appointment:manage_availability` |
+| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `lab:read`, `prescription:read`, `appointment:read` (read-only) |
+| Admin | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | `clinical_admin` | **all** permissions, including appointments and analytics |
 
 Note the deliberate asymmetries: the nurse role is **least privilege** — clinical
-reads only, with **no** admin panel (no staff/role/audit administration); the Admin
-role holds every permission (clinical reads included); nobody can assign roles to
-themselves. Three roles exactly — `tech_admin` was removed from the system entirely
-(owner decision, 2026-10-26).
+reads plus a read-only clinic appointment view, with **no** appointment writes,
+availability management, voice scheduling, or admin panel; the Admin role holds
+every permission (clinical reads included); nobody can assign roles to themselves.
+Three roles exactly — `tech_admin` was removed from the system entirely (owner
+decision, 2026-10-26).
 
 ---
 
@@ -174,6 +193,9 @@ Frontend checks need Node 24 but no `npm install` — the frontend is buildless:
 ```bash
 cd frontend
 node tests/smoke.mjs
+node tests/graphify.test.mjs
+node tests/print-record.test.mjs
+node tests/markdown.test.mjs
 node tests/render-smoke.mjs
 ```
 
@@ -194,17 +216,21 @@ bash scripts/e2e_smoke.sh --no-docker    # against a locally running uvicorn
 ```
 
 The backend suite covers permission mapping, API auth/roles/validation/pagination,
-migrations and seed behavior, MCP authorization and bounds, mocked LLM behavior,
+migrations and seed behavior, appointment availability/slots/conflicts/locks/DST,
+voice upload conversion and cleanup with a mocked speech endpoint, AI appointment
+proposals (never writes), MCP authorization and bounds, mocked LLM behavior,
 escalation attempts, and audit events. The frontend checks cover static hygiene, module
-import safety, api.js behaviour against a stubbed fetch, and render-path scenarios
-against a DOM shim. The security scan checks tracked files for committed key material,
+import safety, api.js behaviour against a stubbed fetch, Graphify chart primitives, the
+safe Markdown renderer/XSS boundary, and render-path scenarios against a DOM shim. The security scan checks tracked files for committed key material,
 forbidden files (`.env`, keys, dumps), `.gitignore` coverage, frontend hygiene
-(no external resources, web storage, or console logging), and database credentials —
+(no external resources, no patient/session web storage — only the theme preference — and no console logging), and database credentials —
 it reports `file:line` and pattern names only, never secret values.
 
 CI (`.github/workflows/ci.yml`) runs on every pull request and every push to `main`,
 in three jobs: `backend` (ruff + pytest against a `postgres:16` service container, and
-the job fails if DB-backed tests were skipped), `frontend` (both Node check scripts),
+the job fails if DB-backed tests were skipped), `frontend` (all Node check scripts:
+`smoke.mjs`, `graphify.test.mjs`, `markdown.test.mjs`, `print-record.test.mjs`,
+`render-smoke.mjs`),
 and `security` (`scripts/security_check.py` plus a dependency audit of `backend/uv.lock`
 via `pip-audit`, with advisory severity resolved through the OSV database). The
 dependency audit **fails on HIGH/CRITICAL advisories** and warns on MODERATE/LOW; to
@@ -236,8 +262,11 @@ MedicalPlatform/
 │   ├── API.md               frozen API contract (source of truth for endpoints)
 │   ├── ARCHITECTURE.md      system design and decision log
 │   ├── SECURITY.md          permissions, threats, audit, secrets, non-claims
+│   ├── AI_GUARDRAILS.md     patient-data/AI baseline assessment + gap register
+│   ├── CONCEPT.md           product and AI concept overview
 │   ├── BACKLOG.md           deferred production requirements
 │   ├── DEPLOYMENT.md        provider setup, verification, rollback
+│   ├── KUBERNETES.md        local Kubernetes workflow
 │   ├── TROUBLESHOOTING.md   failures and fixes
 │   └── INITIAL_ASSESSMENT.md Phase 0 findings
 └── .github/workflows/       CI
@@ -253,9 +282,13 @@ MedicalPlatform/
   roughly 30–60 s after idle); Neon free databases **autosuspend** (slow first query);
   quotas and limits apply; **$0/month is a baseline expectation, not a guarantee**. See
   `docs/DEPLOYMENT.md` §10.
-- **AI is optional.** The app is fully functional with `LLM_ENABLED=false`. Known
-  constraint: OpenCode free-tier models return HTTP 403 for non-OpenCode clients — a
-  paid model or Go subscription is required to enable the AI feature
+- **AI is optional.** Put `LLM_API_KEY` in `.env` and the provider auto-enables;
+  `LLM_ENABLED=false` is the explicit kill switch. The current Go configuration
+  uses `https://opencode.ai/inference/go` with `deepseek-v4.1-flash`, which
+  requires an active OpenCode Go subscription. The standard
+  `https://opencode.ai/inference` endpoint remains available for funded keys or
+  free quota, with `gpt-6-luna` as the standard example. The app returns a
+  controlled `503` with the reason when the key has no usable model
   (`docs/TROUBLESHOOTING.md` §9).
 - **Not production-hardened:** no MFA, SSO, SCIM, backups/PITR, monitoring/on-call, or
   retention/erasure workflows yet. The full honest inventory — covered, deferred, and

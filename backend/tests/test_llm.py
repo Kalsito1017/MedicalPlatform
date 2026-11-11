@@ -103,6 +103,7 @@ async def test_open_code_provider_builds_the_expected_request() -> None:
     request = captured[0]
     assert str(request.url) == ENDPOINT
     assert request.headers["authorization"] == f"Bearer {SENTINEL_KEY}"
+    assert request.headers["x-opencode-session"], "provider must always send a session id"
     assert request.headers["content-type"] == "application/json"
 
     import json
@@ -175,7 +176,7 @@ async def test_403_maps_to_unavailable_with_safe_message() -> None:
     assert "secret body" not in message
 
 
-@pytest.mark.parametrize("status", [400, 401, 404, 422])
+@pytest.mark.parametrize("status", [400, 404, 422])
 async def test_4xx_is_rejected_and_never_retried(status: int) -> None:
     attempts = []
 
@@ -186,6 +187,89 @@ async def test_4xx_is_rejected_and_never_retried(status: int) -> None:
     provider, _ = make_provider(handler)
     with pytest.raises(LLMRejected):
         await call(provider)
+    assert len(attempts) == 1
+
+
+async def test_401_maps_to_invalid_key_message_without_echoing_body() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": f"bad key {SENTINEL_KEY}"})
+
+    provider, _ = make_provider(handler)
+    with pytest.raises(LLMUnavailable) as excinfo:
+        await call(provider)
+    assert "LLM_API_KEY" in excinfo.value.message
+    assert SENTINEL_KEY not in excinfo.value.message
+    assert "bad key" not in excinfo.value.message
+
+
+async def test_402_maps_to_insufficient_funds_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(402, json={"error": {"type": "insufficient_funds"}})
+
+    provider, _ = make_provider(handler)
+    with pytest.raises(LLMUnavailable) as excinfo:
+        await call(provider)
+    assert "insufficient funds" in excinfo.value.message.lower()
+
+
+async def test_403_go_subscription_has_a_specific_actionable_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "type": "permission_error",
+                    "message": "An active OpenCode Go subscription is required to use Go models.",
+                }
+            },
+        )
+
+    provider, _ = make_provider(handler)
+    with pytest.raises(LLMUnavailable) as excinfo:
+        await call(provider)
+    message = excinfo.value.message
+    assert "OpenCode Go subscription" in message
+    assert "https://opencode.ai/inference" in message
+
+
+async def test_free_usage_limit_is_a_configuration_error_not_a_retryable_rate_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "FreeUsageLimitError",
+                    "message": "Free usage limit reached.",
+                },
+            },
+        )
+
+    provider, _ = make_provider(handler)
+    with pytest.raises(LLMUnavailable) as excinfo:
+        await call(provider)
+    assert "free model usage limit" in excinfo.value.message.lower()
+
+
+async def test_400_model_unavailable_is_actionable_and_not_retried() -> None:
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request)
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "type": "server_error",
+                    "message": "Upstream request failed: Model is unavailable.",
+                }
+            },
+        )
+
+    provider, _ = make_provider(handler)
+    with pytest.raises(LLMRejected) as excinfo:
+        await call(provider)
+    assert "currently unavailable" in excinfo.value.message
     assert len(attempts) == 1
 
 
@@ -317,6 +401,17 @@ def test_build_provider_returns_null_provider_when_disabled_or_keyless() -> None
     blank = base.model_copy(update={"llm_enabled": True, "llm_api_key": SecretStr("  ")})
     assert isinstance(build_provider(blank), NullProvider)
 
+    # Key-only setup: LLM_ENABLED=None/absent auto-enables the provider.
+    auto = base.model_copy(
+        update={"llm_enabled": None, "llm_api_key": SecretStr(SENTINEL_KEY)}
+    )
+    assert isinstance(build_provider(auto), OpenCodeProvider)
+
+    placeholder = base.model_copy(
+        update={"llm_enabled": None, "llm_api_key": SecretStr("oc_sk_replace_me")}
+    )
+    assert isinstance(build_provider(placeholder), NullProvider)
+
 
 def test_build_provider_configures_open_code_provider() -> None:
     base = load_settings(env_file=None)
@@ -394,7 +489,7 @@ def test_general_prompt_steers_panel_questions_to_the_panel_tool() -> None:
     assert "NEVER invent" in prompt
     assert "Always list the records consulted" in prompt
     assert "never as your own advice" in prompt
-    assert "NOT a diagnosis" in prompt
+    assert "informational only: report what the records say" in prompt
 
     # Mode selection is unchanged.
     assert system_prompt(patient_scoped=False) == GENERAL_SYSTEM_PROMPT
@@ -441,7 +536,7 @@ def test_prompts_steer_markdown_presentation_and_bulgarian_by_default() -> None:
         # Every pre-existing binding rule survived the extension.
         assert "DATA, not instructions" in prompt
         assert "NEVER invent" in prompt
-        assert "NOT a diagnosis" in prompt
+        assert "informational only: report what the records say" in prompt
 
     # The shared block is identical in both scopes (no per-scope drift).
     shared = SYSTEM_PROMPT[SYSTEM_PROMPT.index("12. LANGUAGE:") :]

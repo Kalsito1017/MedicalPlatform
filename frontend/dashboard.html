@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>Dashboard — MediCore Clinical Platform (synthetic demo)</title>
-  <meta name="description" content="Signed-in home of the MediCore Clinical Platform synthetic-data demonstration.">
+  <title>Dashboard — MediCore Clinical Platform</title>
+  <meta name="description" content="Signed-in home of the MediCore Clinical Platform.">
   <link rel="icon" href="assets/images/favicon.svg">
+  <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
        resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
@@ -14,7 +15,7 @@
   <link rel="modulepreload" href="assets/js/api.js">
   <link rel="modulepreload" href="assets/js/cache.js">
   <link rel="modulepreload" href="assets/js/auth.js">
-  <link rel="modulepreload" href="assets/js/command-menu.js">
+  <link rel="modulepreload" href="assets/js/command-menu.js?v=20261109j">
   <script>
     /* Deployment override — see assets/js/config.js. Example:
        window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
@@ -45,10 +46,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
             Need help?
           </p>
-          <p class="help-card__text">Open the demo overview or contact the maintainers about a problem.</p>
+          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
           <ul class="help-card__links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
+            <li><button type="button" class="link-button" data-open-about>About</button></li>
+            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
           </ul>
         </div>
       </div>
@@ -69,7 +70,7 @@
       <main id="main" class="container main">
         <div class="page-header">
           <h1 id="welcome-heading">Welcome back</h1>
-          <p class="lede">Everything your account can reach in this synthetic-data demonstration.</p>
+          <p class="lede">Everything your account can reach.</p>
         </div>
         <div id="page-body">
           <div class="loading-block">
@@ -80,22 +81,9 @@
           </div>
         </div>
       </main>
-
-      <footer class="site-footer">
-        <div class="container site-footer__inner">
-          <p class="footer-note">
-            MediCore — synthetic-data demonstration. Not clinically validated, not a
-            medical device, and not for clinical use. All records are fictional.
-          </p>
-          <ul class="footer-links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
-          </ul>
-        </div>
-      </footer>
     </div>
   </div>
 
-  <script type="module" src="assets/js/dashboard.js"></script>
+  <script type="module" src="assets/js/dashboard.js?v=20261109j"></script>
 </body>
 </html>

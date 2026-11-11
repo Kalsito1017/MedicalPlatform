@@ -2,7 +2,7 @@
 
 Typed bounded payloads, pagination limits, literal `?q=` search, empty states,
 soft-delete/concealment behavior (404, never 403), Decimal-as-string values,
-UTC ISO-8601 'Z' timestamps, provenance labels, and read auditing.
+UTC ISO-8601 'Z' timestamps, database-internal provenance, and read auditing.
 """
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import re
 import uuid
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Patient
-from conftest import audit_rows
+from app.models import LabResult, Patient
+from conftest import audit_rows, csrf_headers
 
 ISO_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
@@ -67,6 +68,163 @@ async def test_search_query_length_is_bounded(auth_client, make_user) -> None:
     assert response.json()["error"]["code"] == "validation_error"
 
 
+# --- patient deletion ------------------------------------------------------
+
+
+@pytest.mark.postgres
+async def test_admin_soft_deletes_patient_but_doctor_and_nurse_cannot(
+    db_engine, auth_client, make_user, clinical_data
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    admin = await make_user(roles=("clinical_admin",))
+    nurse = await make_user(roles=("nurse",))
+    doctor_client = await auth_client(doctor)
+    admin_client = await auth_client(admin)
+    nurse_client = await auth_client(nurse)
+    target = str(clinical_data.patient_id)
+
+    for client in (doctor_client, nurse_client):
+        denied = await client.delete(
+            f"/api/v1/patients/{target}", headers=csrf_headers(client)
+        )
+        assert denied.status_code == 403, denied.text
+        assert denied.json()["error"]["code"] == "forbidden"
+
+    deleted = await admin_client.delete(
+        f"/api/v1/patients/{target}", headers=csrf_headers(admin_client)
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert deleted.content == b""
+
+    assert (await admin_client.get(f"/api/v1/patients/{target}")).status_code == 404
+    assert (
+        await admin_client.get(f"/api/v1/encounters/{clinical_data.encounter_id}")
+    ).status_code == 404
+    listed = await admin_client.get(
+        f'/api/v1/patients?q={clinical_data.patient_name}'
+    )
+    assert listed.status_code == 200
+    assert target not in {item["id"] for item in listed.json()["items"]}
+
+    # Child clinical rows remain in the database for audit/history; the
+    # patient row is soft-deleted, never hard-deleted.
+    async with AsyncSession(db_engine, expire_on_commit=False) as db:
+        row = await db.scalar(select(Patient).where(Patient.id == clinical_data.patient_id))
+        assert row is not None and row.deleted_at is not None
+        labs = list(
+            (
+                await db.scalars(
+                    select(LabResult.id).where(LabResult.patient_id == clinical_data.patient_id)
+                )
+            ).all()
+        )
+        assert labs
+
+    rows = await audit_rows(action="patient.delete", resource_id=target)
+    assert len(rows) == 1
+    assert rows[0].actor_user_id == admin.id
+    assert rows[0].outcome == "success"
+
+    again = await admin_client.delete(
+        f"/api/v1/patients/{target}", headers=csrf_headers(admin_client)
+    )
+    assert again.status_code == 404
+
+
+# --- patient creation ------------------------------------------------------
+
+
+@pytest.mark.postgres
+async def test_doctor_and_admin_create_patients_but_nurse_cannot(
+    db_engine, auth_client, make_user
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    admin = await make_user(roles=("clinical_admin",))
+    nurse = await make_user(roles=("nurse",))
+    doctor_client = await auth_client(doctor)
+    admin_client = await auth_client(admin)
+    nurse_client = await auth_client(nurse)
+    suffix = uuid.uuid4().hex[:8]
+
+    body = {
+        "given_name": f"Нов {suffix}",
+        "family_name": "Пациент",
+        "date_of_birth": "1990-01-02",
+        "sex": "female",
+        "blood_type": "A+",
+    }
+    denied = await nurse_client.post(
+        "/api/v1/patients", json=body, headers=csrf_headers(nurse_client)
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"]["code"] == "forbidden"
+
+    created = await doctor_client.post(
+        "/api/v1/patients", json=body, headers=csrf_headers(doctor_client)
+    )
+    assert created.status_code == 201, created.text
+    payload = created.json()
+    assert payload["mrn"].startswith("MRN-")
+    assert payload["given_name"] == body["given_name"]
+    assert payload["family_name"] == body["family_name"]
+    assert payload["display_name"] == f'{body["given_name"]} {body["family_name"]}'
+    assert payload["sex"] == "female"
+    assert payload["blood_type"] == "A+"
+    assert isinstance(payload["age_years"], int) and payload["age_years"] >= 0
+    assert "provenance" not in payload
+    assert "diagnoses" not in payload and "latest_note" not in payload
+
+    second = await admin_client.post(
+        "/api/v1/patients",
+        json={
+            "given_name": f"Админ {suffix}",
+            "family_name": "Пациент",
+            "sex": "unknown",
+            "display_name": f"Preferred {suffix}",
+        },
+        headers=csrf_headers(admin_client),
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["display_name"] == f"Preferred {suffix}"
+    assert second.json()["mrn"] != payload["mrn"]
+
+    # Persisted in the database with synthetic provenance.
+    async with AsyncSession(db_engine, expire_on_commit=False) as db:
+        row = await db.scalar(select(Patient).where(Patient.id == uuid.UUID(payload["id"])))
+        assert row is not None
+        assert row.provenance == "synthetic"
+        assert row.mrn == payload["mrn"]
+
+    found = await doctor_client.get(f'/api/v1/patients?q={body["given_name"]}')
+    assert found.status_code == 200
+    assert payload["id"] in {item["id"] for item in found.json()["items"]}
+
+    created_audit = await audit_rows(action="patient.create", resource_id=payload["id"])
+    assert len(created_audit) == 1
+    assert created_audit[0].actor_user_id == doctor.id
+
+
+@pytest.mark.postgres
+async def test_patient_create_validates_fields(auth_client, make_user) -> None:
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    cases = [
+        {"family_name": "Missing given"},
+        {"given_name": "Missing family"},
+        {"given_name": " ", "family_name": "Blank"},
+        {"given_name": "Future", "family_name": "Person", "date_of_birth": "2999-01-01"},
+        {"given_name": "Bad", "family_name": "Sex", "sex": "robot"},
+        {"given_name": "Bad", "family_name": "Blood", "blood_type": "Z+"},
+        {"given_name": "Extra", "family_name": "Field", "mrn": "MRN-HACK"},
+    ]
+    for body in cases:
+        response = await client.post(
+            "/api/v1/patients", json=body, headers=csrf_headers(client)
+        )
+        assert response.status_code == 400, (body, response.text)
+        assert response.json()["error"]["code"] == "validation_error"
+
+
 # --- search behavior -------------------------------------------------------
 
 
@@ -97,7 +255,7 @@ async def test_q_wildcards_are_escaped(auth_client, make_user, clinical_data, db
         for suffix, name in (("A", percent_name), ("B", plain_name)):
             session.add(
                 Patient(
-                    mrn=f"DEMO-E{clinical_data.token}{suffix}",
+                    mrn=f"MRN-E{clinical_data.token}{suffix}",
                     display_name=name,
                     given_name="Escape",
                     family_name="Case",
@@ -133,7 +291,7 @@ async def test_search_empty_state(auth_client, make_user) -> None:
 
 
 @pytest.mark.postgres
-async def test_patient_detail_shape_and_provenance(auth_client, make_user, clinical_data) -> None:
+async def test_patient_detail_shape(auth_client, make_user, clinical_data) -> None:
     account = await make_user(roles=("doctor",))
     client = await auth_client(account)
     response = await client.get(f"/api/v1/patients/{clinical_data.patient_id}")
@@ -144,7 +302,6 @@ async def test_patient_detail_shape_and_provenance(auth_client, make_user, clini
     assert item["display_name"] == clinical_data.patient_name
     assert item["date_of_birth"] == "1980-01-15"
     assert item["sex"] == "female"
-    assert item["provenance"] == "synthetic"
     assert ISO_Z.match(item["created_at"]) and ISO_Z.match(item["updated_at"])
 
 
@@ -165,7 +322,6 @@ async def test_patient_summary_shape_is_bounded_and_typed(
         "problems",
         "latest_labs",
         "active_prescriptions",
-        "provenance",
         # additive summary extension (2026-10-27, docs/API.md summary payload)
         "age_years",
         "blood_type",
@@ -177,7 +333,6 @@ async def test_patient_summary_shape_is_bounded_and_typed(
         "prescribed_treatment",
     }
     assert body["patient"]["id"] == str(clinical_data.patient_id)
-    assert body["provenance"] == "synthetic"
     assert body["active_problems"] == [] and body["problems"] == []
 
     # Encounters: newest first, soft-deleted excluded, bounded list.
@@ -208,6 +363,54 @@ async def test_patient_summary_shape_is_bounded_and_typed(
         str(clinical_data.prescription_ids[0]),
     ]
     assert body["active_prescriptions"][0]["dose_amount"] == "10.000"
+
+
+@pytest.mark.postgres
+async def test_patient_encounters_pagination_order_and_concealment(
+    auth_client, make_user, clinical_data
+) -> None:
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+
+    first = await client.get(
+        f"/api/v1/patients/{clinical_data.patient_id}/encounters",
+        params={"limit": 1, "offset": 0},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["total"] == 2  # the soft-deleted encounter is excluded
+    assert body["limit"] == 1 and body["offset"] == 0
+    assert [item["id"] for item in body["items"]] == [str(clinical_data.encounter_id)]
+    assert body["items"][0]["encounter_type"] == "annual exam"
+    assert ISO_Z.match(body["items"][0]["occurred_at"])
+
+    second = await client.get(
+        f"/api/v1/patients/{clinical_data.patient_id}/encounters",
+        params={"limit": 1, "offset": 1},
+    )
+    assert second.status_code == 200
+    assert [item["id"] for item in second.json()["items"]] == [
+        str(clinical_data.old_encounter_id)
+    ]
+
+    missing = await client.get(f"/api/v1/patients/{uuid.uuid4()}/encounters")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "not_found"
+
+    unknown = await client.get(
+        f"/api/v1/patients/{clinical_data.patient_id}/encounters?sort=desc"
+    )
+    assert unknown.status_code == 400
+    assert unknown.json()["error"]["code"] == "validation_error"
+
+    rows = await audit_rows(
+        action="patient.read",
+        resource_type="patient",
+        resource_id=str(clinical_data.patient_id),
+        request_id=first.headers["x-request-id"],
+    )
+    assert rows
+    assert rows[-1].outcome == "success"
 
 
 @pytest.mark.postgres
@@ -301,7 +504,6 @@ async def test_summary_extension_fields_are_additive_and_typed(
         "measured_at": "2026-10-01T09:30:00Z",
         "previous_weight_kg": "72.00",
         "previous_measured_at": "2026-09-01T14:00:00Z",
-        "provenance": "synthetic",
     }
     assert body["encounters"][0]["weight_kg"] == "70.50"
     assert body["encounters"][1]["weight_kg"] == "72.00"
@@ -313,7 +515,6 @@ async def test_summary_extension_fields_are_additive_and_typed(
             "name": "Type 2 diabetes mellitus",
             "status": "active",
             "onset_date": None,
-            "provenance": "synthetic",
         }
     ]
     assert body["active_problems"] == [
@@ -322,7 +523,6 @@ async def test_summary_extension_fields_are_additive_and_typed(
             "display_name": "Type 2 diabetes mellitus",
             "status": "active",
             "onset_date": None,
-            "provenance": "synthetic",
         }
     ]
     assert body["problems"] == body["active_problems"]
@@ -371,7 +571,6 @@ async def test_labs_pagination_order_and_decimal_strings(
     assert isinstance(first["value_num"], str)
     assert isinstance(first["ref_low"], str)
     assert first["test_code"] == "GLU"
-    assert first["provenance"] == "synthetic"
 
     page_two = await client.get(
         f"/api/v1/patients/{clinical_data.patient_id}/labs?limit=2&offset=2"
@@ -406,7 +605,6 @@ async def test_prescriptions_pagination_and_decimal_doses(
     assert isinstance(body["items"][1]["dose_amount"], str)
     assert body["items"][0]["start_date"] == "2026-02-01"
     assert body["items"][2]["status"] == "completed"
-    assert body["items"][0]["provenance"] == "synthetic"
 
 
 # --- concealment and IDOR --------------------------------------------------
@@ -435,7 +633,7 @@ async def test_unknown_patient_id_is_404_not_403(auth_client, make_user) -> None
     response = await client.get(f"/api/v1/patients/{guessed}")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
-    assert "403" not in response.text
+    assert "forbidden" not in response.text.lower()
 
 
 @pytest.mark.postgres
@@ -479,7 +677,6 @@ async def test_encounter_concealment_is_404(
     assert item["patient_id"] == str(clinical_data.patient_id)
     assert item["encounter_type"] == "annual exam"
     assert ISO_Z.match(item["occurred_at"])
-    assert item["provenance"] == "synthetic"
 
     for encounter_id in (clinical_data.soft_deleted_encounter_id, uuid.uuid4()):
         missing = await client.get(f"/api/v1/encounters/{encounter_id}")

@@ -140,6 +140,27 @@ if [[ "$js_type" == text/javascript* || "$js_type" == application/javascript* ]]
 else
   fail "config.js not served correctly ($js_type)"
 fi
+if curl -fsS "$BASE_URL/assets/js/print-record.js" | grep -q 'prepareAndPrint' \
+   && curl -fsS "$BASE_URL/assets/css/print.css" | grep -q 'size: A4 portrait'; then
+  pass "print record module and A4 stylesheet are served"
+else
+  fail "print record module or A4 stylesheet is missing"
+fi
+missing_status=$(curl -s -o "$WORKDIR/404.html" -w '%{http_code}' \
+  -H 'Accept: text/html' "$BASE_URL/definitely-missing-page")
+if [ "$missing_status" = "404" ] \
+   && grep -q 'Page not found' "$WORKDIR/404.html" \
+   && grep -q 'error-404.svg' "$WORKDIR/404.html"; then
+  pass "unknown browser navigation -> custom 404 page (status 404, illustration present)"
+else
+  fail "custom 404 page -> $missing_status"
+fi
+if curl -fsS "$BASE_URL/assets/images/error-404.svg" | grep -q '<svg' \
+   && curl -fsS "$BASE_URL/assets/images/error-connection.svg" | grep -q '<svg'; then
+  pass "custom error illustrations are served locally"
+else
+  fail "custom error illustrations missing"
+fi
 
 # --- 3. login (cookie + CSRF) with the seeded demo doctor -------------------
 echo "-- step 3: login (doctor)"
@@ -179,7 +200,7 @@ else
   fail "doctor login -> $status"
 fi
 
-# --- 4. patient list -> detail -> labs -> prescriptions ---------------------
+# --- 4. patient list -> detail -> labs -> trends -> prescriptions ------------
 echo "-- step 4: clinical reads"
 api_status "$JAR_D" GET "/api/v1/patients?limit=25" "$WORKDIR/patients.json" >/dev/null
 patients_total=$(json_eval 'd.get("total")' < "$WORKDIR/patients.json" 2>/dev/null || echo "")
@@ -194,7 +215,7 @@ else
   fail "patient list shape unexpected (total='$patients_total', expected >= $PATIENTS_FLOOR seeded patients)"
 fi
 
-for endpoint in "" "/summary" "/labs" "/prescriptions"; do
+for endpoint in "" "/summary" "/encounters" "/labs" "/labs/trends" "/prescriptions"; do
   status=$(api_status "$JAR_D" GET "/api/v1/patients/$patient_id$endpoint" "$WORKDIR/read.json")
   shape=$(json_eval 'sorted(d)[:4]' < "$WORKDIR/read.json" 2>/dev/null || echo "")
   if [ "$status" = "200" ]; then
@@ -203,6 +224,65 @@ for endpoint in "" "/summary" "/labs" "/prescriptions"; do
     fail "patient$endpoint -> $status"
   fi
 done
+
+# --- 4b. appointment calendar: availability, slots, create, cancel ----------
+echo "-- step 4b: appointment calendar"
+if [ "$(api_status "$JAR_D" GET /api/v1/appointments/config /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_D" GET /api/v1/appointments/availability /dev/null)" = "200" ]; then
+  pass "appointment config + own availability -> 200"
+else
+  fail "appointment config/availability not readable"
+fi
+
+future_date=$(python3 -c "from datetime import datetime, timedelta; from zoneinfo import ZoneInfo
+d = datetime.now(ZoneInfo('Europe/Sofia')).date() + timedelta(days=2)
+d += timedelta(days=(7 - d.weekday()) % 7)
+print(d.isoformat())")
+api_status "$JAR_D" GET "/api/v1/appointments/slots?date=$future_date" "$WORKDIR/slots.json" >/dev/null
+slot_start=$(json_eval 'next((s["start_at"] for s in d.get("slots", []) if s.get("available")), "")' < "$WORKDIR/slots.json" 2>/dev/null || echo "")
+if [ -n "$slot_start" ]; then
+  python3 -c 'import json, sys; print(json.dumps({"patient_id": sys.argv[1], "start_at": sys.argv[2], "duration_minutes": 30, "appointment_type": "Consultation"}))' \
+    "$patient_id" "$slot_start" > "$WORKDIR/appt.json"
+  appt_status=$(curl -s -o "$WORKDIR/appt_out.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/appointments" \
+    -b "$JAR_D" -c "$JAR_D" \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+    --data-binary @"$WORKDIR/appt.json")
+  appt_id=$(json_eval 'd.get("id", "")' < "$WORKDIR/appt_out.json" 2>/dev/null || echo "")
+  if [ "$appt_status" = "201" ] && [ -n "$appt_id" ]; then
+    pass "appointment create -> 201 (id present)"
+    patch_status=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$BASE_URL/api/v1/appointments/$appt_id" \
+      -b "$JAR_D" -c "$JAR_D" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+      --data-binary '{"notes":"E2E reschedule probe"}')
+    if [ "$patch_status" = "200" ]; then
+      pass "appointment update -> 200"
+    else
+      fail "appointment update -> $patch_status"
+    fi
+    cancel_status=$(curl -s -o "$WORKDIR/appt_cancel.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/appointments/$appt_id/cancel" \
+      -b "$JAR_D" -c "$JAR_D" -H "X-CSRF-Token: $(csrf_token "$JAR_D")")
+    cancelled=$(json_eval 'd.get("status")' < "$WORKDIR/appt_cancel.json" 2>/dev/null || echo "")
+    if [ "$cancel_status" = "200" ] && [ "$cancelled" = "cancelled" ]; then
+      pass "appointment cancel -> 200 cancelled"
+    else
+      fail "appointment cancel -> $cancel_status ($cancelled)"
+    fi
+    remove_doctor_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+      "$BASE_URL/api/v1/appointments/$appt_id/remove-from-calendar" \
+      -b "$JAR_D" -c "$JAR_D" -H "X-CSRF-Token: $(csrf_token "$JAR_D")")
+    if [ "$remove_doctor_status" = "403" ]; then
+      pass "doctor cannot remove a cancelled calendar entry -> 403 (Admin-only)"
+    else
+      fail "doctor remove-from-calendar -> $remove_doctor_status (expected 403)"
+    fi
+  else
+    fail "appointment create -> $appt_status"
+  fi
+else
+  fail "no available appointment slot for $future_date (is availability seeded?)"
+fi
 
 # --- 5. AI endpoint: real answer (LLM enabled) or documented 503 ------------
 echo "-- step 5: AI path (answers 200 when LLM configured, 503 when not)"
@@ -241,6 +321,11 @@ if [ "$(api_status "$JAR_D" GET /api/v1/audit /dev/null)" = "403" ]; then
 else
   fail "doctor on /api/v1/audit not denied"
 fi
+if [ "$(api_status "$JAR_D" GET /api/v1/analytics/summary /dev/null)" = "403" ]; then
+  pass "doctor on /api/v1/analytics/summary -> 403"
+else
+  fail "doctor on /api/v1/analytics/summary not denied"
+fi
 
 api_status "$JAR_A" GET /api/v1/auth/me >/dev/null
 if [ "$(login "$JAR_A" "$ADMIN_EMAIL" ADMIN_PASSWORD)" = "200" ] \
@@ -275,22 +360,34 @@ if [ -n "$new_user_id" ]; then
   fi
 fi
 
+nurse_range=$(python3 -c "from datetime import datetime, timedelta, timezone
+n = datetime.now(timezone.utc)
+print(n.isoformat().replace('+00:00', 'Z'), (n + timedelta(days=7)).isoformat().replace('+00:00', 'Z'))")
+nurse_start=${nurse_range% *}
+nurse_end=${nurse_range#* }
 if [ "$(login "$JAR_N" "$NURSE_EMAIL" NURSE_PASSWORD)" = "200" ] \
    && [ "$(api_status "$JAR_N" GET /api/v1/staff /dev/null)" = "403" ] \
    && [ "$(api_status "$JAR_N" GET /api/v1/audit /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/analytics/summary /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET "/api/v1/appointments?start=$nurse_start&end=$nurse_end" /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_N" POST /api/v1/appointments /dev/null)" = "403" ] \
    && [ "$(api_status "$JAR_N" GET /api/v1/patients /dev/null)" = "200" ]; then
-  pass "nurse least privilege: /staff -> 403, /audit -> 403, /patients -> 200"
+  pass "nurse least privilege: /staff 403, /audit 403, analytics 403, appointments read-only (GET 200, POST 403), /patients 200"
 else
-  fail "nurse role boundary broken (expected /staff 403, /audit 403, /patients 200)"
+  fail "nurse role boundary broken (expected /staff 403, /audit 403, analytics 403, appointments GET 200/POST 403, /patients 200)"
 fi
 
-# The nurse's effective permissions must not include staff:read (proof in the
-# /auth/me payload).
+# The nurse's effective permissions must include appointment:read but not the
+# write or availability permissions (proof in the /auth/me payload).
 api_status "$JAR_N" GET /api/v1/auth/me "$WORKDIR/me_nurse.json" >/dev/null
 if grep -q '"patient:read"' "$WORKDIR/me_nurse.json" \
+   && grep -q '"appointment:read"' "$WORKDIR/me_nurse.json" \
+   && ! grep -q '"appointment:write"' "$WORKDIR/me_nurse.json" \
+   && ! grep -q '"appointment:manage_availability"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"staff:read"' "$WORKDIR/me_nurse.json" \
-   && ! grep -q '"audit:read"' "$WORKDIR/me_nurse.json"; then
-  pass "nurse /auth/me permissions carry clinical reads only (no staff:read/audit:read)"
+   && ! grep -q '"audit:read"' "$WORKDIR/me_nurse.json" \
+   && ! grep -q '"logs:read"' "$WORKDIR/me_nurse.json"; then
+  pass "nurse /auth/me permissions: clinical reads + appointment:read only"
 else
   fail "nurse /auth/me permissions wrong"
 fi
@@ -302,6 +399,133 @@ if [ "$(api_status "$JAR_A" GET /api/v1/patients /dev/null)" = "200" ] \
   pass "admin full access: /patients -> 200, labs -> 200, /audit -> 200"
 else
   fail "admin clinical/audit access broken"
+fi
+
+# System Logs: read-only, Admin-only; history and SSE reject clinical roles.
+if [ "$(api_status "$JAR_D" GET /api/v1/admin/logs /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_D" GET /api/v1/admin/logs/stream /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/admin/logs /dev/null)" = "403" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/admin/logs/stream /dev/null)" = "403" ]; then
+  pass "System Logs deny Doctor/Nurse on history and stream -> 403"
+else
+  fail "System Logs role boundary broken"
+fi
+if [ "$(api_status "$JAR_A" GET '/api/v1/admin/logs?limit=5' "$WORKDIR/system_logs.json")" = "200" ] \
+   && grep -q '"timezone"' "$WORKDIR/system_logs.json" \
+   && grep -q '"counts"' "$WORKDIR/system_logs.json"; then
+  pass "Admin reads bounded system-log history -> 200 (counts + timezone)"
+else
+  fail "Admin system-log history failed"
+fi
+# Replay a persisted patient read over SSE (curl exits 28 at --max-time).
+api_status "$JAR_A" GET "/api/v1/patients/$patient_id" /dev/null >/dev/null
+curl -sN --max-time 2 -b "$JAR_A" \
+  "$BASE_URL/api/v1/admin/logs/stream?category=patients" > "$WORKDIR/system_logs_stream.txt" 2>/dev/null || true
+if grep -q 'event: system' "$WORKDIR/system_logs_stream.txt" \
+   && grep -q '"event_type":"patient.read"' "$WORKDIR/system_logs_stream.txt"; then
+  pass "Admin SSE replay delivers persisted patient.read events"
+else
+  fail "Admin SSE replay delivered no patient.read event"
+fi
+
+# Patient lifecycle: Admin creates a synthetic record, Doctor/Nurse cannot
+# delete it, Admin soft-deletes it, and it immediately disappears from reads.
+patient_suffix=$(date +%s)
+patient_create_status=$(curl -s -o "$WORKDIR/patient_created.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/patients" \
+  -b "$JAR_A" -c "$JAR_A" \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $(csrf_token "$JAR_A")" \
+  --data "{\"given_name\": \"E2E $patient_suffix\", \"family_name\": \"Lifecycle\", \"sex\": \"unknown\"}")
+e2e_patient_id=$(json_eval 'd.get("id", "")' < "$WORKDIR/patient_created.json" 2>/dev/null || echo "")
+if [ "$patient_create_status" = "201" ] && [ -n "$e2e_patient_id" ]; then
+  pass "admin creates a patient -> 201 (server MRN)"
+  delete_denied=0
+  for jar in "$JAR_D" "$JAR_N"; do
+    code=$(api_status "$jar" DELETE "/api/v1/patients/$e2e_patient_id" /dev/null)
+    [ "$code" = "403" ] || delete_denied=1
+  done
+  if [ "$delete_denied" = "0" ]; then
+    pass "doctor/nurse cannot delete a patient -> 403"
+  else
+    fail "doctor/nurse patient deletion was not 403"
+  fi
+  delete_status=$(api_status "$JAR_A" DELETE "/api/v1/patients/$e2e_patient_id" /dev/null)
+  if [ "$delete_status" = "204" ] \
+     && [ "$(api_status "$JAR_A" GET "/api/v1/patients/$e2e_patient_id" /dev/null)" = "404" ]; then
+    pass "admin soft-deletes the patient -> 204, then detail -> 404"
+  else
+    fail "admin patient soft-delete -> $delete_status"
+  fi
+else
+  fail "admin patient create -> $patient_create_status"
+fi
+
+if [ -n "$appt_id" ]; then
+  remove_admin_status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+    "$BASE_URL/api/v1/appointments/$appt_id/remove-from-calendar" \
+    -b "$JAR_A" -c "$JAR_A" -H "X-CSRF-Token: $(csrf_token "$JAR_A")")
+  if [ "$remove_admin_status" = "204" ]; then
+    pass "admin removes a cancelled calendar entry -> 204 (record retained)"
+  else
+    fail "admin remove-from-calendar -> $remove_admin_status (expected 204)"
+  fi
+fi
+
+analytics_status=$(api_status "$JAR_A" GET '/api/v1/analytics/summary?start=2026-10-01&end=2026-10-14' "$WORKDIR/analytics.json")
+if [ "$analytics_status" = "200" ] \
+   && python3 -c 'import json,sys
+d = json.load(open(sys.argv[1]))
+required = {"range","counts","activity","previous_activity","comparisons","patients","appointments","labs","prescriptions","security","ai_usage","data_quality","system_health","staff"}
+assert required <= set(d), sorted(required - set(d))
+assert d["range"]["days"] == 14
+assert len(d["appointments"]["by_weekday"]) == 7
+assert len(d["appointments"]["by_hour"]) == 24
+assert d["ai_usage"]["latency"]["available"] is False
+assert d["system_health"]["database"] == "connected"
+assert "MRN-" not in json.dumps(d)
+' "$WORKDIR/analytics.json"; then
+  pass "admin analytics summary -> 200 (typed ranges, appointment/lab/security/AI blocks)"
+else
+  fail "admin analytics summary -> $analytics_status"
+fi
+if [ "$(api_status "$JAR_A" GET '/api/v1/analytics/summary?start=2026-10-14&end=2026-10-01' /dev/null)" = "400" ] \
+   && [ "$(api_status "$JAR_A" GET '/api/v1/analytics/summary?start=2026-10-01' /dev/null)" = "400" ] \
+   && [ "$(api_status "$JAR_A" GET '/api/v1/analytics/summary?days=7' /dev/null)" = "400" ]; then
+  pass "analytics rejects reversed/partial/unknown ranges -> 400"
+else
+  fail "analytics range validation broken"
+fi
+
+if [ "$(api_status "$JAR_D" GET /api/v1/messages /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_D" GET /api/v1/messages/recipients /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_A" GET /api/v1/messages /dev/null)" = "200" ] \
+   && [ "$(api_status "$JAR_N" GET /api/v1/messages /dev/null)" = "403" ]; then
+  pass "messages: Doctor/Admin 200, Nurse 403, recipient list 200"
+else
+  fail "messages permission boundary broken"
+fi
+
+# Patient creation is Doctor/Admin only; the invalid-body doctor probe proves
+# the authorized route is reachable without creating test data.
+patient_denied=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/v1/patients" \
+  -b "$JAR_N" -c "$JAR_N" \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $(csrf_token "$JAR_N")" \
+  --data '{"given_name":"E2E","family_name":"NurseDenied"}')
+if [ "$patient_denied" = "403" ]; then
+  pass "nurse cannot create patients -> 403"
+else
+  fail "nurse patient creation -> $patient_denied (expected 403)"
+fi
+patient_doctor=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE_URL/api/v1/patients" \
+  -b "$JAR_D" -c "$JAR_D" \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+  --data '{}')
+if [ "$patient_doctor" = "400" ]; then
+  pass "doctor reaches patient-create validation -> 400 (patient:write)"
+else
+  fail "doctor patient creation -> $patient_doctor (expected 400)"
 fi
 
 # tech_admin no longer exists: granting it is a validation error (400).
@@ -337,6 +561,7 @@ required = {
     "auth.login.success", "auth.login.failure", "auth.logout", "authz.denied",
     "patient.read", "patient.summary.read", "labs.read", "prescriptions.read",
     "ai.ask", "staff.create", "role.grant",
+    "appointment.create", "appointment.update", "appointment.cancel",
 }
 with open(sys.argv[1], encoding="utf-8") as handle:
     data = json.load(handle)
@@ -345,7 +570,7 @@ print(",".join(sorted(required - emitted)))
 PY
 )
 if [ -z "$missing_actions" ]; then
-  pass "audit rows cover the workflow (login, denials, reads, ai.ask, staff/role)"
+  pass "audit rows cover the workflow (login, denials, reads, ai.ask, staff/role, appointments)"
 else
   fail "audit rows missing actions: $missing_actions"
 fi

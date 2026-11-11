@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
-  <title>Analytics — MediCore Clinical Platform (synthetic demo)</title>
-  <meta name="description" content="Read-only operational analytics for the MediCore Clinical Platform demonstration: synthetic demo aggregates only. Fictional demo data, not for clinical use.">
+  <title>Analytics — MediCore Clinical Platform</title>
+  <meta name="description" content="Admin-only clinical operations and platform analytics for the MediCore Clinical Platform.">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M16 8v16M8 16h16' stroke='white' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E">
+  <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
        resources; see DESIGN.md "Pre-rendering and intent prefetch"). -->
@@ -14,7 +15,7 @@
   <link rel="modulepreload" href="assets/js/api.js">
   <link rel="modulepreload" href="assets/js/cache.js">
   <link rel="modulepreload" href="assets/js/auth.js">
-  <link rel="modulepreload" href="assets/js/command-menu.js">
+  <link rel="modulepreload" href="assets/js/command-menu.js?v=20261109j">
   <script>
     /* Deployment override — see assets/js/config.js. Example:
        window.__APP_CONFIG__ = { API_BASE_URL: "https://<backend-host>/api/v1" }; */
@@ -45,10 +46,10 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
             Need help?
           </p>
-          <p class="help-card__text">Open the demo overview or contact the maintainers about a problem.</p>
+          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
           <ul class="help-card__links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
+            <li><button type="button" class="link-button" data-open-about>About</button></li>
+            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
           </ul>
         </div>
       </div>
@@ -70,7 +71,8 @@
         <div class="page-header toolbar">
           <div>
             <h1>Analytics</h1>
-            <p class="lede">Synthetic demo data &middot; read-only operational overview</p>
+            <p class="lede">Clinical operations &amp; platform analytics</p>
+            <p class="text-muted" id="analytics-period-label">Loading the reporting period&hellip;</p>
             <p class="text-muted" id="analytics-generated-at">Generated at &mdash; loading&hellip;</p>
           </div>
           <button class="btn btn-secondary" type="button" id="analytics-refresh">
@@ -87,60 +89,111 @@
             </div>
           </div>
           <div id="analytics-status" class="status-region" role="status" aria-live="polite"></div>
+          <div id="analytics-error-region" class="status-region" role="alert"></div>
+
+          <section class="analytics-filter card" aria-labelledby="analytics-filter-heading">
+            <div class="analytics-filter__head">
+              <div>
+                <h2 id="analytics-filter-heading">Reporting period</h2>
+                <p class="text-muted" id="analytics-filter-summary">Last 30 UTC days including today.</p>
+              </div>
+            </div>
+            <form id="analytics-filter-form" class="analytics-filter__form" novalidate>
+              <div class="field field--inline">
+                <label for="analytics-range">Date range</label>
+                <select id="analytics-range" name="range">
+                  <option value="7">Last 7 days</option>
+                  <option value="30" selected>Last 30 days</option>
+                  <option value="90">Last 90 days</option>
+                  <option value="year">This year</option>
+                  <option value="custom">Custom range</option>
+                </select>
+              </div>
+              <div id="analytics-custom" class="analytics-filter__custom" hidden>
+                <div class="field">
+                  <label for="analytics-start">Start (UTC)</label>
+                  <input type="date" id="analytics-start" name="start">
+                </div>
+                <div class="field">
+                  <label for="analytics-end">End (UTC)</label>
+                  <input type="date" id="analytics-end" name="end">
+                </div>
+              </div>
+              <div class="analytics-filter__actions">
+                <button class="btn btn-primary btn-sm" type="submit" id="analytics-apply">Apply</button>
+                <button class="btn btn-secondary btn-sm" type="button" id="analytics-reset">Reset</button>
+              </div>
+            </form>
+            <p class="field-error" id="analytics-range-error" role="alert" hidden></p>
+            <p class="text-muted analytics-filter__hint">
+              Daily clinical and audit series use UTC days. Appointment day/hour buckets use the clinic timezone shown in the appointments section. The maximum range is 366 days.
+            </p>
+          </section>
 
           <section class="section-block" id="kpi-section" aria-labelledby="kpi-heading">
             <h2 id="kpi-heading">Key numbers</h2>
-            <p class="text-muted">Current totals across the synthetic dataset, with activity in the last 30 days where meaningful.</p>
+            <p class="text-muted">Lifetime totals are labelled; activity and comparisons use the selected period and the equally long preceding period.</p>
             <div id="kpi-region"></div>
           </section>
 
-          <section class="section-block" id="audit-activity-section" aria-labelledby="audit-activity-heading">
-            <h2 id="audit-activity-heading">Audit activity &mdash; last 14 days</h2>
-            <p class="text-muted">Daily sign-ins, permission denials, and record reads from the audit stream (UTC days).</p>
-            <div id="audit-activity-region"></div>
+          <section class="section-block" id="patients-section" aria-labelledby="patients-heading">
+            <h2 id="patients-heading">Patients &amp; encounters</h2>
+            <p class="text-muted">Operational activity only — no patient names, MRNs, notes or clinical conclusions.</p>
+            <div id="patients-region"></div>
+          </section>
+
+          <section class="section-block" id="appointments-section" aria-labelledby="appointments-heading">
+            <h2 id="appointments-heading">Appointments</h2>
+            <p class="text-muted">Scheduling volume and recorded calendar utilization. Volume is not a measure of medical performance.</p>
+            <div id="appointments-region"></div>
           </section>
 
           <section class="section-block" id="labs-section" aria-labelledby="labs-heading">
-            <h2 id="labs-heading">Lab results</h2>
-            <p class="text-muted">Abnormal share against recorded reference ranges, document status mix, and the most frequent abnormal tests.</p>
+            <h2 id="labs-heading">Laboratory analytics</h2>
+            <p class="text-muted">Abnormal share uses only results with a valid recorded reference range. Missing or invalid ranges are never classified as normal.</p>
             <div id="labs-region"></div>
           </section>
 
           <section class="section-block" id="prescriptions-section" aria-labelledby="prescriptions-heading">
-            <h2 id="prescriptions-heading">Prescriptions by status</h2>
-            <p class="text-muted">Every synthetic prescription by its recorded lifecycle status.</p>
+            <h2 id="prescriptions-heading">Prescriptions</h2>
+            <p class="text-muted">Recorded lifecycle status only. These counts do not judge prescribing quality.</p>
             <div id="prescriptions-region"></div>
           </section>
 
-          <section class="section-block" id="staff-section" aria-labelledby="staff-heading">
-            <h2 id="staff-heading">Staff by role</h2>
-            <p class="text-muted">Active staff accounts per role (an account may hold more than one role).</p>
-            <div id="staff-region"></div>
+          <section class="section-block" id="security-section" aria-labelledby="security-heading">
+            <h2 id="security-heading">Access &amp; Security Activity</h2>
+            <p class="text-muted">Aggregate audit activity. Questions, answers, transcripts, raw audit metadata, secrets and patient identifiers are never shown.</p>
+            <div id="security-region"></div>
           </section>
 
           <section class="section-block" id="ai-section" aria-labelledby="ai-heading">
-            <h2 id="ai-heading">AI usage</h2>
-            <p class="text-muted">Successful AI assistant asks and the MCP tool calls behind them. Questions and answers are never shown here.</p>
+            <h2 id="ai-heading">AI &amp; Voice Assistant</h2>
+            <p class="text-muted">Request reliability and real MCP tool calls. Questions, answers, audio and transcripts are never displayed or persisted here.</p>
             <div id="ai-region"></div>
+          </section>
+
+          <section class="section-block" id="quality-section" aria-labelledby="quality-heading">
+            <h2 id="quality-heading">Data Quality &amp; System Health</h2>
+            <p class="text-muted">Recorded gaps and operational facts. Optional metadata gaps are labelled as optional, not as errors; clinical quality is out of scope.</p>
+            <div id="quality-region"></div>
+          </section>
+
+          <section class="section-block" id="health-section" aria-labelledby="health-heading">
+            <h2 id="health-heading">Service configuration</h2>
+            <p class="text-muted">Only states this request can verify are shown. Provider availability is not continuously monitored.</p>
+            <div id="health-region"></div>
+          </section>
+
+          <section class="section-block" id="staff-section" aria-labelledby="staff-heading">
+            <h2 id="staff-heading">Staff accounts</h2>
+            <p class="text-muted">Compact account totals per role. No individual performance rankings or surveillance metrics.</p>
+            <div id="staff-region"></div>
           </section>
         </div>
       </main>
-
-      <footer class="site-footer">
-        <div class="container site-footer__inner">
-          <p class="footer-note">
-            MediCore — synthetic-data demonstration. Not clinically validated, not a
-            medical device, and not for clinical use. All records are fictional.
-          </p>
-          <ul class="footer-links">
-            <li><button type="button" class="link-button" data-open-about>About this demo</button></li>
-            <li><a href="mailto:demo-issues@example.com?subject=Clinical%20AI%20Platform%20demo%20issue">Report an issue</a></li>
-          </ul>
-        </div>
-      </footer>
     </div>
   </div>
 
-  <script type="module" src="assets/js/analytics.js"></script>
+  <script type="module" src="assets/js/analytics.js?v=20261109j"></script>
 </body>
 </html>

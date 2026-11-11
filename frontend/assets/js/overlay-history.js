@@ -25,12 +25,20 @@
 // data; the history state carries only small opaque sequence numbers.
 // ---------------------------------------------------------------------------
 
+/** Feature marker: appointment flows can rely on deferred replacement pushes. */
+export const supportsDeferredPush = true;
+
 const stack = [];
 let sequence = 0;
 // Popstates caused by releaseOverlay() consuming its own history entry; each
 // one swallows exactly one self-inflicted popstate so it never closes a second
 // overlay (only a genuine Back unwinds the stack).
 let selfBacksPending = 0;
+// Overlays opened while a self-back is still in flight must not push their
+// history entry yet: browsers perform history.back() asynchronously, so a
+// synchronous pushState can be skipped/reordered and the pending back can
+// navigate to the previous page (e.g. appointment detail -> cancel confirm).
+let deferredPushes = [];
 // Identity of the bound window.addEventListener (stable in a browser; the test
 // DOM shim installs a fresh registry per scenario and needs a rebind).
 let boundAddEventListener = null;
@@ -38,6 +46,7 @@ let boundAddEventListener = null;
 function onPopstate() {
   if (selfBacksPending > 0) {
     selfBacksPending -= 1;
+    if (selfBacksPending === 0) flushDeferredPushes();
     return;
   }
   // Back pressed: unwind the TOPMOST live overlay (LIFO). Entries already
@@ -56,11 +65,37 @@ function bind() {
   boundAddEventListener = window.addEventListener;
 }
 
+function writePush(entry) {
+  if (entry.done || entry.pushed) return;
+  try {
+    if (typeof history !== 'undefined' && typeof history.pushState === 'function') {
+      const current = history.state && typeof history.state === 'object' ? history.state : {};
+      history.pushState({ ...current, __overlay: entry.sequence }, '');
+      entry.pushed = true;
+    }
+  } catch {
+    // Sandboxed frame: no history participation, close() still works.
+    entry.pushed = false;
+  }
+}
+
+function flushDeferredPushes() {
+  if (selfBacksPending > 0) return;
+  const pending = deferredPushes;
+  deferredPushes = [];
+  for (const entry of pending) writePush(entry);
+}
+
 /**
  * Register an overlay's close callback on the history stack.
  * Returns an entry handle to hand back to releaseOverlay() when the overlay
  * closes through the UI. `close` must close the surface WITHOUT touching
  * history (this module owns the history bookkeeping).
+ *
+ * If a previous overlay's UI close is still consuming its history entry, the
+ * new entry's push is deferred until that self-back's popstate settles. This
+ * makes "close one dialog, immediately open another" safe (appointment
+ * detail -> reschedule/cancel confirmation) without navigating away.
  */
 export function pushOverlay(close) {
   bind();
@@ -72,16 +107,8 @@ export function pushOverlay(close) {
     pushed: false,
   };
   stack.push(entry);
-  try {
-    if (typeof history !== 'undefined' && typeof history.pushState === 'function') {
-      const current = history.state && typeof history.state === 'object' ? history.state : {};
-      history.pushState({ ...current, __overlay: entry.sequence }, '');
-      entry.pushed = true;
-    }
-  } catch {
-    // Sandboxed frame: no history participation, close() still works.
-    entry.pushed = false;
-  }
+  if (selfBacksPending > 0) deferredPushes.push(entry);
+  else writePush(entry);
   return entry;
 }
 
@@ -95,7 +122,13 @@ export function releaseOverlay(entry) {
   entry.done = true;
   const index = stack.lastIndexOf(entry);
   if (index >= 0) stack.splice(index, 1);
-  if (!entry.pushed) return;
+  if (!entry.pushed) {
+    // Closed before its deferred push ran: drop it from the queue so it can
+    // never create a history entry after the fact.
+    const deferredIndex = deferredPushes.indexOf(entry);
+    if (deferredIndex >= 0) deferredPushes.splice(deferredIndex, 1);
+    return;
+  }
   try {
     if (typeof history !== 'undefined' && typeof history.back === 'function') {
       selfBacksPending += 1;
@@ -117,4 +150,5 @@ export function resetOverlayStack() {
   stack.length = 0;
   sequence = 0;
   selfBacksPending = 0;
+  deferredPushes = [];
 }

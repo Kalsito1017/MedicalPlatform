@@ -100,6 +100,10 @@ HTML_EXTERNAL_REF = re.compile(r"(?:src|href)\s*=\s*[\"'](https?://[^\"']+)[\"']
 HTML_CSS_IMPORT = re.compile(r"@import\s+[^;]*url\(\s*[\"']?https?://", re.IGNORECASE)
 JS_CONSOLE = re.compile(r"console\s*\.")
 JS_WEB_STORAGE = re.compile(r"(local|session)Storage")
+THEME_STORAGE_FILES = {
+    "frontend/assets/js/theme-init.js",
+    "frontend/assets/js/theme.js",
+}
 
 FORBIDDEN_PATHS = [
     ("env-file", re.compile(r"(^|/)\.env(\.[^/]+)?$"), {".env.example"}),
@@ -171,8 +175,22 @@ def tracked_files() -> list[str]:
     return [p for p in result.stdout.decode("utf-8", "replace").split("\0") if p]
 
 
+_MISSING_REPORTED: set[str] = set()
+
+
 def read_text(path: str) -> str | None:
-    raw = (REPO_ROOT / path).read_bytes()
+    try:
+        raw = (REPO_ROOT / path).read_bytes()
+    except FileNotFoundError:
+        # A tracked path can be absent from a working tree (partial checkout or
+        # a stale index). There is nothing to scan; do not abort the whole check.
+        if path not in _MISSING_REPORTED:
+            _MISSING_REPORTED.add(path)
+            print(
+                f"warning: tracked file missing from working tree (skipped): {path}",
+                file=sys.stderr,
+            )
+        return None
     if b"\0" in raw[:8192]:
         return None  # binary
     return raw.decode("utf-8", "replace")
@@ -278,6 +296,13 @@ def check_frontend_hygiene() -> tuple[list[str], int]:
             (JS_CONSOLE, "console-logging", "remove console.*; never log app data"),
             (JS_WEB_STORAGE, "web-storage", "keep data out of local/session storage"),
         ):
+            if name == "web-storage" and rel in THEME_STORAGE_FILES:
+                # The theme preference is the only sanctioned web-storage use.
+                if "medicore-theme" not in source and "THEME_STORAGE_KEY" not in source:
+                    findings.append(
+                        f"{rel} [web-storage] theme storage must use the medicore-theme key only"
+                    )
+                continue
             for match in pattern.finditer(source):
                 findings.append(
                     f"{rel}:{line_no(source, match.start())} [{name}] {hint}"
