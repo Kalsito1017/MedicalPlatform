@@ -24,7 +24,6 @@ function renderRoleBadges(user) {
 
 function renderProfileCard(user) {
   const roles = Array.isArray(user.roles) ? user.roles : [];
-  const permissions = Array.isArray(user.permissions) ? user.permissions : [];
 
   return ui.el('section', { class: 'card', 'aria-labelledby': 'profile-heading' },
     ui.el('div', { class: 'profile-card__head' },
@@ -45,18 +44,7 @@ function renderProfileCard(user) {
       }),
       ui.el('dt', { text: 'Account status' }),
       ui.el('dd', { text: user.is_active === false ? 'Deactivated' : 'Active' }),
-      ui.el('dt', { text: 'Permissions' }),
-      ui.el('dd', {},
-        permissions.length > 0
-          ? ui.el('ul', { class: 'chip-list' },
-              permissions.map((permission) =>
-                ui.el('li', { class: 'chip', text: permission })
-              )
-            )
-          : ui.el('span', { class: 'text-muted', text: 'None granted' })
-      ),
     ),
-    ui.el('p', { class: 'card__note', text: 'Permissions are enforced by the backend on every request; the interface only reflects them.' }),
   );
 }
 

@@ -216,9 +216,9 @@ await check('admin.js: high-impact actions carry explicit consequence copy', asy
   assert(source.includes('targets your own account'), 'missing self-escalation warning');
 });
 
-await check('patient.js: AI output is labelled AI-generated and size bounded', async () => {
+await check('patient.js: AI output is unbadged and size bounded', async () => {
   const source = await readFile(path.join(jsDir, 'patient.js'), 'utf8');
-  assert(source.includes('AI-generated'), 'missing AI-generated label');
+  assert(!source.includes('AI-generated'), 'AI-generated badge must not render');
   assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
   assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
 });
@@ -233,9 +233,9 @@ await check('ai.html: AI Assistant page is labelled and bounded', async () => {
   assert(!source.includes('ai-card__pill'), 'the AI card must not carry an informational-only pill');
 });
 
-await check('ai-assistant.js: general lookup sends no patient_id and labels AI output', async () => {
+await check('ai-assistant.js: general lookup sends no patient_id and keeps AI output unbadged', async () => {
   const source = stripComments(await readFile(path.join(jsDir, 'ai-assistant.js'), 'utf8'));
-  assert(source.includes('AI-generated'), 'missing AI-generated label');
+  assert(!source.includes('AI-generated'), 'AI-generated badge must not render');
   assert(source.includes('QUESTION_MAX = 2000'), 'missing 2000-character bound');
   assert(!/patient_id\s*:/.test(source), 'general lookup must never send patient_id');
   assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
@@ -797,8 +797,7 @@ await check('landing page uses the local blurred care-team background', async ()
 await check('product surface carries no de-marked labelling or disclaimer copy', async () => {
   // Static de-marking hygiene (see DEMARKED_COPY above): every shipped string
   // surface — HTML source (text, attributes, meta) and JS/CSS sources with
-  // comments stripped — must stay free of the banned fragments. The single
-  // kept content-origin label is the "AI-generated" badge on answers.
+  // comments stripped — must stay free of the banned fragments.
   const cssFiles = ['css/styles.css'].map((f) => path.join('assets', f));
   for (const rel of [...htmlFiles, ...jsFiles.map((f) => path.join('assets', 'js', f)), ...cssFiles]) {
     const raw = await readFile(path.join(frontendRoot, rel), 'utf8');

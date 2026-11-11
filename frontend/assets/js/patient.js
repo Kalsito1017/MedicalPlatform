@@ -7,7 +7,7 @@
 //   GET /api/v1/patients/{id}/summary        -> patient summary
 //   GET /api/v1/patients/{id}/labs           -> Page of lab results
 //   GET /api/v1/patients/{id}/prescriptions  -> Page of prescriptions
-//   POST /api/v1/ai/ask                      -> AI-generated answer (optional)
+//   POST /api/v1/ai/ask                      -> AI answer (optional)
 //   GET /api/v1/ai/conversations             -> own history, filtered by patient
 // Every section has its own loading, empty, and error state; missing records
 // are friendly empty states, not errors.
@@ -928,7 +928,7 @@ ui.onReady(async () => {
   // tab, anchored to #ai-panel in patient.html. POST /api/v1/ai/ask
   // { patient_id, question } via api.post(); the
   // { answer, used_tools, citations, model, ai_generated } response is
-  // rendered as plain text only, explicitly labelled AI-generated. 503
+  // rendered as plain text only. 503
   // (dependency_unavailable) is a normal state and renders an honest
   // unavailable panel; 429 renders a retry countdown; other errors go
   // through api.describeApiError. Composer keys: Enter sends, Shift+Enter
@@ -1355,13 +1355,8 @@ function renderAiAnswer(payload, question = '') {
   const answer = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
   const usedTools = Array.isArray(payload && payload.used_tools) ? payload.used_tools : [];
   const citations = Array.isArray(payload && payload.citations) ? payload.citations : [];
-  const model = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
 
-  const bubble = chatBubble('assistant',
-    ui.el('div', { class: 'badge-list' },
-      ui.el('span', { class: 'badge badge--ai', text: 'AI-generated' }),
-    ),
-  );
+  const bubble = chatBubble('assistant');
   bubble.prepend(ui.assistantTurnHead());
 
   // The answer body is untrusted model output: rendered through the safe
@@ -1393,14 +1388,10 @@ function renderAiAnswer(payload, question = '') {
     );
   }
 
-  bubble.append(
-    chatMeta(
-      `${model ? `Model: ${model}` : 'Model not reported by the backend.'}${answeredAt ? ` \u2022 ${answeredAt}` : ''}`,
-    ),
-  );
+  if (answeredAt) bubble.append(chatMeta(answeredAt));
 
   region.append(bubble);
-  setAiStatus('Answer received. AI-generated answer.');
+  setAiStatus('Answer received.');
 }
 
 function renderAiUnavailable(region) {

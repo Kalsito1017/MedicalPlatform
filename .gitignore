@@ -35,6 +35,9 @@ postgres-data/
 # Logs and runtime
 *.log
 logs/
+# app/logs is application source, not runtime output
+!backend/app/logs/
+!backend/app/logs/**/*.py
 tmp/
 .opencode/
 

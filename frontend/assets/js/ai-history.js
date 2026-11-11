@@ -100,7 +100,6 @@ export function historyEntryNode(entry, { compact = false } = {}) {
   const answer = typeof entry.answer === 'string' ? entry.answer.trim() : '';
   const tools = Array.isArray(entry.used_tools) ? entry.used_tools.map(String) : [];
   const citations = Array.isArray(entry.citations) ? entry.citations.filter(Boolean) : [];
-  const model = typeof entry.model === 'string' ? entry.model.trim() : '';
   const patientScoped = entry.patient_id != null && entry.patient_id !== '';
   const when = ui.formatRelativeTime(entry.created_at) || ui.formatDateTime(entry.created_at) || '';
   const whenExact = ui.formatDateTime(entry.created_at) || '';
@@ -120,9 +119,6 @@ export function historyEntryNode(entry, { compact = false } = {}) {
     ),
     ui.el('div', { class: 'chat-bubble chat-bubble--assistant' },
       ui.assistantTurnHead(),
-      ui.el('div', { class: 'badge-list' },
-        ui.el('span', { class: 'badge badge--ai', text: 'AI-generated' }),
-      ),
       answerParagraphs(answer),
       tools.length > 0
         ? ui.el('div', { class: 'ai-sources' },
@@ -131,10 +127,9 @@ export function historyEntryNode(entry, { compact = false } = {}) {
         )
         : null,
       citations.length > 0 ? citationsBlock(citations) : null,
-      ui.el('p', {
-        class: 'chat-bubble__meta',
-        text: `${model ? `Model: ${model}` : 'Model not reported by the backend.'}${whenExact ? ` \u2022 ${whenExact}` : ''}`,
-      }),
+      whenExact
+        ? ui.el('p', { class: 'chat-bubble__meta', text: whenExact })
+        : null,
     ),
   );
 

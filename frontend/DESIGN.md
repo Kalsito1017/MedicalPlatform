@@ -24,9 +24,10 @@ clinically validated / not a medical device / not for clinical use",
 "INFORMATIONAL ONLY" pills, "AI-generated insights for clinical review …"
 subtitles, quick-action caveats, and the About dialog's disclaimer content
 (the dialog is now a plain **About** panel: product name/version + issue-
-reporting contact; the `data-open-about` hook is unchanged). Exactly one
-content-origin label remains: the small **"AI-generated"** badge on assistant
-answers (provenance of AI output, not a disclaimer).
+reporting contact; the `data-open-about` hook is unchanged). AI assistant
+answers no longer carry an AI badge or a model footer. The separate
+appointment-proposal card remains explicitly labelled **AI-generated** because
+it is a proposed clinical action awaiting human confirmation.
 
 Internal documentation stays honest: `docs/API.md`, the backend, and the repo
 docs continue to record that the data is synthetic. The API shapes follow the
@@ -93,8 +94,8 @@ headings 700 weight, tight leading.
   `btn-ghost`, `btn-page`/`btn-icon` (pagination circles). Hover/active/focus
   states on all; `:focus-visible` ring is global.
 - **Badges / pills** — rounded-full, tinted background + saturated text:
-  `badge--ok/warn/alert/neutral/info/ai` (status + the "AI-generated" label;
-  see "De-marking decision" above) and
+  `badge--ok/warn/alert/neutral/info/ai` (status + the appointment-proposal
+  "AI-generated" label; see "De-marking decision" above) and
   `badge--role-doctor/nurse/clinical_admin` (the AdminPanel mockup's
   coloured role tags).
 - **Role mapping** — three roles only (owner decision, 2026-10-26; the
@@ -124,9 +125,8 @@ headings 700 weight, tight leading.
   scroll shadow, card stacking under 620px via `data-label`.
 - **AI Patient tab** — the fifth patient-record tab, after Encounters. It
   carries the gradient header ("AI Patient"), a patient context line
-  (name + MRN), chat bubbles (user right/gray, assistant left/white with the
-  "AI-generated" badge, source chips, citations, model + timestamp),
-  patient-filtered history, and the composer with send button. The old
+  (name + MRN), chat bubbles (user right/gray, assistant left/white with
+  source chips, citations and timestamp), patient-filtered history, and the composer with send button. The old
   right-hand AI rail is gone; the tab is full width. The patient-filtered
   history request starts on first open (or immediately before the first ask),
   not during the initial Summary page load.
@@ -183,7 +183,7 @@ Real surfaces only (project rule: every control must work, no invented data):
 
 | Mockup concept | Mapped to | Notes |
 |---|---|---|
-| Sidebar brand + nav + "Need help?" | `app-shell` sidebar; nav items derived from real permissions (Dashboard; Patients for `patient:read`; Admin for `staff:read/manage/role:assign`) | "Need help?" is wired to the real About dialog + issue `mailto:` |
+| Sidebar brand + nav + "Need help?" | `app-shell` sidebar; nav items derived from real permissions (Dashboard; Patients for `patient:read`; Staff Management for `staff:read/manage/role:assign`) | "Need help?" is wired to the real About dialog + issue `mailto:` |
 | Role chip + user block | topbar role chip (real `roles`) + initials avatar | job titles do not exist in the API; the user block subtitle shows the real role label |
 | "Welcome back, Dr. Mitchell" | dashboard `Welcome back, {display_name}` + role badges | first-name-only greeting would misreport the real display name |
 | Patient card grid | dashboard recent patients (`GET /patients?limit=8`) + patient search results | see "omitted" rows for the card contents |

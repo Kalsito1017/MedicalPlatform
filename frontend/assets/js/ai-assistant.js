@@ -4,7 +4,7 @@
 // Endpoint (docs/API.md): POST /api/v1/ai/ask with { question } (no patient_id
 // = general lookup mode; the AI Patient tab sends patient_id for the
 // patient-scoped mode and is unchanged).
-// The page is a chat surface: user questions on the right, AI-generated answers
+// The page is a chat surface: user questions on the right, assistant answers
 // on the left with source chips and record citations, a composer with an
 // inline send button (inside the textarea box) + cancel + 2000-character
 // counter, and every state the AI Patient tab has: loading, cancel, 503 "AI assistant
@@ -219,14 +219,9 @@ function renderAiAnswer(container, payload) {
   const answer = payload && typeof payload.answer === 'string' ? payload.answer.trim() : '';
   const usedTools = Array.isArray(payload && payload.used_tools) ? payload.used_tools : [];
   const citations = Array.isArray(payload && payload.citations) ? payload.citations : [];
-  const model = payload && typeof payload.model === 'string' ? payload.model.trim() : '';
   const answeredAt = ui.formatDateTime(new Date().toISOString()) || '';
 
-  const bubble = chatBubble('assistant',
-    ui.el('div', { class: 'badge-list' },
-      ui.el('span', { class: 'badge badge--ai', text: 'AI-generated' }),
-    ),
-  );
+  const bubble = chatBubble('assistant');
   bubble.prepend(ui.assistantTurnHead());
 
   // The answer body is untrusted model output: rendered through the safe
@@ -251,14 +246,10 @@ function renderAiAnswer(container, payload) {
     bubble.append(citationsBlock(citations));
   }
 
-  bubble.append(
-    chatMeta(
-      `${model ? `Model: ${model}` : 'Model not reported by the backend.'}${answeredAt ? ` \u2022 ${answeredAt}` : ''}`,
-    ),
-  );
+  if (answeredAt) bubble.append(chatMeta(answeredAt));
 
   container.append(bubble);
-  setAiStatus('Answer received. AI-generated answer.');
+  setAiStatus('Answer received.');
 }
 
 function renderAiUnavailable(container) {

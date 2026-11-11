@@ -1082,7 +1082,7 @@ await check('patients list renders Page shape with search + pagination', async (
 
   const nav = textOf(document.getElementById('site-nav'));
   assertContains(nav, 'Patients', 'nav missing Patients');
-  assert(!nav.includes('Admin'), 'doctor must not see Admin nav');
+  assert(!nav.includes('Staff Management'), 'doctor must not see Staff Management nav');
 });
 
 await check('doctor creates a patient and nurse does not get the control', async () => {
@@ -1577,7 +1577,7 @@ await check('patient detail shows friendly state without an id', async () => {
 
 /* --------------------------------------------------------- AI assistant panel */
 
-await check('AI panel renders the answer with AI-generated labelling, tools, and citations', async () => {
+await check('AI panel renders the answer with tools and citations', async () => {
   const calls = [];
   globalThis.fetch = makeFetch({
     calls,
@@ -1607,11 +1607,11 @@ await check('AI panel renders the answer with AI-generated labelling, tools, and
   const region = textOf(document.getElementById('ai-response-region'));
   assertContains(region, 'The latest haemoglobin is 13.5 g/dL.', 'answer text missing');
   assertContains(region, 'It is within the recorded reference range.', 'second answer paragraph missing');
-  assertContains(region, 'AI-generated', 'AI-generated label missing');
+  assert(!region.includes('AI-generated'), 'AI-generated badge must not render');
   assertEqualLocal(
     document.getElementById('ai-response-region').querySelectorAll('.badge').length,
-    1,
-    'the answer must carry exactly one badge: the AI-generated label',
+    0,
+    'the answer must not carry an AI-generated badge',
   );
   assertEqualLocal(
     document.getElementById('ai-response-region').querySelectorAll('.alert').length,
@@ -1621,7 +1621,8 @@ await check('AI panel renders the answer with AI-generated labelling, tools, and
   assertContains(region, 'Sources consulted', 'sources label missing');
   assertContains(region, 'get_patient_lab_results', 'tool chip missing');
   assertContains(region, 'Lab result LAB-0001', 'citation label missing');
-  assertContains(region, 'Model: model-1', 'model fine print missing');
+  assert(!region.includes('Model:'), 'model name must not render');
+  assert(!region.includes('model-1'), 'model identifier must not render');
   assertEqualLocal(
     document.getElementById('ai-response-region').querySelector('.heart-loader__img'),
     null,
@@ -1809,7 +1810,7 @@ await check('AI page sends a general question and renders bubbles, chips, and li
   const region = textOf(document.getElementById('ai-response-region'));
   assertContains(region, 'Which patients are on metformin?', 'user question bubble missing');
   assertContains(region, 'One patient is on metformin.', 'answer text missing');
-  assertContains(region, 'AI-generated', 'AI-generated label missing');
+  assert(!region.includes('AI-generated'), 'AI-generated badge must not render');
   assertEqualLocal(
     document.getElementById('ai-response-region').querySelectorAll('.alert').length,
     0,
@@ -1820,7 +1821,8 @@ await check('AI page sends a general question and renders bubbles, chips, and li
   assertContains(region, 'Records consulted', 'citations label missing');
   assertContains(region, 'Patient p1', 'patient citation label missing');
   assertContains(region, 'Prescription rx1', 'prescription citation label missing');
-  assertContains(region, 'Model: model-1', 'model fine print missing');
+  assert(!region.includes('Model:'), 'model name must not render');
+  assert(!region.includes('model-1'), 'model identifier must not render');
 
   const hrefs = document.getElementById('ai-response-region').querySelectorAll('a').map((a) => a.getAttribute('href'));
   assert(hrefs.includes('patient.html?id=p1'), 'patient citation link missing');
@@ -2117,8 +2119,9 @@ await check('AI page history renders, expands the full answer, and clears behind
   assertEqualLocal(detail.hidden, false, 'the answer detail must be visible when expanded');
   const detailText = textOf(detail);
   assertContains(detailText, 'The latest haemoglobin is 13.5 g/dL.', 'expanded answer missing');
-  assertContains(detailText, 'AI-generated', 'expanded turn must keep the AI-generated label');
-  assertEqualLocal(detail.querySelectorAll('.badge').length, 1, 'the expanded turn must carry exactly one badge: the AI-generated label');
+  assert(!detailText.includes('AI-generated'), 'expanded turn must not carry an AI-generated label');
+  assertEqualLocal(detail.querySelectorAll('.badge').length, 0, 'the expanded turn must not carry an AI-generated badge');
+  assert(!detailText.includes('Model:'), 'expanded turn must not carry a model line');
   assertEqualLocal(detail.querySelectorAll('.alert').length, 0, 'the expanded turn must not carry a disclaimer note');
   assertContains(detailText, 'Records consulted', 'expanded citations label missing');
   assertContains(detailText, 'Lab result LAB-0001', 'expanded citation missing');
@@ -2377,7 +2380,7 @@ await check('admin staff table renders the Page shape with roles, status, and pa
   await settle();
   const staffCalls = calls.filter((call) => call.url.startsWith('/api/v1/staff'));
   assertContains(staffCalls[staffCalls.length - 1].url, 'offset=20', 'pagination offset missing');
-  assertContains(textOf(document.getElementById('site-nav')), 'Admin', 'admin nav missing for clinical_admin');
+  assertContains(textOf(document.getElementById('site-nav')), 'Staff Management', 'Staff Management nav missing for clinical_admin');
 });
 
 await check('admin role grant confirms the consequence and refreshes the row', async () => {
@@ -2656,7 +2659,7 @@ await check('admin page denies a nurse honestly and shows no fake controls', asy
   const body = textOf(document.getElementById('page-body'));
   assertContains(body, 'You do not have permission', 'denial copy missing');
   assertContains(textOf(document.getElementById('site-nav')), 'Dashboard', 'nav must still render');
-  assert(!textOf(document.getElementById('site-nav')).includes('Admin'), 'admin nav item must not render for a nurse');
+  assert(!textOf(document.getElementById('site-nav')).includes('Staff Management'), 'Staff Management nav item must not render for a nurse');
   assert(!document.getElementById('user-area').querySelector('.avatar--photo'), 'nurse must keep initials, not a doctor photo');
   assert(!textOf(document.body).includes('Grant role'), 'no staff controls may render for a nurse');
   assertEqualLocal(
@@ -3138,7 +3141,7 @@ await check('messages page renders own inbox, marks read, and sends a message', 
 
   const nav = textOf(document.getElementById('site-nav'));
   assertContains(nav, 'Messages', 'admin nav item missing');
-  assert(nav.indexOf('Messages') < nav.indexOf('Admin'), 'Messages must sit before Admin');
+  assert(nav.indexOf('Messages') < nav.indexOf('Staff Management'), 'Messages must sit before Staff Management');
   const region = document.getElementById('messages-region');
   assertContains(textOf(region), 'Doc Sender', 'inbox sender missing');
   assertContains(textOf(region), 'Rota review', 'inbox subject missing');
@@ -3187,7 +3190,7 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   assertEqualLocal(sentMessages[0].subject, 'Reply', 'subject missing from message');
   assertEqualLocal(sentMessages[0].body, 'Thanks for the update.', 'body missing from message');
 
-  // Doctors get Messages too, but not the Admin nav item.
+  // Doctors get Messages too, but not the Staff Management nav item.
   globalThis.fetch = makeFetch({
     me: MESSAGING_DOCTOR,
     messages: { items: [], total: 0, limit: 50, offset: 0 },
@@ -3198,7 +3201,7 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   await settle();
   const doctorNav = textOf(doctorDocument.getElementById('site-nav'));
   assertContains(doctorNav, 'Messages', 'doctor nav item missing');
-  assert(!doctorNav.includes('Admin'), 'doctor must not see Admin nav');
+  assert(!doctorNav.includes('Staff Management'), 'doctor must not see Staff Management nav');
   assertContains(textOf(doctorDocument.getElementById('messages-region')), 'Your inbox is empty', 'empty inbox state missing');
 
   // Nurses have no Messages surface and never fetch it.

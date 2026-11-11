@@ -50,7 +50,7 @@ export function navItemsFor(user) {
     items.push({ key: 'messages', label: 'Messages', href: 'messages.html' });
   }
   if (hasAnyPermission(user, ['staff:read', 'staff:manage', 'role:assign'])) {
-    items.push({ key: 'admin', label: 'Admin', href: 'admin.html' });
+    items.push({ key: 'admin', label: 'Staff Management', href: 'admin.html' });
   }
   if (hasPermission(user, 'analytics:read')) {
     // The palette surfaces this destination as an action ("Open Analytics").
