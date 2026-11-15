@@ -12,7 +12,7 @@
 | Metric | Result |
 |---|---|
 | Original dictionary entries | **1,445** |
-| Final dictionary entries | **1,544** |
+| Final dictionary entries | **1,551** |
 | Existing values corrected | **147** |
 | Missing strings added | **99** |
 | Entries removed | **0** |
@@ -449,12 +449,12 @@ The localization test verifies:
 
 ## 13. Remaining limitations
 
-1. **Not every one of the 1,544 entries was manually verified against an external dictionary entry.** High-risk clinical, administrative, and legal terminology received targeted review; general UI text received consistency and integrity checks.
+1. **Not every one of the 1,551 entries was manually verified against an external dictionary entry.** High-risk clinical, administrative, and legal terminology received targeted review; general UI text received consistency and integrity checks.
 2. **A native Bulgarian clinical reviewer is still required** for the terms listed in section 9.
 3. **Qualified Bulgarian legal counsel is still required** for the legal pages. The English text remains authoritative.
 4. **Some dynamic templates may still fall back to English** if their rendered text does not match an exact dictionary entry or a defined pattern. The common count/duration/status patterns are covered.
 5. **AI-generated answer text and stored clinical data are not translated.** This is intentional.
-6. **The Bulgarian dictionary is large (1,544 entries)** and should be proofread as part of a release process.
+6. **The Bulgarian dictionary is large (1,551 entries)** and should be proofread as part of a release process.
 7. **No claim of regulatory, clinical, GDPR, or HIPAA approval is made.**
 
 ---

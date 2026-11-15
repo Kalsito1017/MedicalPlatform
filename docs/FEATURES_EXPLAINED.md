@@ -862,7 +862,7 @@ flowchart LR
   Bulgarian, otherwise English.
 - **Persistence** — the choice is stored in `localStorage` under
   `medicore-language`; no clinical data is stored.
-- **Dictionary** — 1,544 Bulgarian entries covering static HTML, rendered UI text,
+- **Dictionary** — 1,551 Bulgarian entries covering static HTML, rendered UI text,
   validation/error messages, legal pages, and print labels.
 - **Dynamic patterns** — counts, durations, relative times, status transitions, and
   Bulgarian pluralization for 0/1/2/5/11/21/25/101.

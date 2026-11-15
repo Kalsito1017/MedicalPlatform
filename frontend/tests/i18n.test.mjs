@@ -6,8 +6,9 @@
  *
  * Run with: node frontend/tests/i18n.test.mjs
  */
-import { installDom, textOf } from './domshim.mjs';
+import { installDom, settle, textOf } from './domshim.mjs';
 import { BG } from '../assets/js/i18n-bg.js';
+import { readFileSync } from 'node:fs';
 
 const results = [];
 async function check(name, fn) {
@@ -34,6 +35,40 @@ function placeholders(value) {
   return [...String(value).matchAll(PLACEHOLDER)].map((match) => match[1]).sort();
 }
 
+function decodeEntities(value) {
+  return String(value)
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&mdash;/g, '\u2014')
+    .replace(/&middot;/g, '\u00b7')
+    .replace(/&ldquo;/g, '\u201c')
+    .replace(/&rdquo;/g, '\u201d')
+    .replace(/&rsquo;/g, '\u2019')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+/** Visible text segments of a legal page, with code/script/style removed. */
+function legalTextSegments(file) {
+  const html = readFileSync(new URL(`../${file}`, import.meta.url), 'utf8');
+  return html
+    .replace(/<!--[\s\S]*?-->/g, '\n')
+    .replace(/<script[\s\S]*?<\/script>/gi, '\n')
+    .replace(/<style[\s\S]*?<\/style>/gi, '\n')
+    .replace(/<code[\s\S]*?<\/code>/gi, '\n')
+    .replace(/<pre[\s\S]*?<\/pre>/gi, '\n')
+    .replace(/<textarea[\s\S]*?<\/textarea>/gi, '\n')
+    .replace(/<[^>]*>/g, '\n')
+    .split('\n')
+    .map(decodeEntities)
+    .map((value) => value.replace(/\s+/g, ' ').trim())
+    .filter((value) => value && /[A-Za-z\u0410-\u044f]/.test(value));
+}
+
 const CORE_TERMS = {
   Dashboard: 'Табло',
   Patients: 'Пациенти',
@@ -53,6 +88,9 @@ const CORE_TERMS = {
   'System Logs': 'Логове',
   'Terms and Conditions': 'Условия и правила',
   'Privacy Policy': 'Политика за поверителност',
+  'Back to dashboard': 'Обратно към таблото',
+  'View all patients': 'Всички пациенти',
+  Born: 'Роден(а)',
 };
 
 await check('dictionary has no missing or empty Bulgarian entries', () => {
@@ -83,6 +121,21 @@ await check('core terminology is consistently translated', () => {
   const joined = Object.values(BG).join(' ');
   for (const forbidden of ['бекенд', 'акаунт', 'абнорм', 'одиторски', 'медикамент']) {
     assert(!joined.toLowerCase().includes(forbidden), `unreviewed term remains: ${forbidden}`);
+  }
+});
+
+await check('legal pages have complete Bulgarian coverage', () => {
+  const skip = new Set([
+    'Това е български превод за удобство. При несъответствие меродавен е английският текст.',
+  ]);
+  for (const file of ['privacy.html', 'terms.html']) {
+    const missing = legalTextSegments(file).filter(
+      (text) => !skip.has(text) && !(text in BG),
+    );
+    assert(
+      missing.length === 0,
+      `${file}: missing translations: ${missing.slice(0, 5).join(' | ')}`,
+    );
   }
 });
 
@@ -201,6 +254,29 @@ await check('clinical identifiers and names are never translated', async () => {
   i18n.setLanguage('en');
 });
 
+await check('dashboard patient cards localize birth and sex labels', async () => {
+  installDom();
+  const i18n = await import('../assets/js/i18n.js');
+  const ui = await import('../assets/js/ui.js');
+  i18n.setLanguage('bg');
+  const card = ui.renderPatientCard({
+    id: 'p1',
+    display_name: 'Test Patient',
+    mrn: 'MRN-0001',
+    birth_date: '1990-01-02',
+    sex: 'female',
+  });
+  document.body.append(card);
+  i18n.applyLanguage(card);
+  const text = textOf(card);
+  assert(text.includes('Роден(а)'), `birth label not translated: ${text}`);
+  assert(text.includes('Женски'), `sex label not translated: ${text}`);
+  assert(!text.includes('female'), `lowercase sex leaked: ${text}`);
+  i18n.setLanguage('en');
+  assert(textOf(card).includes('Born'), 'birth label not restored');
+  assert(textOf(card).includes('Female'), 'sex label not restored');
+});
+
 await check('attributes and browser default/persistence are handled', async () => {
   installDom();
   const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
@@ -234,6 +310,46 @@ await check('attributes and browser default/persistence are handled', async () =
     if (storageDescriptor) Object.defineProperty(globalThis, 'localStorage', storageDescriptor);
     else delete globalThis.localStorage;
   }
+});
+
+await check('legal page shows Back to dashboard when a session exists', async () => {
+  installDom();
+  const header = document.createElement('header');
+  header.className = 'legal-header';
+  const actions = document.createElement('div');
+  actions.className = 'legal-header__actions';
+  const headerLink = document.createElement('a');
+  headerLink.setAttribute('href', 'index.html');
+  headerLink.setAttribute('data-legal-session-link', '');
+  headerLink.textContent = 'Sign in';
+  actions.append(headerLink);
+  header.append(actions);
+  const footerLink = document.createElement('a');
+  footerLink.setAttribute('href', 'index.html');
+  footerLink.setAttribute('data-legal-session-link', '');
+  footerLink.textContent = 'Sign in';
+  document.body.append(header, footerLink);
+
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/auth/me')) {
+      return new Response(JSON.stringify({
+        id: 'u1',
+        email: 'doctor@example.com',
+        display_name: 'Dr Test',
+        roles: ['doctor'],
+        permissions: ['patient:read'],
+        is_active: true,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  await import(`../assets/js/legal.js?legal=${Date.now()}`);
+  await settle(25);
+  equal(headerLink.getAttribute('href'), 'dashboard.html', 'header link target');
+  equal(footerLink.getAttribute('href'), 'dashboard.html', 'footer link target');
+  equal(textOf(headerLink), 'Back to dashboard', 'header link label');
+  equal(textOf(footerLink), 'Back to dashboard', 'footer link label');
 });
 
 for (const result of results) {

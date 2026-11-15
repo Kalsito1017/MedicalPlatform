@@ -110,7 +110,7 @@ function renderRecentPatients(user) {
   const section = ui.el('section', { class: 'stack', 'aria-labelledby': 'recent-heading' },
     ui.el('div', { class: 'toolbar' },
       ui.el('h2', { class: 'card__title', id: 'recent-heading', text: 'Recent patients' }),
-      ui.el('a', { href: 'patients.html' }, 'View all patients'),
+      ui.el('a', { class: 'btn btn-secondary btn-sm', href: 'patients.html' }, 'View all patients'),
     ),
     grid,
   );

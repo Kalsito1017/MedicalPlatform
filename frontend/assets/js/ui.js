@@ -570,6 +570,38 @@ export function patientId(patient) {
   return patient ? patient.id || patient.patient_id : null;
 }
 
+const SEX_LABELS = {
+  male: 'Male',
+  female: 'Female',
+  m: 'Male',
+  f: 'Female',
+};
+
+export function patientSexLabel(value) {
+  const raw = value == null ? '' : String(value).trim();
+  if (!raw) return null;
+  return SEX_LABELS[raw.toLowerCase()] || raw;
+}
+
+/**
+ * Build the "Born <date> • <sex>" line as separate text nodes so the i18n
+ * translator can localize each phrase and restore it on language change.
+ */
+export function patientMetaNodes(birth, sex, { fallback = null } = {}) {
+  const nodes = [];
+  if (birth) {
+    nodes.push(el('span', {}, 'Born '), el('span', {}, birth));
+  } else if (fallback) {
+    nodes.push(el('span', {}, fallback));
+  }
+  const label = patientSexLabel(sex);
+  if (label) {
+    if (nodes.length > 0) nodes.push(document.createTextNode(' \u2022 '));
+    nodes.push(el('span', {}, label));
+  }
+  return nodes;
+}
+
 /**
  * Dashboard/search patient card: initials avatar, bold name, MRN, date of
  * birth + sex, chevron. Real fields only — no invented vitals, insurers, or
@@ -580,14 +612,12 @@ export function renderPatientCard(patient) {
   const name = patientName(patient);
   const birth = formatDate(patientBirthDate(patient));
   const sex = patientSex(patient);
-  const meta = [birth ? `Born ${birth}` : null, sex || null]
-    .filter(Boolean)
-    .join(' \u2022 ');
+  const metaNodes = patientMetaNodes(birth, sex);
 
   const body = [
     el('p', { class: 'patient-card__name', text: name }),
     el('p', { class: 'patient-card__mrn mono', text: `MRN: ${patientMrn(patient) || 'Not recorded'}` }),
-    meta ? el('p', { class: 'patient-card__meta', text: meta }) : null,
+    metaNodes.length > 0 ? el('p', { class: 'patient-card__meta' }, ...metaNodes) : null,
   ];
 
   const inner = [

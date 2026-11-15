@@ -244,9 +244,9 @@ function renderDemographics(patient) {
   const avatarNode = document.getElementById('patient-avatar');
   if (avatarNode) avatarNode.textContent = ui.initials(name);
 
-  const metaLine = [birth ? `Born ${birth}` : 'Date of birth not recorded', sex || null]
-    .filter(Boolean)
-    .join(' \u2022 ');
+  const metaNodes = ui.patientMetaNodes(birth, sex, {
+    fallback: 'Date of birth not recorded',
+  });
 
   const copy = copyValueButton(mrn, 'Copy MRN', 'MRN copied to the clipboard.');
   region.append(
@@ -255,7 +255,7 @@ function renderDemographics(patient) {
       copy.button,
     ),
     copy.feedback,
-    ui.el('p', { class: 'patient-header__line', text: metaLine }),
+    ui.el('p', { class: 'patient-header__line' }, ...metaNodes),
   );
 
   const heading = document.getElementById('patient-heading');
