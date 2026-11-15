@@ -251,6 +251,17 @@ async def test_security_doc_audit_inventory_is_emitted(
     # The demo test environment has no LLM configured: the endpoint fails
     # closed and still records the proposal attempt (never the text).
     assert proposal.status_code == 503
+    correction = await client.post(
+        "/api/v1/appointments/transcription-corrections",
+        json={
+            "text": "Book a follow-up appointment next Monday at 10:00.",
+            "language": "en",
+        },
+        headers=csrf_headers(client),
+    )
+    # Correction analysis is optional without an LLM, but the read-only
+    # request must still succeed and be audited (metadata only).
+    assert correction.status_code == 200, correction.text
 
     # --- Permission denial ----------------------------------------------
     assert (await client.get("/api/v1/staff")).status_code == 403
