@@ -23,8 +23,9 @@ removed entirely: "not a diagnosis or treatment recommendation", "not
 clinically validated / not a medical device / not for clinical use",
 "INFORMATIONAL ONLY" pills, "AI-generated insights for clinical review …"
 subtitles, quick-action caveats, and the About dialog's disclaimer content
-(the dialog is now a plain **About** panel: product name/version + issue-
-reporting contact; the `data-open-about` hook is unchanged). AI assistant
+(the dialog is now a plain **About** panel: product name/version + links to the
+public Privacy Policy and Terms pages; the `data-open-about` hook is
+unchanged). AI assistant
 answers no longer carry an AI badge or a model footer. The separate
 appointment-proposal card remains explicitly labelled **AI-generated** because
 it is a proposed clinical action awaiting human confirmation.
@@ -39,6 +40,12 @@ surface rule with a static hygiene check ("product surface carries no
 de-marked labelling or disclaimer copy"); its banned fragments are assembled
 from string pieces so tree-wide sweep greps stay clean, and the pattern is
 word-bounded so "demographics" terminology is deliberately not matched.
+
+**Public legal pages are the deliberate exception.** `privacy.html` and
+`terms.html` must state the synthetic-data scope, the absence of clinical
+approval, and clearly marked legal placeholders. They are excluded from the
+de-marking sweep and must be reviewed by qualified counsel before real use.
+Clinical and marketing surfaces remain de-marked.
 
 ---
 
@@ -66,6 +73,36 @@ word-bounded so "demographics" terminology is deliberately not matched.
 Dark mode (`prefers-color-scheme: dark`) swaps the token values only; the same
 components restyle automatically.
 
+### Visual identity layer: contour lines + thermal gradients (2026-11-14)
+
+- `--bg-contour-image` points to a static, local SVG
+  (`assets/images/contour-lines-light.svg` or `contour-lines-dark.svg`).
+  The paths are thin, irregular topographic lines at low opacity; there are
+  no filters, no animation, no external requests and no inline styles.
+- `--bg-thermal-image` layers three soft radial gradients (cyan, electric blue,
+  violet) at very low alpha over the canvas. `body` stacks them as
+  `background-image: var(--bg-thermal-image), var(--bg-contour-image)` with
+  `cover` sizing.
+- `--voice-contour-image` uses the dark contour asset inside the voice-listener
+  panel and Messages workspace, which remain intentionally dark in both themes.
+- `--surface-sheen` adds a restrained top-light gradient to cards, dialogs,
+  command palette, toasts, state panels and the help card. Tables stay solid.
+- `--active-nav-gradient`, `--focus-ring`, `--color-cyan`, `--color-blue` and
+  `--color-violet` centralize the selected-nav treatment, cyan focus glow and
+  the three thermal accents.
+- Dark palette tokens were aligned to the navy/cyan/violet direction:
+  canvas `#080f24`, secondary `#0c1630`, elevated `#111e3a`, primary text
+  `#f1f5f9`, secondary `#94a3b8`, border `rgba(148,163,184,0.16)`.
+  Semantic success/warn/danger tokens are unchanged.
+- The light theme keeps its existing slate/white surfaces and uses a much
+  fainter contour/thermal layer, so light/dark behavior still follows the
+  existing `data-theme` system and `prefers-color-scheme` fallback.
+- Sidebar and topbar use a translucent surface with a restrained
+  `backdrop-filter`; an `@supports` fallback uses the solid surface token.
+  There are no background animations; `prefers-reduced-motion` continues to
+  disable the existing motion system, and the voice orb animation remains the
+  only prominent motion.
+
 ### Typography
 
 System stack only (CSP: no webfonts): `ui-sans-serif, system-ui, -apple-system,
@@ -84,9 +121,10 @@ headings 700 weight, tight leading.
 
 ## 2. Component vocabulary
 
-- **App shell** — white sidebar (brand + icon nav + "Need help?" card) with a
-  subtle right border; sticky topbar with role chip and user block (initials
-  avatar + display name + role); light slate content canvas, `max-width 75rem`.
+- **App shell** — surface sidebar (white in light, navy gradient in dark; brand +
+  icon nav + "Need help?" card) with a subtle right border; sticky translucent
+  topbar with role chip and user block (initials avatar + display name + role);
+  contour/thermal content canvas, `max-width 75rem`.
   Collapses below 960px to a stacked layout where the `#nav-toggle` "Menu"
   button expands `#site-nav` (the pre-existing toggle behaviour, unchanged).
 - **Buttons** — 40px height (`.btn`), radius 10px: `btn-primary` (solid blue),
@@ -138,13 +176,20 @@ headings 700 weight, tight leading.
   interface is unaffected. Any section load failure blocks printing and offers
   a retry.
 - **AI Assistant page** (`ai.html`, nav item "AI Assistant" with the sparkles
-  icon, shown only with `patient:read`) — the general-lookup companion to the
-  AI Patient tab: same `ai-card` vocabulary at page scale (gradient header) with
-  a chat transcript (`#ai-response-region`) that keeps the conversation of the
-  current page view, suggested-question chips that fill the composer (plain
-  text shortcuts — real queries, no automation), and an "Ask about a patient"
-  link to the real patient list (`patients.html` → `patient.html?id=…`; a
-  detail page needs a concrete record id, so the list is the honest entry).
+  icon, shown only with `patient:read`) — a two-pane general-lookup workspace:
+  - left conversation rail: **New conversation**, client-side search over the
+    loaded bounded history page, selectable saved exchanges, and **Clear
+    history** (confirm dialog). Selecting an entry renders its saved question,
+    answer, tools and citations in the main pane; it does not create threads or
+    merge independent exchanges. New conversation resets the main pane without
+    deleting history.
+  - right chat pane: gradient assistant header with a static **General lookup**
+    context label, chat transcript (`#ai-response-region`), suggested-question
+    chips that fill the composer, and an "Ask about a patient" link to the real
+    patient list (`patients.html` → `patient.html?id=…`; a detail page needs a
+    concrete record id, so the list is the honest entry).
+  - desktop keeps both panes; narrow screens expose the rail as an off-canvas
+    drawer with a Conversations toggle, close button and backdrop.
   Composer: send + cancel + 2000-char counter. All patient-panel states kept:
   loading, cancel, 503 unavailable, 429 countdown, `describeApiError` errors
   incl. the network/offline banner. It posts `{ question }` (general lookup
@@ -184,7 +229,7 @@ Real surfaces only (project rule: every control must work, no invented data):
 | Mockup concept | Mapped to | Notes |
 |---|---|---|
 | Sidebar brand + nav + "Need help?" | `app-shell` sidebar; nav items derived from real permissions (Dashboard; Patients for `patient:read`; Staff Management for `staff:read/manage/role:assign`) | "Need help?" is wired to the real About dialog + issue `mailto:` |
-| Role chip + user block | topbar role chip (real `roles`) + initials avatar | job titles do not exist in the API; the user block subtitle shows the real role label |
+| Role chip + user block | topbar role chip (real `roles`) + role-aware avatar (local portrait for seeded demo staff, initials otherwise) | job titles do not exist in the API; the user block subtitle shows the real role label |
 | "Welcome back, Dr. Mitchell" | dashboard `Welcome back, {display_name}` + role badges | first-name-only greeting would misreport the real display name |
 | Patient card grid | dashboard recent patients (`GET /patients?limit=8`) + patient search results | see "omitted" rows for the card contents |
 | Quick actions row | "Quick actions" tiles — only real destinations (Patients, Admin) | |
@@ -203,14 +248,14 @@ Real surfaces only (project rule: every control must work, no invented data):
   (PLAN.md, 2026-10-26) and, on 2026-10-30, all remaining visible origin
   labelling and disclaimer copy with it (see "De-marking decision" above):
   no demo/data-origin disclosure footer or banner remains on the product
-  surface; About/Report links live in the sidebar help card (and the compact
-  bottom-left landing footer). Synthetic provenance is documented only in the
-  internal docs.
-- **Appointments, Messages, Orders, Results, Reports, Settings, Population
-  Health, AI Insights, Alerts nav items** — no such features or endpoints exist;
-  every nav item must lead to a working surface. (The mockups' "AI Assistant"
-  item is real and built; "AI Insights" is that same AI surface under a
-  different mockup label and is not a separate page.)
+  surface; About/Privacy/Terms links live in the sidebar help card (and the
+  compact bottom-left landing footer). Synthetic provenance is documented in
+  the internal docs and in the public legal pages, not on clinical surfaces.
+- **Orders, Results, Reports, Settings, Population Health, AI Insights, Alerts
+  nav items** — no such features or endpoints exist; every nav item must lead to
+  a working surface. (The mockups' "AI Assistant" item is real and built;
+  "AI Insights" is that same AI surface under a different mockup label and is
+  not a separate page.)
 - **"New Patient / Order Labs / Schedule Visit" quick actions** — no such
   features exist in the API.
 - **⌘K search chip and dashboard search box** — no keyboard-shortcut search is
@@ -234,9 +279,9 @@ Real surfaces only (project rule: every control must work, no invented data):
 - **Row action icons as the only affordance (edit/lock/kebab)** — real actions
   are labelled buttons (Grant role, Revoke …, Activate/Deactivate) so they are
   unambiguous and keyboard/screen-reader friendly.
-- **Photo avatars** — no images from the web are allowed (CSP); coloured
-  initials circles are used instead, exactly as the fallback style of the
-  mockups.
+- **Photo avatars** — no images from the web are allowed (CSP); committed local
+  demo portraits are used for the seeded staff, and coloured initials remain the
+  fallback for unassigned identities.
 
 ## 4. Keeping the CSP hash untouched
 
@@ -832,6 +877,28 @@ sets `calendar_removed_at` and hides it immediately. The record still exists —
 the detail endpoint can return it, and audit history is unchanged. Doctors can
 cancel but do not get the immediate admin removal action.
 
+**Active expiry and History.** The calendar now has a **Calendar / History**
+switch. Active calendar rows use the actual `end_at`: scheduled/confirmed rows
+remain until that time (including in-progress visits), then disappear on the
+next backend response. A bounded timer refetches at the earliest active
+`end_at` and on tab visibility change; it never mutates appointment state.
+Completed/no-show rows leave the active calendar immediately and remain in
+History. History provides patient/MRN search, From/To dates, status (including
+**Past — Status not updated**), visit type, Admin doctor scoping, a retained
+table with patient, MRN, doctor, original start/end, visit type, duration,
+status, created/updated timestamps and a details action, plus bounded
+pagination. Doctor history is own-history; Nurse is clinic-wide read-only;
+Admin is clinic-wide. CSV export is shown only with `appointment:export`, uses
+an explicit From/To range, and is generated server-side.
+
+**Status actions and lifecycle.** Active scheduled/confirmed appointments get
+confirmed **Mark completed** and **Mark no-show** actions for Doctors/Admins;
+Nurses never see them. The detail dialog also shows an immutable lifecycle
+timeline (created, updated, rescheduled, status changed, calendar removed) with
+actor, timestamp and old/new values. Status changes remain terminal, do not
+rewrite notes/times, and are audited. Automatic time passing is not a status
+change.
+
 **Doctor scope.** A doctor sees only their own calendar and no doctor picker.
 An Admin sees a persistent doctor selector; appointment list/slots/
 availability/interpret requests carry `doctor_id`. The selected doctor is shown
@@ -853,15 +920,38 @@ flight; `409` shows the server's conflict message and refreshes slots.
 Creation is a normal explicit `POST /appointments`.
 
 **Voice panel.** Progressive enhancement, never a requirement:
-- `getUserMedia`/`MediaRecorder` are feature-detected; if unavailable the
-  panel says so and the manual transcript textarea remains.
-- A single explicit Start/Stop button, a 60-second auto-stop, and a visible
-  timer. Tracks are stopped on stop/clear/page-hide. There is no background
+- The primary control is one large circular microphone orb with a cyan/blue/
+  violet gradient ring and restrained glow. It is a native button with a
+  changing accessible label, keyboard focus, and visible focus ring.
+- States are explicit: idle (“Tap to speak”), requesting permission, listening
+  (“Listening…”), processing, success, and error. The status is a polite live
+  region; the timer is `aria-hidden` so it does not announce every tick.
+- A nine-bar waveform sits below the status. While listening it is driven by
+  real microphone RMS through an `AnalyserNode` (`data-level` 0–4); if Web Audio
+  is unavailable it falls back to a gentle CSS animation. No inline styles are
+  written. Motion stops under `prefers-reduced-motion`.
+- Tapping the orb again stops recording and automatically sends the audio to the
+  existing transcription endpoint. **Cancel recording** discards it and returns
+  to idle. Duplicate submissions are blocked while processing.
+- `getUserMedia`/`MediaRecorder` are feature-detected. Permission denial,
+  missing/busy microphones, empty audio, recording failure, network errors and
+  transcription-service errors each get a readable retry message.
+- The final `dataavailable`/`stop` events are awaited before microphone tracks
+  are released, with a 1.5-second safety timeout. Tracks and the AudioContext
+  are released on stop, cancel, clear and page hide. There is no background
   listening and no audio object URL.
-- Audio stays in a memory-only Blob until the user presses **Transcribe**.
-  Upload/retry states are plain status text; there is no persistent recording.
+- Audio stays in a memory-only Blob and is released after the upload attempt.
+  There is no persistent recording.
 - The transcript textarea is editable and capped at 2000 chars; manual typing
-  enables the same **Propose appointment** action.
+  enables the same **Propose appointment** action. A “What to say” example and
+  **Insert example request** action teach a complete request in Bulgarian or
+  English.
+- A deterministic **Did you mean** card below the transcript shows up to three
+  authorized patient name/MRN matches after transcription or typing (400 ms
+  debounce). It recognizes spaced/hyphenated MRNs such as `M-R-N-0-0-0-1` and
+  handles Bulgarian Cyrillic→Latin name typos without an LLM. Each suggestion
+  shows the matched fragment and a **Use** action that corrects the transcript
+  in place; it never auto-proposes or auto-creates an appointment.
 - The proposal card is explicitly labelled **AI-generated** and shows patient
   (or candidate buttons), date/time, duration, type, notes, missing fields, and
   warnings. Its action is **Review & create**, which only prefills the normal
@@ -886,14 +976,18 @@ and actual recording/transcription accuracy require a browser and a running
 whisper.cpp service; the automated suite covers DOM flows with a stubbed
 speech service and tests FFmpeg conversion separately.
 
-## 12. Doctor portraits and footer placement (2026-11-09)
+## 12. Staff portraits and footer placement (2026-11-09; portraits updated 2026-11-11)
 
-- Doctor identities use one of four local demo portraits in
-  `assets/images/doctors/` (`avatarForUser` is gated on the `doctor` role).
-  The top-bar identity, dashboard session card, admin staff rows, and
-  appointment detail doctor row show the portrait; nurses/admins keep the
-  initials avatar. The files are placeholder demo images (see the folder
-  README); replace them with approved staff photos before real use.
+- The three canonical demo accounts (Admin, Doctor, Nurse) have dedicated
+  synthetic demo portraits in `assets/images/staff/` (`admin-1.jpg`,
+  `doctor-1.jpg`, `nurse-1.jpg`), mapped by seeded email or display name.
+  The top-bar identity, dashboard session card, Staff Management rows, System
+  Logs sender avatars, Messages and appointment detail views use the portrait
+  through `ui.avatarForUser` / `ui.doctorAvatar`. Other doctors fall back to the
+  four local demo portraits in `assets/images/doctors/`; unknown nurses and
+  admins keep the initials avatar. The new files are AI-generated, demo-only
+  placeholders (provenance in `assets/images/staff/README.md`); replace them
+  with approved staff photos before real use.
 - The repeated full-width `.site-footer` bar was removed from every page. The
   About / Report an issue links remain in the bottom-left sidebar help card;
   the landing page keeps a compact, left-aligned footer outside the hero card
@@ -941,11 +1035,12 @@ themes. `color-scheme` follows the applied theme so native date/time controls
 and scrollbars match.
 
 **Readability.** Secondary/placeholder text uses the raised muted token; the
-Voice scheduling status is a left-border callout with tone variants
-(info/success/warn/error), the capture timer is a high-contrast pill, and the
-transcript textarea has a larger line-height, padding, and minimum height.
-`tests/smoke.mjs` computes WCAG contrast for primary/body/muted/error/warn/
-action pairs in both token sets (AA minimum, primary text 7:1).
+voice-listener status uses readable text labels with success/warn/error tone
+variants (never color alone), the timer is small muted text marked
+`aria-hidden`, and the transcript textarea has a larger line-height, padding,
+and minimum height. `tests/smoke.mjs` computes WCAG contrast for
+primary/body/muted/error/warn/action pairs in both token sets (AA minimum,
+primary text 7:1).
 
 **Landing exception.** The landing hero keeps its dark brand treatment, but the
 sign-in card, inputs, placeholders, helper text, secure/note copy, and footer
@@ -1015,29 +1110,56 @@ With JavaScript, the stored/system choice wins and updates live.
 
 ## 16. Internal messages (redesigned 2026-11-11)
 
-- The **Messages** sidebar item appears for Doctor/Admin only, after AI
-  Assistant and before Admin. Nurse has no navigation item and receives a
-  friendly denial on a direct page visit; every message endpoint re-checks
-  `message:read`/`message:write`.
-- The Messages content area is a dark, two-pane professional inbox: tabs with
-  real unread counts, a server-backed search field, compact message cards with
-  initials, subject, preview, relative timestamp and unread dot, plus a spacious
-  reading panel with sender/recipient header, full timestamp, safe pre-wrapped
-  body and Reply/New message actions.
+- The **Messages** sidebar item appears for Doctor, Nurse and Admin, after AI
+  Assistant and before Admin (Staff Management remains Admin-only). Every
+  message endpoint re-checks `message:read`/`message:write`; the Nurse still
+  receives no administrative navigation or permissions.
+- The Messages content area is a dark, three-pane workspace matching the
+  messaging reference:
+  - **left conversation list:** Messages heading, real inbox/sent counts,
+    folder tabs, server-backed search, and rows with directory-backed staff
+    avatar/photo, name, subject, preview, relative timestamp and unread dot.
+    Avatars come from `ui.avatarForUser` (seeded staff photos, doctor fallback
+    portraits, initials otherwise); no external images are loaded.
+  - **middle chat pane:** selected-message header with contact avatar, name,
+    role, route, timestamp and read badge; a date separator and an
+    incoming/outgoing chat bubble; and a persistent **inline composer** at the
+    bottom (recipient chip, optional subject, textarea, paperclip and send
+    button). Reply focuses this composer with the counterpart and `Re:` subject
+    prefilled; there is no compose dialog. The data model is still individual
+    messages, not threaded conversations.
+  - **attachments:** the paperclip opens the file picker, validates the
+    extension/size client-side, shows a removable filename/size chip, and sends
+    multipart to `POST /messages/attachments`. Message bubbles and the list
+    preview show the filename; the download control fetches the authenticated
+    sender/recipient-only endpoint. Files are never rendered inline.
+  - **right contact profile:** large avatar, staff name/role, real Reply and
+    New message actions, and subject/direction/time/read-state/attachment
+    details. The former red privacy notice is removed. No fake call, video,
+    block or presence controls are shown.
+  - The profile pane is hidden below 1280px; mobile keeps the existing
+    list→reading flow with Back to inbox.
 - The header count (`N messages in your inbox`, `N unread`) comes from the
   caller-private `GET /messages/counts` endpoint; search uses bounded
   server-side `q` filtering and never downloads the mailbox for browser search.
 - Selecting an inbox message marks it read through the recipient-only endpoint.
   On mobile the list becomes the first view and selection opens a full-width
   reading view with a Back to inbox action; desktop keeps both panes.
-- **New message** opens a compose dialog with active Doctor/Admin recipients
-  including role labels. The caller cannot message themselves; subject is
-  optional (≤200 chars), body is required (≤5000 chars). No attachments,
-  external delivery, or patient payload fields. Errors preserve the compose
-  input and sending is guarded against duplicate submission.
-- Only the caller's own inbox/sent items are returned. Message subjects/bodies
-  are never written to the audit trail; audit records only sender/recipient
-  metadata and the message resource id.
+- **New message** switches the middle pane to the same inline composer with
+  active Doctor/Nurse/Admin recipients including role labels. The caller cannot
+  message themselves; subject is optional (≤200 chars), body is optional when
+  a file is attached (otherwise 1–5000 chars). One attachment is supported per
+  message: PDF, PNG, JPEG, WebP, TXT, CSV, DOCX or XLSX up to 5 MB (server-side
+  hard ceiling 8 MB for the request). The server re-validates the extension,
+  magic signature and size. Errors preserve the compose input and sending is
+  guarded against duplicate submission. No external delivery or patient
+  payload fields were added.
+- Only the caller's own inbox/sent items are returned. All three roles can
+  message one another privately, but Admin gains no cross-mailbox visibility.
+  Message subjects/bodies/filenames and attachment bytes are never written to
+  the audit trail; audit records only the acting user, message resource id,
+  outcome/request id and timestamp. Downloads are audited as
+  `message.attachment.download`.
 
 ## 17. Patient creation (2026-11-09)
 
@@ -1077,8 +1199,9 @@ With JavaScript, the stored/system choice wins and updates live.
   Disconnected, with last-connected and last-event times. It never says LIVE
   while disconnected. Counters are backend values for the whole selected
   filtered period, not the visible rows; the note above the chat says so.
-- **Message:** incoming chat bubble with a local sender avatar (doctor portrait
-  when the demo directory has one, otherwise colored initials), sender name and
+- **Message:** incoming chat bubble with a local sender avatar (the dedicated
+  seeded staff portrait for the three canonical demo accounts, a doctor portrait
+  for other doctors when available, otherwise colored initials), sender name and
   role, event type, description, timestamp with milliseconds in
   `CLINIC_TIMEZONE`, severity badge, and safe metadata chips. INFO is
   neutral/blue, SUCCESS green, WARNING amber, ERROR red, SECURITY violet.
@@ -1089,7 +1212,8 @@ With JavaScript, the stored/system choice wins and updates live.
   ID/outcome filters and metadata search; Pause/Resume; Auto-scroll; Copy
   visible; bounded CSV export; Clear View. Manual upward scrolling disables
   forced follow and shows “N new events — Resume”. Clear View only clears the
-  browser display; it never deletes backend records.
+  browser display, behind an “Are you sure?” confirmation; it never deletes
+  backend records. The header intentionally has no group avatar.
 - **Reading order and motion:** DOM events are inserted chronologically by
   `(timestamp, event_id)`, keeping equal-timestamp order deterministic, with
   day separators and restrained arrival animation. There is no looping

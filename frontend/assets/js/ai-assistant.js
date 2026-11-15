@@ -14,9 +14,12 @@
 // page and in the textarea's accessible description).
 // Conversation history (docs/API.md "AI assistant" history): each successful
 // ask is persisted server-side to the caller's private history and listed in
-// the History section below the chat (newest first, expandable full answers
-// with citations, "Clear history" behind a confirm dialog). History lives in
-// the backend per user - never in web storage, never logged.
+// the left conversation rail (newest first, client-side search, selectable
+// full answers with citations, "Clear history" behind a confirm dialog).
+// History lives in the backend per user - never in web storage, never logged.
+// Selecting a saved conversation renders it in the main pane; asking a new
+// question starts a fresh exchange. The rail becomes a drawer on narrow
+// screens. No thread merging or client persistence is introduced.
 // Permission gating: the nav item and the composer render only for accounts
 // with patient:read; the backend re-checks every request server-side.
 // ---------------------------------------------------------------------------
@@ -41,7 +44,33 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 const aiRequest = { controller: null };
-const state = { started: false };
+const state = {
+  started: false,
+  historyEntries: [],
+  historyQuery: '',
+  selectedHistoryKey: null,
+};
+
+function historyKey(entry) {
+  return String(
+    entry.id ||
+    entry.local_id ||
+    `${entry.created_at || ''}|${entry.question || ''}`,
+  );
+}
+
+function emptyConversationNode() {
+  return ui.el('p', {
+    class: 'text-muted',
+    id: 'ai-empty-note',
+    text: 'No question asked yet. Ask a general question, or open a patient record for patient-specific questions.',
+  });
+}
+
+function setHistoryStatus(message) {
+  const status = document.getElementById('ai-history-status');
+  if (status) status.textContent = message || '';
+}
 
 function setAiStatus(message) {
   const status = document.getElementById('ai-status');
@@ -120,6 +149,10 @@ function initAiPage(user) {
     if (suggestions) suggestions.hidden = true;
     const historySection = document.getElementById('ai-history');
     if (historySection) historySection.hidden = true;
+    const historyToggle = document.getElementById('ai-history-toggle');
+    if (historyToggle) historyToggle.hidden = true;
+    const workspace = document.getElementById('ai-workspace');
+    if (workspace) workspace.classList.add('ai-workspace--no-rail');
     ui.clear(region);
     region.append(ui.el('div', { class: 'state-panel state-panel--empty' },
       ui.el('h3', { class: 'state-panel__title', text: 'AI assistant not available' }),
@@ -149,6 +182,7 @@ function initAiPage(user) {
     askAssistant();
   });
   syncQuestionCounter();
+  initRail();
   initHistory();
 }
 
@@ -300,6 +334,89 @@ function renderAiError(container, error) {
 
 /* -------------------------------------------------------------- history */
 
+function setRailOpen(open) {
+  const workspace = document.getElementById('ai-workspace');
+  const toggle = document.getElementById('ai-history-toggle');
+  const backdrop = document.getElementById('ai-rail-backdrop');
+  if (workspace) workspace.classList.toggle('is-rail-open', open);
+  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (backdrop) backdrop.hidden = !open;
+  if (open) document.getElementById('ai-history-close')?.focus();
+}
+
+function closeRail() {
+  setRailOpen(false);
+}
+
+function renderHistoryRailState() {
+  const list = document.getElementById('ai-history-list');
+  if (!list) return;
+  const query = state.historyQuery.trim().toLowerCase();
+  const items = query
+    ? state.historyEntries.filter((entry) => {
+      const haystack = [
+        entry.question,
+        entry.answer,
+        ...(Array.isArray(entry.used_tools) ? entry.used_tools : []),
+      ].join(' ').toLowerCase();
+      return haystack.includes(query);
+    })
+    : state.historyEntries;
+  aiHistory.renderHistoryRail(list, items, {
+    selectedKey: state.selectedHistoryKey,
+    onSelect: selectHistoryEntry,
+    emptyText: query ? 'No conversations match your search.' : 'No questions yet.',
+  });
+}
+
+function initRail() {
+  document.getElementById('ai-history-toggle')?.addEventListener('click', () => setRailOpen(true));
+  document.getElementById('ai-history-close')?.addEventListener('click', () => closeRail());
+  document.getElementById('ai-rail-backdrop')?.addEventListener('click', () => closeRail());
+  document.getElementById('ai-new-conversation')?.addEventListener('click', () => newConversation());
+  const search = document.getElementById('ai-history-search');
+  search?.addEventListener('input', () => {
+    state.historyQuery = search.value;
+    renderHistoryRailState();
+  });
+  setRailOpen(false);
+}
+
+function selectHistoryEntry(entry) {
+  if (aiRequest.controller) aiRequest.controller.abort();
+  const region = document.getElementById('ai-response-region');
+  if (!region) return;
+  state.selectedHistoryKey = historyKey(entry);
+  state.started = false;
+  ui.clear(region);
+  for (const node of aiHistory.historyConversationNodes(entry)) region.append(node);
+  setAiStatus('Loaded a saved conversation.');
+  setHistoryStatus('Saved conversation selected.');
+  renderHistoryRailState();
+  closeRail();
+  if (typeof region.focus === 'function') region.focus();
+}
+
+function newConversation() {
+  if (aiRequest.controller) aiRequest.controller.abort();
+  const region = document.getElementById('ai-response-region');
+  const input = document.getElementById('ai-question');
+  if (!region) return;
+  state.started = false;
+  state.selectedHistoryKey = null;
+  ui.clear(region);
+  region.append(emptyConversationNode());
+  if (input) {
+    input.value = '';
+    syncQuestionCounter();
+    if (typeof input.focus === 'function') input.focus();
+  }
+  setAiStatus('Started a new conversation.');
+  setHistoryStatus('New conversation started.');
+  renderHistoryRailState();
+  closeRail();
+}
+
 async function initHistory() {
   const clearButton = document.getElementById('ai-history-clear');
   if (clearButton) {
@@ -311,7 +428,8 @@ async function initHistory() {
   if (!list) return;
   const key = cache.keyFor('/ai/conversations', { limit: 20, offset: 0 });
   const renderItems = (page) => {
-    aiHistory.renderHistoryList(list, page && Array.isArray(page.items) ? page.items : []);
+    state.historyEntries = page && Array.isArray(page.items) ? page.items : [];
+    renderHistoryRailState();
   };
   if (!cache.peek(key)) {
     ui.renderLoading(list, { label: 'Loading conversation history', rows: 2, wrapperTag: 'li' });
@@ -325,6 +443,7 @@ async function initHistory() {
 
 async function clearHistoryFlow() {
   const list = document.getElementById('ai-history-list');
+  const viewingSaved = state.selectedHistoryKey != null && !state.started;
   const confirmed = await ui.confirmDialog({
     title: 'Clear your question history?',
     message: 'This permanently removes every saved question and answer from your account \u2014 all patients and general lookups. It cannot be undone.',
@@ -336,7 +455,18 @@ async function clearHistoryFlow() {
   try {
     await aiHistory.clearHistory();
     cache.invalidate('/ai/conversations');
-    aiHistory.renderHistoryList(list, []);
+    state.historyEntries = [];
+    state.selectedHistoryKey = null;
+    state.historyQuery = '';
+    const search = document.getElementById('ai-history-search');
+    if (search) search.value = '';
+    if (viewingSaved) {
+      const region = document.getElementById('ai-response-region');
+      ui.clear(region);
+      region.append(emptyConversationNode());
+    }
+    renderHistoryRailState();
+    setHistoryStatus('Your question history was cleared.');
     setAiStatus('Your question history was cleared.');
   } catch (error) {
     aiHistory.renderHistoryFailure(list, error);
@@ -344,17 +474,21 @@ async function clearHistoryFlow() {
   }
 }
 
-/** The just-finished exchange joins the history list without a reload. */
+/** The just-finished exchange joins the conversation rail without a reload. */
 function recordHistoryEntry(question, payload) {
   cache.invalidate('/ai/conversations');
-  aiHistory.appendHistoryEntry(document.getElementById('ai-history-list'), {
+  const entry = {
+    local_id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     question,
     answer: payload && typeof payload.answer === 'string' ? payload.answer : '',
     used_tools: Array.isArray(payload && payload.used_tools) ? payload.used_tools : [],
     citations: Array.isArray(payload && payload.citations) ? payload.citations : [],
     model: payload && typeof payload.model === 'string' ? payload.model : '',
     created_at: new Date().toISOString(),
-  });
+  };
+  state.historyEntries = [entry, ...state.historyEntries].slice(0, 20);
+  state.selectedHistoryKey = historyKey(entry);
+  renderHistoryRailState();
 }
 
 /* --------------------------------------------------------------- asking */
@@ -374,6 +508,8 @@ async function askAssistant() {
   if (!state.started) {
     ui.clear(region);
     state.started = true;
+    state.selectedHistoryKey = null;
+    renderHistoryRailState();
   }
 
   if (aiRequest.controller) aiRequest.controller.abort();

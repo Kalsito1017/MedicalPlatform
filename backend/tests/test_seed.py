@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     Appointment,
+    AppointmentEvent,
     AuditEvent,
     ClinicalNote,
     Diagnosis,
@@ -26,6 +27,7 @@ from app.models import (
     LabResult,
     Medication,
     Message,
+    MessageAttachment,
     Patient,
     PatientAssignment,
     Permission,
@@ -74,6 +76,7 @@ DEMO_PASSWORDS = {
 }
 
 ENTITIES = {
+    "appointment_events": AppointmentEvent,
     "roles": Role,
     "staff_users": StaffUser,
     "role_grants": UserRole,
@@ -98,6 +101,7 @@ ENTITIES = {
     "time_off": TimeOff,
     "appointments": Appointment,
     "messages": Message,
+    "message_attachments": MessageAttachment,
 }
 
 
@@ -112,6 +116,8 @@ async def _clear_all(db_engine) -> None:
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         for model in (
             AuditEvent,
+            AppointmentEvent,
+            MessageAttachment,
             Message,
             Appointment,
             TimeOff,
@@ -314,8 +320,8 @@ async def test_seed_clinical_layer_counts(db_engine) -> None:
     async with AsyncSession(db_engine, expire_on_commit=False) as session:
         counts = await _counts(session)
 
-        # Reference data: exact catalog counts (16 permission keys, 17 tests).
-        assert counts["permissions"] == PERMISSION_COUNT == 16
+        # Reference data: exact catalog counts (17 permission keys, 17 tests).
+        assert counts["permissions"] == PERMISSION_COUNT == 17
         assert counts["test_catalog"] == TEST_CATALOG_COUNT == 17
         assert counts["reference_ranges"] == REFERENCE_RANGE_COUNT
 

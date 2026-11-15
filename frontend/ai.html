@@ -6,7 +6,13 @@
   <meta name="robots" content="noindex, nofollow">
   <title>AI Assistant — MediCore Clinical Platform</title>
   <meta name="description" content="AI assistant for general lookups across patient records.">
-  <link rel="icon" href="assets/images/favicon.svg">
+  <meta name="theme-color" content="#06101e">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/assets/images/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/images/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/images/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
@@ -46,10 +52,11 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
             Need help?
           </p>
-          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
+          <p class="help-card__text">Open the About panel or review the privacy and terms information for this deployment.</p>
           <ul class="help-card__links">
             <li><button type="button" class="link-button" data-open-about>About</button></li>
-            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
+            <li><a href="privacy.html">Privacy</a></li>
+            <li><a href="terms.html">Terms</a></li>
           </ul>
         </div>
       </div>
@@ -76,61 +83,72 @@
         </div>
 
         <div id="page-body">
-          <section class="card ai-card ai-page-card" aria-labelledby="ai-heading">
-            <div class="ai-card__header">
-              <img class="ai-avatar ai-avatar--lg" src="assets/images/favicon.svg" alt="" aria-hidden="true">
-              <h2 id="ai-heading">AI Assistant</h2>
-            </div>
-            <p class="ai-card__subtitle">
-              Answers are built only from the records your account may read.
-            </p>
+          <section class="ai-workspace" id="ai-workspace" aria-label="AI Assistant workspace">
+            <button class="ai-rail__backdrop" id="ai-rail-backdrop" type="button" aria-label="Close conversations" hidden></button>
 
-            <div class="ai-suggestions" id="ai-suggestions" aria-label="Suggested questions"></div>
+            <aside class="ai-rail" id="ai-history" aria-labelledby="ai-history-heading">
+              <div class="ai-rail__head">
+                <h2 id="ai-history-heading">Conversations</h2>
+                <button class="btn btn-ghost btn-sm ai-rail__close" type="button" id="ai-history-close" aria-label="Close conversations">Close</button>
+              </div>
+              <button class="btn btn-primary ai-rail__new" type="button" id="ai-new-conversation">New conversation</button>
+              <label class="visually-hidden" for="ai-history-search">Search conversations</label>
+              <input class="ai-rail__search" id="ai-history-search" type="search" placeholder="Search conversations" autocomplete="off">
+              <p class="ai-rail__note">Saved questions and answers for this account. History stays server-side, never in this browser.</p>
+              <ul class="ai-history ai-history--rail" id="ai-history-list"></ul>
+              <div class="ai-rail__foot">
+                <button class="btn btn-secondary btn-sm" type="button" id="ai-history-clear">Clear history</button>
+              </div>
+              <div id="ai-history-status" class="visually-hidden" role="status" aria-live="polite"></div>
+            </aside>
 
-            <div class="ai-chat ai-chat--page" id="ai-response-region" role="region" aria-label="Assistant conversation" tabindex="0">
-              <p class="text-muted" id="ai-empty-note">No question asked yet. Ask a general question,
-                or open a patient record for patient-specific
-                questions.</p>
-            </div>
-
-            <form class="ai-composer" id="ai-question-form" novalidate>
-              <div class="field">
-                <label for="ai-question">Your question</label>
-                <div class="ai-composer__box">
-                  <textarea id="ai-question" rows="3"
-                            aria-describedby="ai-question-hint ai-keyboard-hint ai-char-count"
-                            placeholder="Ask about patient records..."></textarea>
-                  <button class="ai-send hit-slop" type="button" id="ai-submit" aria-label="Send question" title="Send question">
-                    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>
-                  </button>
+            <section class="card ai-card ai-page-card" aria-labelledby="ai-heading">
+              <div class="ai-card__header">
+                <img class="ai-avatar ai-avatar--lg" src="assets/images/favicon.svg" alt="" aria-hidden="true">
+                <div class="ai-card__heading">
+                  <h2 id="ai-heading">AI Assistant</h2>
+                  <p class="ai-card__context" id="ai-context-label">General lookup</p>
                 </div>
-                <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are stored in this
-                  account&rsquo;s server-side history &mdash; never in this browser &mdash; and you can remove them any
-                  time with &ldquo;Clear history&rdquo; below.</p>
-                <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint"><kbd class="kbd">Enter</kbd> to send &middot; <kbd class="kbd">Shift</kbd>+<kbd class="kbd">Enter</kbd> for a new line.</p>
-                <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
-                <p class="field-error" id="ai-question-error" hidden></p>
+                <button class="btn btn-secondary btn-sm ai-history-toggle" type="button" id="ai-history-toggle" aria-expanded="false" aria-controls="ai-history">Conversations</button>
               </div>
-              <div class="form-actions">
-                <button class="btn btn-secondary" type="button" id="ai-cancel" hidden>Cancel request</button>
-                <a class="btn btn-secondary" id="ai-patient-link" href="patients.html">Ask about a patient</a>
+              <p class="ai-card__subtitle">
+                Answers are built only from the records your account may read.
+              </p>
+
+              <div class="ai-suggestions" id="ai-suggestions" aria-label="Suggested questions"></div>
+
+              <div class="ai-chat ai-chat--page" id="ai-response-region" role="region" aria-label="Assistant conversation" tabindex="0">
+                <p class="text-muted" id="ai-empty-note">No question asked yet. Ask a general question,
+                  or open a patient record for patient-specific
+                  questions.</p>
               </div>
-            </form>
 
-            <div id="ai-status" class="visually-hidden" role="status" aria-live="polite"></div>
-          </section>
+              <form class="ai-composer" id="ai-question-form" novalidate>
+                <div class="field">
+                  <label for="ai-question">Your question</label>
+                  <div class="ai-composer__box">
+                    <textarea id="ai-question" rows="3"
+                              aria-describedby="ai-question-hint ai-keyboard-hint ai-char-count"
+                              placeholder="Ask about patient records..."></textarea>
+                    <button class="ai-send hit-slop" type="button" id="ai-submit" aria-label="Send question" title="Send question">
+                      <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>
+                    </button>
+                  </div>
+                  <p class="field-hint" id="ai-question-hint">Up to 2000 characters. Questions and answers are stored in this
+                    account&rsquo;s server-side history &mdash; never in this browser &mdash; and you can remove them any
+                    time with &ldquo;Clear history&rdquo; in the conversations rail.</p>
+                  <p class="field-hint ai-keyboard-hint" id="ai-keyboard-hint"><kbd class="kbd">Enter</kbd> to send &middot; <kbd class="kbd">Shift</kbd>+<kbd class="kbd">Enter</kbd> for a new line.</p>
+                  <p class="char-counter" id="ai-char-count">0 / 2000 characters</p>
+                  <p class="field-error" id="ai-question-error" hidden></p>
+                </div>
+                <div class="form-actions">
+                  <button class="btn btn-secondary" type="button" id="ai-cancel" hidden>Cancel request</button>
+                  <a class="btn btn-secondary" id="ai-patient-link" href="patients.html">Ask about a patient</a>
+                </div>
+              </form>
 
-          <section class="card ai-history-card" id="ai-history" aria-labelledby="ai-history-heading">
-            <div class="ai-history__head">
-              <h2 id="ai-history-heading">Conversation history</h2>
-              <button class="btn btn-secondary btn-sm" type="button" id="ai-history-clear">Clear history</button>
-            </div>
-            <p class="ai-history__note">
-              Your saved questions and answers for this account, newest first &mdash; patient and general lookups.
-              Select an entry to read the full answer with the records it consulted. History is stored server-side in
-              your account (never in this browser); &ldquo;Clear history&rdquo; permanently removes all of it.
-            </p>
-            <ul class="ai-history" id="ai-history-list"></ul>
+              <div id="ai-status" class="visually-hidden" role="status" aria-live="polite"></div>
+            </section>
           </section>
         </div>
       </main>

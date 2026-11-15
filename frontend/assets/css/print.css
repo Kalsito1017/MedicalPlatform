@@ -10,22 +10,30 @@
   size: A4 portrait;
   margin: 27mm 14mm 18mm 14mm;
 
-  /* Progressive enhancement: browsers that support @page margin boxes will
-     print a page number. Chrome ignores these boxes, so the fixed footer below
-     also identifies the document. */
+  /* Running footer lives in the page margin, so it can never overlap the
+     report content. A single centered line leaves room for the browser's own
+     optional header/footer (URL left, page number right) without collisions.
+     Chrome/Edge render these margin boxes; browsers that do not support them
+     simply print the clean report body. */
   @bottom-center {
-    content: "MediCore · Patient Medical Record";
+    content: var(--print-footer, "MediCore · Patient Medical Record · Page ") counter(page) var(--print-footer-of, " of ") counter(pages);
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
     font-size: 7.5pt;
     color: #555;
+    text-align: center;
+    vertical-align: top;
+    padding-top: 2mm;
   }
+}
 
-  @bottom-right {
-    content: "Page " counter(page) " of " counter(pages);
-    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
-    font-size: 7.5pt;
-    color: #555;
-  }
+html[lang='bg'] {
+  --print-footer: "MediCore · Медицински запис · Страница ";
+  --print-footer-of: " от ";
+}
+
+html[lang='en'] {
+  --print-footer: "MediCore · Patient Medical Record · Page ";
+  --print-footer-of: " of ";
 }
 
 @media print {
@@ -76,23 +84,35 @@
     text-decoration: none;
   }
 
-  /* Running header: repeated on each printed page where the browser repeats
-     fixed-position elements. The first-page report body carries the same
-     identity again in the patient block, so the report remains identifiable
-     if a browser prints the running header only once. */
+  /* The running header is a repeated table header, not a fixed overlay:
+     browsers repeat <thead> on every page without covering the content. */
+  .print-repeat {
+    width: 100%;
+    border-collapse: collapse;
+  }
+
+  .print-repeat > thead {
+    display: table-header-group;
+  }
+
+  .print-repeat > thead > tr > td,
+  .print-repeat > tbody > tr > td {
+    padding: 0;
+    border: 0;
+  }
+
+  .print-repeat > tbody > tr {
+    break-inside: auto;
+  }
+
   .print-running-head {
-    position: fixed;
-    top: 7mm;
-    right: 14mm;
-    left: 14mm;
-    z-index: 2;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 10mm;
     padding-bottom: 2.5mm;
+    margin-bottom: 5mm;
     border-bottom: 1px solid #777777;
-    background: #ffffff;
   }
 
   .print-running-brand {
@@ -132,22 +152,6 @@
 
   .print-running-identity strong {
     color: #111111;
-  }
-
-  .print-running-foot {
-    position: fixed;
-    right: 14mm;
-    bottom: 7mm;
-    left: 14mm;
-    z-index: 2;
-    display: flex;
-    justify-content: space-between;
-    gap: 10mm;
-    padding-top: 2mm;
-    border-top: 1px solid #aaaaaa;
-    background: #ffffff;
-    color: #555555;
-    font-size: 7.5pt;
   }
 
   .print-doc {

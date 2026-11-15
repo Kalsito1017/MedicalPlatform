@@ -189,7 +189,7 @@ A. Browser recording (explicit user action only)
 1. getUserMedia({audio}) -> MediaRecorder (feature-detected MIME candidates)
 2. Stop: recorder.stop(), microphone tracks stopped immediately; audio stays in
    memory. No background listening, no upload until the user asks to transcribe.
-3. POST /api/v1/voice/transcriptions (multipart file + language en|bg)
+3. POST /api/v1/voice/transcriptions (multipart file + language auto|en|bg)
    - authn session -> authz appointment:write (Doctor/Admin; nurse 403)
    - CSRF + per-user voice rate limit
    - BodySizeLimitMiddleware: exact-route 4 MiB allowance (hard clamp 8 MiB);
@@ -200,7 +200,16 @@ A. Browser recording (explicit user action only)
    - temp dir deleted in finally; audio/transcript never logged or persisted
    - response {text, language, model, duration_seconds}; text is editable
 
-B. AI proposal (never a write)
+B. Deterministic transcript patient hint (never a write)
+3a. POST /api/v1/appointments/patient-suggestions {text}
+   - authz patient:read (all three staff roles)
+   - bounded first-1,000-patient scan; spaced/hyphenated MRN recognition;
+     Bulgarian Cyrillic→Latin transliteration + fuzzy name comparison
+   - returns at most 3 name/MRN suggestions with matched transcript spans;
+     no patient ids, no clinical data, no LLM call
+   - audit_event: patient.suggest (metadata only; never transcript/name/MRN)
+
+C. AI proposal (never a write)
 4. POST /api/v1/appointments/interpret {text}
    - authz appointment:write; 10/min limiter
    - provider.complete(system=anchor+strict JSON, messages=[text], tools=[])
@@ -226,6 +235,30 @@ C. Explicit confirmation
 The AI cannot mutate scheduling state. If the LLM is disabled, the proposal
 endpoint returns `503` and the manual calendar/voice transcript editing path
 still works.
+
+D. Active calendar vs retained history
+
+```text
+GET /api/v1/appointments
+  - SQL uses actual end_at: scheduled/confirmed rows remain only while end_at > now
+  - completed/no-show rows are historical; cancelled rows keep the existing
+    5-minute calendar grace period; calendar_removed_at remains an explicit
+    Admin visibility action and is never reused for expiration
+  - no status is changed and no row is deleted when time passes
+GET /api/v1/appointments/history
+  - includes past unmarked, completed, no-show, cancelled and terminal rows
+  - optional date range <=366 days, doctor/patient/status/visit-type/search and
+    bounded pagination; doctor own-history, Admin/Nurse clinic-wide read
+GET /api/v1/appointments/{id}/history
+  - immutable lifecycle events with actor, request id, old/new status/times
+GET /api/v1/appointments/history/export.csv
+  - appointment:export (Doctor/Admin), explicit bounded date range, no notes
+  - audited appointment.history.export (no clinical payload)
+```
+
+The frontend schedules a bounded refresh at the earliest active `end_at` and
+refetches from the server; it never treats a local timer as the source of
+persistent appointment state.
 
 ### (d) Admin role change
 
@@ -320,6 +353,45 @@ another bounded broker. See `docs/SYSTEM_LOGS.md`.
 
 ---
 
+### (g) Internal staff messaging
+
+```text
+1. GET /api/v1/messages?box=inbox|sent
+   - authz: message:read (Doctor, Nurse, Admin)
+   - caller id comes only from the verified session, never from the query
+   - SQL filters sender_id/recipient_id to the caller; optional bounded q search
+   - response is the standard page envelope; no message UUID lookup endpoint
+2. GET /api/v1/messages/recipients
+   - active, non-deleted staff with message:read; caller excluded
+   - returns only id, display_name and roles (bounded)
+3. POST /api/v1/messages
+   - authz: message:write; sender derived from the session
+   - recipient must exist, be active, not soft-deleted, hold message:read,
+     and not be the sender; validation bounds subject/body
+   - audit_event: message.send (actor, message id, outcome, request id only)
+4. POST /api/v1/messages/attachments
+   - exact-route multipart allowance (hard ceiling 8 MiB); file limit is
+     MESSAGE_ATTACHMENT_MAX_BYTES (default 5 MiB)
+   - one attachment per message; sanitized basename + allowlisted canonical
+     content type + simple magic-signature check; bytes stored in admin.message_attachment
+   - recipient validation is identical to text messages; attachment-only body is valid
+   - audit_event: message.send (no filename or bytes)
+5. GET /api/v1/messages/{message_id}/attachment
+   - sender or recipient only; Admin/other staff get concealment 404
+   - Content-Disposition: attachment + no-store; never rendered inline
+   - audit_event: message.attachment.download (metadata only)
+6. POST /api/v1/messages/{message_id}/read
+   - recipient-only WHERE id = message_id AND recipient_id = caller
+   - unknown/foreign ids are concealed as 404; sender cannot mark it read
+   - audit_event: message.read (metadata only)
+```
+
+Admin does not receive any cross-mailbox visibility. Message subject/body,
+filenames and attachment bytes never enter audit or operational logs. Messaging
+does not add staff, audit, analytics, patient-write or appointment-write
+permissions to Nurse. Attachments are type/size checked but are not
+antivirus-scanned; they are always downloaded as files, never executed inline.
+
 ## 4. Schema overview
 
 Five PostgreSQL schemas. Implemented as SQLAlchemy models + Alembic migrations under
@@ -364,14 +436,17 @@ payloads.
 | `doctor_schedule` | doctor_id → staff_user (PK), default_duration_minutes, slot_increment_minutes, timestamps |
 | `working_hours` | id, doctor_id → doctor_schedule, weekday (0=Mon..6=Sun), start_time/end_time (clinic-local TIME), timestamps |
 | `time_off` | id, doctor_id, start_at/end_at (UTC), reason, created_by, timestamps |
-| `appointment` | id, patient_id → patient (RESTRICT), doctor_id → staff_user (RESTRICT), start_at/end_at (UTC), appointment_type, status (`scheduled`/`confirmed`/`completed`/`cancelled`/`no_show`), notes, created_by, timestamps, `calendar_removed_at` (calendar visibility only; record retained) |
-| `admin.message` | id, sender_id/recipient_id → staff_user (RESTRICT), subject, body, read_at, timestamps; own-inbox/own-sent only, no attachments |
+| `appointment` | id, patient_id → patient (RESTRICT), doctor_id → staff_user (RESTRICT), start_at/end_at (UTC), appointment_type, status (`scheduled`/`confirmed`/`completed`/`cancelled`/`no_show`), notes, created_by, timestamps, `calendar_removed_at` (explicit calendar visibility only; record retained) |
+| `appointment_event` | id, appointment_id → appointment (RESTRICT), event_type (`created`/`updated`/`rescheduled`/`status_changed`/`calendar_removed`), actor_user_id → staff_user (SET NULL), old/new start/end, old/new status, request_id, created_at; immutable lifecycle metadata, no clinical notes |
+| `admin.message` | id, sender_id/recipient_id → staff_user (RESTRICT), subject, body, read_at, timestamps; all three staff roles share the route, own-inbox/own-sent only |
+| `admin.message_attachment` | id, message_id → message (RESTRICT, unique), sanitized filename, canonical content type, size, SHA-256, `BYTEA` payload, created_at; one bounded allowlisted file per message, sender/recipient-only download |
 
 Appointments are scheduling metadata, not clinical records. Cancellation is a
 status transition; rows are retained. There is no soft-delete column on
-appointments. Working hours are wall-clock clinic time; every API timestamp is
-UTC. The seed adds Monday–Friday 09:00–12:00 / 13:00–17:00 plus three upcoming
-demo appointments; re-running it is idempotent.
+appointments. Passing `end_at` is a visibility rule only and never mutates the
+status or deletes a row. Working hours are wall-clock clinic time; every API
+timestamp is UTC. The seed adds Monday–Friday 09:00–12:00 / 13:00–17:00 plus
+three upcoming demo appointments; re-running it is idempotent.
 
 Seed data is fictional and obviously synthetic, loaded by `scripts/seed_demo_data.py`
 (idempotent or with a documented reset — see `docs/DEPLOYMENT.md`). Since
@@ -415,7 +490,7 @@ MedicalPlatform/
 │   ├── migrations/             Alembic
 │   └── tests/
 ├── speech/                     private whisper.cpp image (pinned release,
-│                               checksum-verified Tiny multilingual model)
+│                               checksum-verified Base multilingual model)
 ├── scripts/
 │   ├── seed_demo_data.py       synthetic demo seed (idempotent/resettable)
 │   └── healthcheck.py
@@ -447,7 +522,7 @@ policy; `llm/` is the only code that talks to the model provider.
 | Backend | Render free web service | Native Python support, env-var secrets, health checks, free tier fits a demo | **Sleeps after inactivity → cold starts of ~30–60 s**; monthly request/hours limits; not guaranteed free forever |
 | Database | Neon free PostgreSQL | Serverless Postgres with TLS by default, branching, generous free storage | **Autosuspends after inactivity → first query latency**; compute-hours limits; limited/no PITR on free tier (see `docs/BACKLOG.md`) |
 | LLM (optional) | OpenCode inference API: standard `https://opencode.ai/inference` (funded key/free quota) or Go `https://opencode.ai/inference/go` (active subscription); OpenAI-compatible `.../openai/v1/chat/completions` | Server-side service-account key (`oc_sk_…`), budget cap in Console, OpenAI-compatible so the provider abstraction stays thin. Key-only setup auto-enables; `LLM_ENABLED=false` is the kill switch. | **The key must have model access:** standard keys need credit or available free quota; `/go` needs an active Go subscription. Default Go model `deepseek-v4.1-flash`; standard alternative `gpt-6-luna`. |
-| Speech (optional) | Self-hosted whisper.cpp container (`speech/`) | CPU-only, private network, Tiny multilingual model baked in; local compose `speech` profile | Cloud Run deployment is documented but **not verified**; requires private service-to-service IAM. The demo works with voice disabled. |
+| Speech (optional) | Self-hosted whisper.cpp container (`speech/`) | CPU-only, private network, Base multilingual model baked in; local compose `speech` profile | Cloud Run deployment is documented but **not verified**; requires private service-to-service IAM. The demo works with voice disabled. |
 | DNS/SSL | Provider-managed | Automatic certificate renewal on both Cloudflare and Render | — |
 
 Honest hosting statement: the target is a **$0/month baseline**, which is not a

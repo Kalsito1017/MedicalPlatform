@@ -73,6 +73,8 @@ def test_migration_up_down_up(migrated_test_db: str, test_db_url: str) -> None:
     assert asyncio.run(_table_exists(test_db_url, "admin.staff_user")) is True
     assert asyncio.run(_table_exists(test_db_url, "laboratory.lab_result")) is True
     assert asyncio.run(_table_exists(test_db_url, "medications.prescription")) is True
+    assert asyncio.run(_table_exists(test_db_url, "scheduling.appointment_event")) is True
+    assert asyncio.run(_table_exists(test_db_url, "admin.message_attachment")) is True
 
     result = run_alembic("downgrade", "base")
     assert result.returncode == 0, result.stderr

@@ -91,6 +91,9 @@ jobs:
       - name: Printable patient record checks
         run: node frontend/tests/print-record.test.mjs
 
+      - name: Bulgarian localization checks
+        run: node frontend/tests/i18n.test.mjs
+
       - name: Safe Markdown renderer checks
         run: node frontend/tests/markdown.test.mjs
 

@@ -766,13 +766,24 @@ function wireControls() {
     showNewIndicator();
     scrollToBottom();
   });
-  document.getElementById('logs-clear')?.addEventListener('click', () => {
+  async function clearView() {
+    const confirmed = await ui.confirmDialog({
+      title: 'Are you sure?',
+      message: 'This clears only the events currently shown in this browser view. Persisted audit and operational events will not be deleted.',
+      confirmLabel: 'Clear view',
+      cancelLabel: 'Cancel',
+      danger: false,
+    });
+    if (!confirmed) return;
     state.events = [];
     state.seen = new Set();
     state.newCount = 0;
     showNewIndicator();
     renderEvents();
-    setStatus('View cleared. Persisted backend events were not deleted.');
+    setStatus('View cleared. Persisted backend events were not deleted. The live stream continues.');
+  }
+  document.getElementById('logs-clear')?.addEventListener('click', () => {
+    void clearView();
   });
   document.getElementById('logs-copy-visible')?.addEventListener('click', () => {
     copyText(state.events.map(eventText).join('\n'));

@@ -117,6 +117,26 @@ def test_invalid_cors_origin_is_rejected(monkeypatch) -> None:
     assert "ALLOWED_ORIGINS" in str(excinfo.value)
 
 
+def test_public_origin_must_be_an_origin(monkeypatch) -> None:
+    monkeypatch.setenv("APP_SECRET_KEY", SECRET_SENTINEL)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app:x@localhost:5432/db")
+    monkeypatch.setenv("PUBLIC_ORIGIN", "https://app.example.com/a/path")
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        load_settings(env_file=None)
+    assert "PUBLIC_ORIGIN" in str(excinfo.value)
+    assert SECRET_SENTINEL not in str(excinfo.value)
+
+
+def test_public_origin_trailing_slash_is_normalized(monkeypatch) -> None:
+    monkeypatch.setenv("APP_SECRET_KEY", SECRET_SENTINEL)
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app:x@localhost:5432/db")
+    monkeypatch.setenv("PUBLIC_ORIGIN", "https://app.example.com/")
+
+    settings = load_settings(env_file=None)
+    assert settings.public_origin == "https://app.example.com"
+
+
 def test_docs_enabled_follows_environment(monkeypatch) -> None:
     monkeypatch.setenv("APP_SECRET_KEY", SECRET_SENTINEL)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app:x@localhost:5432/db")

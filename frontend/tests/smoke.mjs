@@ -27,9 +27,11 @@ import path from 'node:path';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const frontendRoot = path.resolve(here, '..');
 const jsDir = path.join(frontendRoot, 'assets', 'js');
-// The only sanctioned web-storage use is the theme preference; theme-init.js
-// is a classic pre-paint script, not an ES module.
+// The only sanctioned web-storage uses are the theme and language
+// preferences; theme-init.js is a classic pre-paint script, not an ES module.
 const THEME_STORAGE_FILES = new Set(['theme-init.js', 'theme.js']);
+const LANGUAGE_STORAGE_FILES = new Set(['i18n.js']);
+const STORAGE_FILES = new Set([...THEME_STORAGE_FILES, ...LANGUAGE_STORAGE_FILES]);
 const CLASSIC_SCRIPTS = new Set(['theme-init.js']);
 
 const results = [];
@@ -93,9 +95,10 @@ function stripComments(source) {
 
 const htmlFiles = (await readdir(frontendRoot)).filter((f) => f.endsWith('.html')).sort();
 const jsFiles = (await readdir(jsDir)).filter((f) => f.endsWith('.js')).sort();
+const LEGAL_PAGES = new Set(['privacy.html', 'terms.html']);
 
 await check('all expected pages exist', () => {
-  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'appointments.html', 'admin.html', 'analytics.html', 'messages.html', 'system-logs.html', '404.html']) {
+  for (const page of ['index.html', 'dashboard.html', 'patients.html', 'patient.html', 'ai.html', 'appointments.html', 'admin.html', 'analytics.html', 'messages.html', 'system-logs.html', '404.html', 'privacy.html', 'terms.html']) {
     assert(htmlFiles.includes(page), `missing ${page}`);
   }
 });
@@ -105,12 +108,22 @@ for (const file of jsFiles) {
   await check(`assets/js/${file}: no console logging`, () => {
     assert(!/console\s*\./.test(source), 'contains console.* usage');
   });
-  if (!THEME_STORAGE_FILES.has(file)) {
+  if (!STORAGE_FILES.has(file)) {
     await check(`assets/js/${file}: no web storage usage`, () => {
       assert(!/(local|session)Storage/.test(source), 'touches localStorage/sessionStorage');
     });
   }
 }
+
+await check('System Logs header has no group avatar', async () => {
+  const source = await readFile(path.join(frontendRoot, 'system-logs.html'), 'utf8');
+  assert(!source.includes('logs-chat__avatar'), 'System Logs header group avatar markup must be removed');
+  const header = source.match(/<header class="logs-chat__head">([\s\S]*?)<\/header>/);
+  assert(header, 'System Logs chat header missing');
+  assert(!/<img\b/.test(header[1]), 'System Logs chat header must not contain decorative images');
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(!css.includes('.logs-chat__avatar'), 'dead System Logs group-avatar CSS must be removed');
+});
 
 await check('custom error illustration assets and 404 page are present', async () => {
   for (const file of ['error-404.svg', 'error-connection.svg']) {
@@ -137,7 +150,7 @@ await check('custom error illustration assets and 404 page are present', async (
   assert(backend.includes('status_code=404'), 'navigation fallback must serve 404.html with status 404');
 });
 
-await check('doctor demo portraits are local and restricted to the doctor role', async () => {
+await check('demo staff portraits are local and role-aware', async () => {
   for (const file of ['doctor-1.jpg', 'doctor-2.jpg', 'doctor-3.jpg', 'doctor-4.jpg']) {
     const exists = await readFile(path.join(frontendRoot, 'assets', 'images', 'doctors', file)).then(
       () => true,
@@ -145,10 +158,21 @@ await check('doctor demo portraits are local and restricted to the doctor role',
     );
     assert(exists, `missing doctor portrait ${file}`);
   }
+  for (const file of ['admin-1.jpg', 'doctor-1.jpg', 'nurse-1.jpg']) {
+    const exists = await readFile(path.join(frontendRoot, 'assets', 'images', 'staff', file)).then(
+      () => true,
+      () => false,
+    );
+    assert(exists, `missing seeded staff portrait ${file}`);
+  }
   const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
   assert(uiSource.includes('avatarForUser'), 'missing role-aware avatar helper');
-  assert(uiSource.includes("roles.includes('doctor')"), 'doctor portraits must be gated on the doctor role');
+  assert(uiSource.includes('SEEDED_STAFF_PORTRAITS'), 'missing seeded staff portrait map');
+  assert(uiSource.includes("roles.includes('doctor')"), 'doctor fallback portraits must be gated on the doctor role');
   assert(uiSource.includes('assets/images/doctors/doctor-1.jpg'), 'doctor portrait pool missing');
+  assert(uiSource.includes('assets/images/staff/admin-1.jpg'), 'seeded admin portrait missing');
+  assert(uiSource.includes('assets/images/staff/doctor-1.jpg'), 'seeded doctor portrait missing');
+  assert(uiSource.includes('assets/images/staff/nurse-1.jpg'), 'seeded nurse portrait missing');
 });
 
 await check('the repeated full-width page footer is removed', async () => {
@@ -170,12 +194,22 @@ await check('theme storage is limited to the sanitized preference key', async ()
   }
 });
 
+await check('language storage is limited to the preference key', async () => {
+  for (const file of LANGUAGE_STORAGE_FILES) {
+    const source = await readFile(path.join(jsDir, file), 'utf8');
+    assert(source.includes('medicore-language'), `${file} missing language key`);
+    assert(source.includes('setItem(LANGUAGE_STORAGE_KEY, value)'), `${file} must store only the language preference`);
+  }
+});
+
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: required chrome present`, () => {
     assert(source.includes('lang="en"'), 'missing lang attribute');
     assert(source.includes('data-open-about'), 'missing "About" control');
-    assert(source.includes('mailto:'), 'missing issue-reporting mailto');
+    assert(source.includes('privacy.html'), 'missing Privacy Policy link');
+    assert(source.includes('terms.html'), 'missing Terms link');
+    assert(!source.includes('mailto:'), 'unverified mailto contact link must not be published');
     assert(source.includes('id="main"'), 'missing main landmark');
     assert(source.includes('name="viewport"'), 'missing viewport meta');
     assert(source.includes('window.__APP_CONFIG__'), 'missing config override hook');
@@ -223,12 +257,23 @@ await check('patient.js: AI output is unbadged and size bounded', async () => {
   assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
 });
 
-await check('ai.html: AI Assistant page is labelled and bounded', async () => {
+await check('ai.html: AI Assistant page is labelled, bounded and two-pane', async () => {
   const source = await readFile(path.join(frontendRoot, 'ai.html'), 'utf8');
-  assert(source.includes('id="ai-question-form"'), 'missing AI question form');
-  assert(source.includes('id="ai-char-count"'), 'missing character counter');
-  assert(source.includes('id="ai-cancel"'), 'missing cancel control');
+  for (const marker of [
+    'id="ai-workspace"',
+    'id="ai-history"',
+    'id="ai-new-conversation"',
+    'id="ai-history-search"',
+    'id="ai-history-toggle"',
+    'id="ai-context-label"',
+    'id="ai-question-form"',
+    'id="ai-char-count"',
+    'id="ai-cancel"',
+  ]) {
+    assert(source.includes(marker), `missing ${marker}`);
+  }
   assert(source.includes('2000'), 'missing question limit copy');
+  assert(!source.includes('ai-history-card'), 'the old below-chat history card must be removed');
   assert(!source.includes('ai-card__disclaimer'), 'the AI card must not carry a disclaimer block');
   assert(!source.includes('ai-card__pill'), 'the AI card must not carry an informational-only pill');
 });
@@ -241,17 +286,54 @@ await check('ai-assistant.js: general lookup sends no patient_id and keeps AI ou
   assert(!DEMARKED_COPY.test(source), 'AI rendering must not carry de-marked copy');
 });
 
+await check('messages.html: three-pane conversation layout with contact profile', async () => {
+  const source = await readFile(path.join(frontendRoot, 'messages.html'), 'utf8');
+  for (const marker of [
+    'id="messages-workspace"',
+    'id="messages-list-panel"',
+    'id="messages-detail"',
+    'id="messages-profile"',
+    'id="messages-new"',
+    'class="messages-panel__head"',
+  ]) {
+    assert(source.includes(marker), `missing ${marker}`);
+  }
+  const js = stripComments(await readFile(path.join(jsDir, 'messages.js'), 'utf8'));
+  assert(js.includes('avatarForUser'), 'message list must use directory-backed staff avatars');
+  assert(js.includes('renderProfile'), 'messages page must render the contact profile pane');
+  assert(js.includes("api.postForm('/messages/attachments'"), 'message attachments must use multipart upload');
+  assert(js.includes('message-composer'), 'messages page must use the inline composer');
+  assert(js.includes("ui.icon('paperclip')"), 'attachment control missing');
+  assert(!js.includes('openDialog'), 'messages must not use a modal composer');
+  assert(!js.includes('can read this message'), 'legacy privacy notice must be removed');
+});
+
 await check('appointments.html: calendar, voice, and availability surfaces present', async () => {
   const source = await readFile(path.join(frontendRoot, 'appointments.html'), 'utf8');
   for (const marker of [
     'id="view-switcher"',
     'id="appointments-calendar"',
     'id="appointments-upcoming"',
+    'id="voice-listener"',
     'id="voice-record"',
+    'id="voice-waveform"',
+    'id="voice-cancel"',
     'id="voice-transcript"',
+    'id="voice-language"',
+    'value="auto" selected',
+    'id="voice-suggestions"',
     'id="voice-interpret"',
+    'id="voice-example"',
+    'id="voice-example-text"',
+    'id="voice-example-use"',
+    'What to say',
     'id="availability-open"',
     'id="appointment-new"',
+    'id="appointments-mode-switcher"',
+    'id="appointments-history"',
+    'id="appointments-history-filters"',
+    'id="appointments-history-region"',
+    'id="appointments-history-export"',
   ]) {
     assert(source.includes(marker), `appointments.html missing ${marker}`);
   }
@@ -266,9 +348,26 @@ await check('appointments.js: clinic timezone, MediaRecorder, and explicit confi
     'window.MediaRecorder',
     'stopVoiceStream',
     "api.postForm('/voice/transcriptions'",
+    'VOICE_EXAMPLES',
+    'detectedLanguage',
+    'correctionLanguage',
+    'insertVoiceExample',
+    'setVoiceState',
+    'startVoiceMeter',
+    'schedulePatientSuggestions',
+    'Did you mean',
+    "'/appointments/transcription-corrections'",
+    'checkTranscriptionCorrections',
+    'voice-correction',
+    'Keep original',
+    'Undo',
     "api.post('/appointments/interpret'",
     "api.post('/appointments'",
     'Create appointment',
+    'scheduleActiveExpiryCleanup',
+    "api.get('/appointments/history'",
+    'appointments/history/export.csv',
+    'appointment:export',
   ]) {
     assert(source.includes(marker), `appointments.js missing ${marker}`);
   }
@@ -287,6 +386,8 @@ const entryModules = {
   'analytics.html': 'analytics.js',
   'messages.html': 'messages.js',
   'system-logs.html': 'system-logs.js',
+  'privacy.html': 'legal.js',
+  'terms.html': 'legal.js',
 };
 const DYNAMIC_IDS = new Set([
   'app-dialog',
@@ -300,6 +401,11 @@ const DYNAMIC_IDS = new Set([
   'message-subject',
   'message-body',
   'message-compose-error',
+  'message-composer',
+  'message-attach',
+  'message-file',
+  'message-send',
+  'message-attachment-preview',
 ]);
 const CHROME_IDS = ['global-status', 'site-nav', 'user-area', 'nav-toggle'];
 const SHELL_PAGES = [
@@ -314,12 +420,151 @@ const SHELL_PAGES = [
   'system-logs.html',
 ];
 
+await check('page metadata is unique and public pages are indexable', async () => {
+  const titles = new Map();
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    const title = (source.match(/<title>([^<]+)<\/title>/) || [])[1];
+    assert(title, `${file}: missing title`);
+    assert(!titles.has(title), `${file}: duplicate title with ${titles.get(title)}`);
+    titles.set(title, file);
+  }
+  for (const file of ['index.html', 'privacy.html', 'terms.html']) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('name="robots" content="index, follow"'), `${file}: public page must be indexable`);
+    assert(/<meta name="description" content="[^"]+">/.test(source), `${file}: missing description`);
+    assert(source.includes('rel="canonical"'), `${file}: missing canonical`);
+    for (const marker of [
+      'property="og:title"',
+      'property="og:description"',
+      'property="og:image"',
+      'name="twitter:card"',
+      'name="twitter:image"',
+    ]) {
+      assert(source.includes(marker), `${file}: missing ${marker}`);
+    }
+    assert(source.includes('/assets/images/og-medicore.png'), `${file}: OG image path missing`);
+    assert(source.includes('property="og:image:width" content="1200"'), `${file}: OG width missing`);
+    assert(source.includes('property="og:image:height" content="630"'), `${file}: OG height missing`);
+    assert(source.includes('property="og:type"'), `${file}: OG type missing`);
+  }
+  for (const file of [...SHELL_PAGES, '404.html']) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('name="robots" content="noindex, nofollow"'), `${file}: authenticated/404 page must stay noindex`);
+  }
+});
+
+await check('edge headers mark authenticated pages and APIs noindex', async () => {
+  const headers = await readFile(path.join(frontendRoot, '_headers'), 'utf8');
+  for (const file of [...SHELL_PAGES, '404.html']) {
+    assert(headers.includes(`/${file}\n  X-Robots-Tag: noindex, nofollow`), `_headers missing noindex for ${file}`);
+  }
+  assert(headers.includes('/api/*\n  X-Robots-Tag: noindex, nofollow'), '_headers missing API noindex');
+});
+
+await check('favicon and web manifest configuration is complete', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    for (const marker of [
+      'rel="icon" href="/favicon.ico"',
+      'rel="icon" type="image/svg+xml"',
+      'sizes="32x32"',
+      'sizes="16x16"',
+      'rel="apple-touch-icon"',
+      'rel="manifest" href="/site.webmanifest"',
+    ]) {
+      assert(source.includes(marker), `${file}: missing favicon marker ${marker}`);
+    }
+  }
+  for (const rel of [
+    'favicon.ico',
+    'apple-touch-icon.png',
+    'site.webmanifest',
+    'assets/images/favicon.svg',
+    'assets/images/favicon-16x16.png',
+    'assets/images/favicon-32x32.png',
+    'assets/images/favicon-192x192.png',
+    'assets/images/favicon-512x512.png',
+    'assets/images/og-medicore.png',
+  ]) {
+    const exists = await readFile(path.join(frontendRoot, rel)).then(() => true, () => false);
+    assert(exists, `missing public asset ${rel}`);
+  }
+});
+
+await check('every rendered image has an alt attribute', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    for (const image of source.matchAll(/<img\b[^>]*>/g)) {
+      assert(/\balt=/.test(image[0]), `${file}: image missing alt attribute`);
+    }
+  }
+  const uiSource = stripComments(await readFile(path.join(jsDir, 'ui.js'), 'utf8'));
+  assert(uiSource.includes("alt: ''"), 'dynamic avatar images must set an empty alt');
+});
+
+await check('landing has above-the-fold and sticky mobile CTAs only', async () => {
+  const index = await readFile(path.join(frontendRoot, 'index.html'), 'utf8');
+  assert(index.includes('landing-hero__cta'), 'landing hero CTA missing');
+  assert(index.includes('landing-mobile-cta'), 'landing sticky mobile CTA missing');
+  for (const file of htmlFiles) {
+    if (file === 'index.html') continue;
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(!source.includes('landing-mobile-cta'), `${file}: sticky marketing CTA must not appear in clinical pages`);
+  }
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  assert(css.includes('.landing-mobile-cta'), 'sticky CTA styles missing');
+  assert(/\.landing-mobile-cta[\s\S]*env\(safe-area-inset-bottom\)/.test(css), 'sticky CTA must respect safe-area insets');
+  assert(/body\.landing-page[\s\S]*padding-bottom:\s*calc\(5rem \+ env\(safe-area-inset-bottom\)\)/.test(css), 'landing body must reserve space for the sticky CTA');
+});
+
+await check('legal pages state the synthetic scope and carry review placeholders', async () => {
+  for (const file of LEGAL_PAGES) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(source.includes('legal-placeholder'), `${file}: legal placeholders missing`);
+    assert(source.includes('legal counsel'), `${file}: legal review notice missing`);
+    assert(!source.includes('mailto:'), `${file}: must not publish an unverified contact link`);
+    assert(/synthetic/i.test(source), `${file}: synthetic-data scope missing`);
+  }
+  const privacy = await readFile(path.join(frontendRoot, 'privacy.html'), 'utf8');
+  const terms = await readFile(path.join(frontendRoot, 'terms.html'), 'utf8');
+  assert(privacy.includes('PRIVACY CONTACT'), 'privacy contact placeholder missing');
+  assert(terms.includes('GOVERNING LAW'), 'governing-law placeholder missing');
+  assert(/not approved for clinical diagnosis/i.test(privacy), 'privacy clinical-scope notice missing');
+});
+
+await check('no third-party analytics or tracking scripts are installed', async () => {
+  const tracking = /\bgtag\s*\(|googletagmanager|google-analytics|plausible|umami|matomo|posthog|mixpanel|hotjar|fullstory|sessioncam|segment\.(?:com|io)/i;
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(!tracking.test(source), `${file}: third-party tracking script found`);
+    assert(!/id="cookie-banner"|class="cookie-banner"/i.test(source), `${file}: cookie banner must not be added for strictly necessary cookies`);
+  }
+  for (const file of jsFiles) {
+    const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
+    assert(!tracking.test(source), `assets/js/${file}: third-party tracking script found`);
+  }
+});
+
+await check('no unverified contact address is published', async () => {
+  for (const file of htmlFiles) {
+    const source = await readFile(path.join(frontendRoot, file), 'utf8');
+    assert(!source.includes('support@example.com'), `${file}: placeholder support email found`);
+    assert(!source.includes('mailto:'), `${file}: unverified mailto contact found`);
+  }
+  for (const file of jsFiles) {
+    const source = stripComments(await readFile(path.join(jsDir, file), 'utf8'));
+    assert(!source.includes('support@example.com'), `assets/js/${file}: placeholder support email found`);
+    assert(!source.includes('mailto:'), `assets/js/${file}: unverified mailto contact found`);
+  }
+});
+
 for (const file of htmlFiles) {
   const source = await readFile(path.join(frontendRoot, file), 'utf8');
   await check(`${file}: referenced local assets exist`, async () => {
     const refs = [...source.matchAll(/(?:src|href)="([^"]+)"/g)]
       .map((m) => m[1])
-      .filter((ref) => !ref.startsWith('#') && !ref.startsWith('mailto:') && !ref.startsWith('data:') && !ref.startsWith('http'));
+      .filter((ref) => ref !== '/' && !ref.startsWith('#') && !ref.startsWith('mailto:') && !ref.startsWith('data:') && !ref.startsWith('http'));
     for (const ref of refs) {
       const target = path.join(frontendRoot, ref.split('?')[0]);
       const exists = await readFile(target).then(() => true, () => false);
@@ -337,7 +582,7 @@ for (const file of htmlFiles) {
     }
   });
 
-  if (file !== 'index.html' && file !== '404.html') {
+  if (file !== 'index.html' && file !== '404.html' && !LEGAL_PAGES.has(file)) {
     await check(`${file}: shared chrome ids present`, () => {
       for (const id of CHROME_IDS) {
         assert(source.includes(`id="${id}"`), `missing chrome element #${id}`);
@@ -425,6 +670,38 @@ await check('styles.css defines the design tokens and motion safety', async () =
   const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
   assert(!/https?:\/\//.test(code), 'external URL referenced from the stylesheet');
   assert(!/@import\s+url\(/.test(code), 'external CSS import found');
+});
+
+await check('visual identity: contour + thermal background utilities are wired', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  for (const token of [
+    '--bg-contour-image',
+    '--bg-thermal-image',
+    '--voice-contour-image',
+    '--surface-sheen',
+    '--active-nav-gradient',
+    '--focus-ring',
+    '--color-cyan',
+    '--color-blue',
+    '--color-violet',
+  ]) {
+    assert(css.includes(`${token}:`), `missing visual identity token ${token}`);
+  }
+  assert(
+    css.includes('background-image: var(--bg-thermal-image), var(--bg-contour-image)'),
+    'body must layer thermal gradients over contour lines',
+  );
+  assert(
+    css.includes('var(--voice-contour-image)'),
+    'voice listener must use the contour layer',
+  );
+  for (const file of ['contour-lines-light.svg', 'contour-lines-dark.svg']) {
+    const exists = await readFile(path.join(frontendRoot, 'assets', 'images', file)).then(
+      () => true,
+      () => false,
+    );
+    assert(exists, `missing local contour asset ${file}`);
+  }
 });
 
 await check('no inline style attributes anywhere (CSP style-src self)', async () => {
@@ -583,8 +860,8 @@ await check('pages declare modulepreload hints for the shared module graph', asy
     const source = await readFile(path.join(frontendRoot, file), 'utf8');
     assert(source.includes('rel="modulepreload"'), `${file} missing modulepreload hints`);
     assert(source.includes('assets/js/ui.js'), `${file} must warm the ui.js module`);
-    if (file === '404.html') {
-      assert(source.includes('assets/js/theme.js'), '404.html must warm the theme module');
+    if (file === '404.html' || LEGAL_PAGES.has(file)) {
+      assert(source.includes('assets/js/theme.js'), `${file} must warm the theme module`);
       continue;
     }
     assert(source.includes('assets/js/api.js'), `${file} must warm the api.js module`);
@@ -723,14 +1000,22 @@ await check('print.css defines an A4 report and hides the application shell', as
     '.app-shell',
     'display: none !important',
     'display: table-header-group',
+    '.print-repeat',
+    '.print-running-head',
     'break-inside: avoid',
     '.print-row--abnormal',
-    '@bottom-right',
+    '@bottom-center',
+    'counter(page)',
+    'counter(pages)',
   ]) {
     assert(css.includes(marker), `print.css missing ${marker}`);
   }
   const code = css.replace(/\/\*[\s\S]*?\*\//g, '');
   assert(!/https?:\/\//.test(code), 'print.css must not reference external resources');
+  assert(
+    !/position:\s*fixed/.test(code),
+    'print.css must not position report elements with fixed positioning',
+  );
 });
 
 await check('print-record.js stays safe and on-demand', async () => {
@@ -794,12 +1079,20 @@ await check('landing page uses the local blurred care-team background', async ()
   }
 });
 
-await check('product surface carries no de-marked labelling or disclaimer copy', async () => {
-  // Static de-marking hygiene (see DEMARKED_COPY above): every shipped string
-  // surface — HTML source (text, attributes, meta) and JS/CSS sources with
-  // comments stripped — must stay free of the banned fragments.
+await check('product surface carries no de-marked labelling or disclaimer copy (legal pages excepted)', async () => {
+  // Static de-marking hygiene (see DEMARKED_COPY above): every clinical and
+  // marketing string surface — HTML source (text, attributes, meta) and JS/CSS
+  // sources with comments stripped — must stay free of the banned fragments.
+  // The public privacy/terms pages are the documented legal exception.
   const cssFiles = ['css/styles.css'].map((f) => path.join('assets', f));
   for (const rel of [...htmlFiles, ...jsFiles.map((f) => path.join('assets', 'js', f)), ...cssFiles]) {
+    // Public legal pages are the deliberate exception: privacy/terms must
+    // state the synthetic-data scope and carry clearly marked legal
+    // placeholders. They are reviewed by counsel before production use.
+    if (LEGAL_PAGES.has(rel)) continue;
+    // The generated translation dictionary intentionally mirrors legal/source
+    // copy (including the synthetic-demo wording) and is not a product surface.
+    if (rel === 'assets/js/i18n-bg.js') continue;
     const raw = await readFile(path.join(frontendRoot, rel), 'utf8');
     const source = rel.endsWith('.html') ? raw : stripComments(raw);
     const match = source.match(DEMARKED_COPY);
@@ -952,6 +1245,17 @@ await check('pages engage safe-area insets and sheets clear the home indicator',
   assert(
     /\.dialog,\s*\.command-menu \{[^}]*env\(safe-area-inset-bottom\)/.test(css),
     'bottom sheets must keep content clear of the home indicator',
+  );
+});
+
+await check('table scroll regions do not trap vertical page scrolling', async () => {
+  const css = await readFile(path.join(frontendRoot, 'assets', 'css', 'styles.css'), 'utf8');
+  const rule = css.match(/\.table-scroll\s*\{[^}]*overscroll-behavior-x[^}]*\}/);
+  assert(rule, 'missing the horizontal table-scroll overscroll rule');
+  assert(rule[0].includes('overscroll-behavior-y: auto'), 'table rows must let vertical wheel/trackpad gestures reach the page');
+  assert(
+    !/\.command-menu__list,\s*\.ai-chat,\s*\.table-scroll\s*\{/.test(css),
+    'table-scroll must not share the two-axis overscroll containment rule',
   );
 });
 

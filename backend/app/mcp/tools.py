@@ -343,7 +343,7 @@ async def _authorize_patient(
 
 
 async def search_authorized_patients(
-    query: Annotated[str, Field(max_length=SEARCH_QUERY_MAX_LENGTH, description="Case-insensitive substring match on the display name or MRN. Empty string returns any patients.")],
+    query: Annotated[str, Field(max_length=SEARCH_QUERY_MAX_LENGTH, description="Case-insensitive substring match on the display name or MRN, plus exact Latin/Cyrillic transliteration matches (Elena Georgieva = Елена Георгиева). Empty string returns any patients.")],
     limit: Annotated[int, Field(ge=SEARCH_LIMIT_MIN, le=SEARCH_LIMIT_MAX, description="Maximum patients to return (1-25).")] = SEARCH_LIMIT_DEFAULT,
     tool_context: ToolContext | None = None,
 ) -> dict[str, Any]:
@@ -371,7 +371,9 @@ async def search_authorized_patients(
             },
         )
     term = query.strip() or None
-    rows, total = await patients_service.list_patients(ctx.db, q=term, limit=limit, offset=0)
+    rows, total = await patients_service.list_patients(
+        ctx.db, q=term, limit=limit, offset=0, allow_fuzzy=False
+    )
     return await _finish(
         name,
         ctx,

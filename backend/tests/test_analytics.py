@@ -588,8 +588,10 @@ async def test_summary_numbers_match_direct_queries(db_engine, auth_client, make
         # Patient/encounter operational block.
         distinct_encounters = (
             select(Encounter.patient_id)
+            .join(Patient, Patient.id == Encounter.patient_id)
             .where(
                 Encounter.deleted_at.is_(None),
+                Patient.deleted_at.is_(None),
                 Encounter.occurred_at >= start_at,
                 Encounter.occurred_at < end_at,
             )

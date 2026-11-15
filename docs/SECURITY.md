@@ -10,7 +10,7 @@
 ### Role intent (owner decision, 2026-10-26: three roles; `tech_admin` removed)
 
 - **Doctor:** View patient records and clinical data permitted by the configured demo policy; use clinical summary and query workflows.
-- **Nurse:** Least privilege — view patient information and clinical data permitted by the configured demo policy. No staff-role administration, no audit access, no admin panel.
+- **Nurse:** Least privilege — view patient information and clinical data permitted by the configured demo policy, plus internal staff messaging. No staff-role administration, no audit access, no admin panel.
 - **Admin** (`clinical_admin`): Full access — clinical data, staff accounts, roles, audit log, and analytics. Administration is exercised through the same server-side permission checks as everything else.
 
 Roles do **not** automatically imply that a user may view every patient. The demo uses a
@@ -25,8 +25,8 @@ in `docs/BACKLOG.md`.
 | `patient:read` | ✔ | ✔ | ✔ |
 | `patient:write` | ✔ | ✖ | ✔ |
 | `patient:delete` | ✖ | ✖ | ✔ |
-| `message:read` | ✔ | ✖ | ✔ |
-| `message:write` | ✔ | ✖ | ✔ |
+| `message:read` | ✔ | ✔ | ✔ |
+| `message:write` | ✔ | ✔ | ✔ |
 | `lab:read` | ✔ | ✔ | ✔ |
 | `prescription:read` | ✔ | ✔ | ✔ |
 | `staff:read` | ✖ | ✖ | ✔ |
@@ -38,6 +38,26 @@ in `docs/BACKLOG.md`.
 | `appointment:read` | ✔ | ✔ | ✔ |
 | `appointment:write` | ✔ | ✖ | ✔ |
 | `appointment:manage_availability` | ✔ | ✖ | ✔ |
+| `appointment:export` | ✔ | ✖ | ✔ |
+
+Internal messaging is the deliberate exception to the Nurse's read-only
+boundary: `message:read` and `message:write` add staff-to-staff communication
+only. They grant no staff, audit, analytics, patient-write or appointment-write
+access. Inbox/sent reads are always scoped to the authenticated caller, read
+state is recipient-only, and Admin has no implicit access to another user's
+private conversations.
+
+**Message attachments.** One optional file may accompany an internal message.
+The body-size middleware raises the 1 MiB global limit only for the exact
+`POST /api/v1/messages/attachments` route, clamped to an 8 MiB hard ceiling; the
+service separately enforces `MESSAGE_ATTACHMENT_MAX_BYTES` (default 5 MiB) on
+the file itself. Only PDF, PNG, JPEG, WebP, TXT, CSV, DOCX and XLSX are allowed;
+SVG/HTML/executables are rejected, the filename is reduced to a safe basename,
+and simple magic-signature checks reject mismatched content. Bytes are stored in
+PostgreSQL with the message and served only to the sender or recipient as an
+attachment with `nosniff` and `no-store`; unrelated staff (including Admin) get
+`404`. There is no antivirus/content-disarm scanner, so downloaded files remain
+untrusted and must not be opened as active content.
 
 Deny by default. `nurse` is least-privilege clinical read with a **read-only
 clinic-wide appointment view** (`appointment:read` only; no writes, no
@@ -47,7 +67,7 @@ every permission. `analytics:read` is enforced by
 (2026-11-09) enforce doctor-own-calendar scoping server-side; the Admin/nurse
 reader must name a doctor for scoped availability/slot reads, and writes cannot
 be performed by a nurse or by a doctor targeting another doctor's calendar
-through a request body or AI output. There are now **16** permission keys.
+through a request body or AI output. There are now **17** permission keys.
 
 ### Where checks live
 
@@ -201,6 +221,15 @@ and patient and re-check overlap inside the transaction, so two simultaneous
 requests cannot both succeed. Availability replacement validates interval
 order/overlap and is bounded (≤21 working intervals, ≤100 time-off rows).
 Appointment mutations are audited; the AI interpreter can only propose.
+Passing the scheduled `end_at` only removes a row from the active calendar; it
+does not change status, delete the row, or reuse `calendar_removed_at`.
+Historical reads are server-scoped to the Doctor's own history or the
+Admin/Nurse clinic-wide read view. `appointment:export` is granted only to
+Doctors and Admins; Nurse receives `403`. Exports use an explicit bounded date
+range, omit notes/clinical content, and are audited as
+`appointment.history.export` without payloads. Lifecycle events store only
+appointment id, event type, actor, request id, old/new times/status and
+timestamp; they never contain clinical notes.
 
 **Voice transcription and the private speech service.** The microphone is used
 only after an explicit user action; `MediaRecorder` is feature-detected, tracks
@@ -247,13 +276,16 @@ Recorded in `admin.audit_event` (readable via `GET /api/v1/audit` with `audit:re
 | Logout | actor, timestamp, request id |
 | Permission denial (any `403`) | actor, attempted action, outcome, timestamp, request id |
 | Patient-record reads (patient, summary, labs, prescriptions, encounter) | actor, action, resource type + resource id, outcome, timestamp, request id |
+| Transcript patient suggestion (`patient.suggest`) | actor, resource type `patient`, outcome, timestamp, request id; **never** the transcript, suggested name/MRN or search text |
 | Patient creation (`patient.create`) | actor, new patient resource id, outcome, timestamp, request id; no clinical payload |
 | Patient removal (`patient.delete`) | actor, soft-deleted patient resource id, outcome, timestamp, request id; no clinical payload. The row is retained; child records and audit history are not erased |
-| Staff messages (`message.send`, `message.read`) | actor, message resource id, outcome, timestamp, request id; **never** subject, body, recipient address or attachments |
+| Staff messages (`message.send`, `message.read`, `message.attachment.download`) | actor, message resource id, outcome, timestamp, request id; **never** subject, body, recipient address, filename or attachment bytes |
 | MCP tool calls | tool name, actor, target resource reference, outcome, request id |
 | Staff / role changes (create, patch, activate/deactivate, role add/remove) | actor, target user, change summary, outcome, request id |
-| Appointment mutations (`appointment.create`, `appointment.update`, `appointment.reschedule`, `appointment.cancel`, `appointment.remove_from_calendar`, `appointment.denied`, `appointment.availability.update`) | actor, appointment/doctor resource reference, outcome, request id; **no** patient clinical content, notes, or transcript |
+| Appointment mutations (`appointment.create`, `appointment.update`, `appointment.reschedule`, `appointment.cancel`, `appointment.complete`, `appointment.no_show`, `appointment.remove_from_calendar`, `appointment.denied`, `appointment.availability.update`) | actor, appointment/doctor resource reference, outcome, request id; **no** patient clinical content, notes, or transcript |
+| Appointment history export (`appointment.history.export`) | actor, resource type `appointment_history`, outcome, request id; **never** filter values, patient names, notes or exported bytes |
 | Appointment AI proposal (`appointment.ai.propose`) | actor, proposal resource type, outcome, request id; **never** the transcript, patient name, or model output |
+| Transcription correction analysis (`appointment.correction`) | actor, resource type `appointment_transcript`, outcome, request id; **never** the transcript, original/suggested phrases, patient names, MRNs, or model output. Safe counts/language/model/latency go to the operational log only |
 | Voice transcription | **not audited by design**: it is a transient audio-to-text operation with no clinical record, and the transcript/audio must not be retained. Safe outcome/latency metadata is written to the separate operational log (`voice.transcription.*`) and shown in System Logs. |
 | Analytics reads (`analytics.read`) | actor, resource type `analytics`, outcome, timestamp, request id; **never** the selected range values, returned aggregates, patient identifiers or clinical payload |
 
@@ -324,7 +356,8 @@ Controls:
   never duplicated into `system_event`.
 - **No shell:** the page and API expose no command input, shell, SQL console,
   container console or server-control operation. Export is a bounded CSV of the
-  currently loaded filtered view; Clear View clears only the browser display.
+  currently loaded filtered view; Clear View clears only the browser display
+  after an explicit confirmation and never deletes backend records.
 - **Bounded resources:** 7-day query window, max 100 history rows, max 500
   offset, max 200 replay events, a 500-event per-subscriber queue (oldest
   dropped), 500-event client buffer, and 15-second heartbeats. SSE connections
@@ -401,7 +434,7 @@ Public availability is not the same as being compliant or safe for clinical use.
   frontend (local/Docker); the production Pages-hosted frontend needs the same
   headers configured at the edge (see §3 "HTTP security headers").
 - Audit is read-only via API; it is not tamper-evident (no append-only store or hashing).
-- Speech recognition is CPU-only whisper.cpp Tiny multilingual. Transcription
+- Speech recognition is CPU-only whisper.cpp Base multilingual. Transcription
   accuracy, latency, and memory use have **not** been benchmarked across accents,
   Bulgarian/English clinical vocabulary, or the target host; treat transcripts
   as editable drafts. No GPU path, no Vosk fallback, and no cloud speech API.

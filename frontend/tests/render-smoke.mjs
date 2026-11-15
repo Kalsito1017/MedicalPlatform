@@ -159,6 +159,13 @@ const SYSTEM_LOG_IDS = [
   'logs-clear',
   'logs-new-indicator',
 ];
+const MESSAGE_ATTACHMENT = {
+  id: 'att1',
+  filename: 'rota.pdf',
+  content_type: 'application/pdf',
+  size_bytes: 2048,
+  created_at: '2026-11-09T10:00:00Z',
+};
 const MESSAGE_INBOX = {
   id: 'm1',
   sender_id: 'u9',
@@ -168,11 +175,16 @@ const MESSAGE_INBOX = {
   subject: 'Rota review',
   body: 'Please review the rota for next week.',
   read_at: null,
+  attachment: MESSAGE_ATTACHMENT,
   created_at: '2026-11-09T10:00:00Z',
   updated_at: '2026-11-09T10:00:00Z',
 };
 const MESSAGE_RECIPIENTS = {
-  items: [{ id: 'u9', display_name: 'Doc Sender', roles: ['doctor'] }],
+  items: [
+    { id: 'u9', display_name: 'Doc Sender', roles: ['doctor'] },
+    { id: 'u10', display_name: 'Nurse Person', roles: ['nurse'] },
+    { id: 'u11', display_name: 'Admin Person', roles: ['clinical_admin'] },
+  ],
 };
 const MESSAGES_IDS = [
   'page-body',
@@ -191,6 +203,7 @@ const MESSAGES_IDS = [
   'messages-list-panel',
   'messages-region',
   'messages-detail',
+  'messages-profile',
 ];
 
 const CLIN_ADMIN = {
@@ -212,6 +225,10 @@ const CLIN_ADMIN = {
     'message:read',
     'message:write',
     'logs:read',
+    'appointment:read',
+    'appointment:write',
+    'appointment:manage_availability',
+    'appointment:export',
   ],
   is_active: true,
 };
@@ -322,7 +339,14 @@ const NURSE = {
   email: 'nurse@example.com',
   display_name: 'Nan Nurse',
   roles: ['nurse'],
-  permissions: ['patient:read', 'lab:read', 'prescription:read'],
+  permissions: [
+    'patient:read',
+    'message:read',
+    'message:write',
+    'lab:read',
+    'prescription:read',
+    'appointment:read',
+  ],
   is_active: true,
 };
 
@@ -760,6 +784,8 @@ const ANALYTICS_IDS = [
 
 const AI_PAGE_IDS = [
   'page-body',
+  'ai-workspace',
+  'ai-rail-backdrop',
   'ai-suggestions',
   'ai-response-region',
   'ai-question-form',
@@ -771,9 +797,15 @@ const AI_PAGE_IDS = [
   'ai-status',
   'ai-patient-link',
   'ai-empty-note',
+  'ai-context-label',
   'ai-history',
   'ai-history-list',
   'ai-history-clear',
+  'ai-history-search',
+  'ai-history-status',
+  'ai-history-toggle',
+  'ai-history-close',
+  'ai-new-conversation',
 ];
 
 const ADMIN_IDS = [
@@ -965,8 +997,15 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_
       const routeMethod = (route.method || 'GET').toUpperCase();
       const matches = typeof route.match === 'string' ? path === route.match : route.match.test(path);
       if (routeMethod !== method || !matches) continue;
+      const isJsonBody = typeof init.body === 'string';
       const payload = typeof route.response === 'function'
-        ? route.response({ path, method, init, body: init.body ? JSON.parse(init.body) : null })
+        ? route.response({
+            path,
+            method,
+            init,
+            body: isJsonBody && init.body ? JSON.parse(init.body) : null,
+            formData: !isJsonBody && init.body ? init.body : null,
+          })
         : route.response;
       return respond(payload);
     }
@@ -2003,6 +2042,9 @@ await check('AI page is gated without patient:read: nav hidden and denial shown'
   assert(!nav.includes('AI Assistant'), 'nav item must not render without patient:read');
   assertEqualLocal(document.getElementById('ai-question-form').hidden, true, 'composer must hide without patient:read');
   assertEqualLocal(document.getElementById('ai-suggestions').hidden, true, 'suggestions must hide without patient:read');
+  assertEqualLocal(document.getElementById('ai-history').hidden, true, 'conversation rail must hide without patient:read');
+  assertEqualLocal(document.getElementById('ai-history-toggle').hidden, true, 'mobile rail toggle must hide without patient:read');
+  assert(document.getElementById('ai-workspace').classList.contains('ai-workspace--no-rail'), 'denied page must use a single column');
   assertContains(
     textOf(document.getElementById('ai-response-region')),
     'only available to accounts that can view patient data',
@@ -2093,7 +2135,7 @@ await check('AI panel send button sends and compose is disabled while in flight'
   assertEqualLocal(send.disabled, false, 'the send button must re-enable when the request finishes');
 });
 
-await check('AI page history renders, expands the full answer, and clears behind a confirm dialog', async () => {
+await check('AI page conversation rail selects saved answers, filters, and clears behind a confirm dialog', async () => {
   const calls = [];
   globalThis.fetch = makeFetch({ calls, me: DOCTOR, conversations: CONVERSATIONS });
   const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
@@ -2101,40 +2143,51 @@ await check('AI page history renders, expands the full answer, and clears behind
   await settle();
 
   const list = document.getElementById('ai-history-list');
-  const entries = list.querySelectorAll('.ai-history__item');
-  assertEqualLocal(entries.length, 2, 'both history entries must render, newest first');
-  const summaryText = textOf(list);
-  assertContains(summaryText, 'What is the latest haemoglobin?', 'newest question missing');
-  assertContains(summaryText, 'Which patients are on metformin?', 'older question missing');
-  assertContains(summaryText, 'Patient', 'patient mode badge missing');
-  assertContains(summaryText, 'General', 'general mode badge missing');
-  assertContains(summaryText, 'minutes ago', 'relative timestamp missing');
-  assertContains(summaryText, 'get_patient_lab_results', 'tool name missing from the summary');
+  const railItems = list.querySelectorAll('.ai-rail__item');
+  assertEqualLocal(railItems.length, 2, 'both conversations must render in the rail');
+  const railText = textOf(list);
+  assertContains(railText, 'What is the latest haemoglobin?', 'newest question missing');
+  assertContains(railText, 'Which patients are on metformin?', 'older question missing');
+  assertContains(railText, 'Patient', 'patient mode badge missing');
+  assertContains(railText, 'General', 'general mode badge missing');
+  assertContains(railText, 'minutes ago', 'relative timestamp missing');
+  assertContains(railText, 'get_patient_lab_results', 'tool name missing from the rail');
+  assertEqualLocal(list.querySelectorAll('.ai-history__detail').length, 0, 'the rail must not render inline details');
 
-  // Expand: aria-expanded, the full styled answer turn, citations, focus.
-  const firstSummary = list.querySelectorAll('.ai-history__summary')[0];
-  await firstSummary.dispatch('click');
-  const detail = list.querySelector('.ai-history__detail');
-  assertEqualLocal(firstSummary.getAttribute('aria-expanded'), 'true', 'summary must report expanded');
-  assertEqualLocal(detail.hidden, false, 'the answer detail must be visible when expanded');
-  const detailText = textOf(detail);
-  assertContains(detailText, 'The latest haemoglobin is 13.5 g/dL.', 'expanded answer missing');
-  assert(!detailText.includes('AI-generated'), 'expanded turn must not carry an AI-generated label');
-  assertEqualLocal(detail.querySelectorAll('.badge').length, 0, 'the expanded turn must not carry an AI-generated badge');
-  assert(!detailText.includes('Model:'), 'expanded turn must not carry a model line');
-  assertEqualLocal(detail.querySelectorAll('.alert').length, 0, 'the expanded turn must not carry a disclaimer note');
-  assertContains(detailText, 'Records consulted', 'expanded citations label missing');
-  assertContains(detailText, 'Lab result LAB-0001', 'expanded citation missing');
-  assert(document.activeElement === detail, 'expanding must move focus into the answer');
-  assert(detail.querySelectorAll('a').map((a) => a.getAttribute('href')).includes('patient.html?id=p1'),
+  const firstButton = list.querySelectorAll('.ai-rail__conversation')[0];
+  await firstButton.dispatch('click');
+  const region = document.getElementById('ai-response-region');
+  assertContains(textOf(region), 'What is the latest haemoglobin?', 'selected question missing from the main pane');
+  assertContains(textOf(region), 'The latest haemoglobin is 13.5 g/dL.', 'selected answer missing');
+  assertContains(textOf(region), 'Records consulted', 'selected citations label missing');
+  assertContains(textOf(region), 'Lab result LAB-0001', 'selected citation missing');
+  assert(!textOf(region).includes('AI-generated'), 'selected turn must not carry an AI-generated label');
+  assert(!textOf(region).includes('Model:'), 'selected turn must not carry a model line');
+  assert(region.querySelectorAll('a').map((a) => a.getAttribute('href')).includes('patient.html?id=p1'),
     'patient citations must link to the record');
+  const activeButton = list.querySelectorAll('.ai-rail__conversation')[0];
+  assertEqualLocal(activeButton.getAttribute('aria-current'), 'true', 'selected conversation must be marked current');
+  assert(list.querySelector('.ai-rail__item.is-active'), 'selected conversation must have an active style hook');
 
-  // Collapse again.
-  await firstSummary.dispatch('click');
-  assertEqualLocal(firstSummary.getAttribute('aria-expanded'), 'false', 'summary must report collapsed');
-  assertEqualLocal(detail.hidden, true, 'the answer detail must hide when collapsed');
+  // Client-side rail search filters the loaded, bounded history page.
+  const search = document.getElementById('ai-history-search');
+  search.value = 'haemoglobin';
+  await search.dispatch('input');
+  assertEqualLocal(list.querySelectorAll('.ai-rail__item').length, 1, 'rail search must filter to the matching conversation');
+  assertContains(textOf(list), 'What is the latest haemoglobin?', 'matching conversation missing after search');
+  assert(!textOf(list).includes('Which patients are on metformin?'), 'non-matching conversation must be filtered out');
+  search.value = '';
+  await search.dispatch('input');
+  assertEqualLocal(list.querySelectorAll('.ai-rail__item').length, 2, 'clearing search must restore both conversations');
 
-  // Clear history: confirmed behind the dialog, DELETEs, then an empty state.
+  // New conversation resets the main pane without deleting history.
+  await document.getElementById('ai-new-conversation').dispatch('click');
+  assertContains(textOf(region), 'No question asked yet', 'new conversation must show the empty composer state');
+  assertEqualLocal(document.getElementById('ai-question').value, '', 'new conversation must clear the draft');
+  assertEqualLocal(list.querySelectorAll('.ai-rail__item.is-active').length, 0, 'new conversation must clear the selected rail item');
+
+  // Select a saved conversation again, then clear all history.
+  await list.querySelectorAll('.ai-rail__conversation')[0].dispatch('click');
   await document.getElementById('ai-history-clear').dispatch('click');
   const dialog = document.getElementById('app-dialog');
   assert(dialog, 'the confirm dialog must open');
@@ -2143,7 +2196,37 @@ await check('AI page history renders, expands the full answer, and clears behind
   assert(calls.some((call) => call.url.endsWith('/ai/conversations') && (call.init.method || 'GET') === 'DELETE'),
     'clearing must DELETE the caller history');
   assertContains(textOf(list), 'No questions yet.', 'empty history note missing after clearing');
+  assertContains(textOf(region), 'No question asked yet', 'clearing a viewed saved conversation must reset the main pane');
   assertContains(textOf(document.getElementById('ai-status')), 'cleared', 'clearing must be announced');
+  assertEqualLocal(search.value, '', 'clearing history must reset the rail search');
+});
+
+await check('AI page conversation rail opens and closes as a mobile drawer', async () => {
+  globalThis.fetch = makeFetch({ me: DOCTOR, conversations: CONVERSATIONS });
+  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
+  await freshPage('ai-assistant.js');
+  await settle();
+
+  const workspace = document.getElementById('ai-workspace');
+  const toggle = document.getElementById('ai-history-toggle');
+  const backdrop = document.getElementById('ai-rail-backdrop');
+  const close = document.getElementById('ai-history-close');
+  assertEqualLocal(workspace.classList.contains('is-rail-open'), false, 'rail must start closed');
+  assertEqualLocal(backdrop.hidden, true, 'rail backdrop must start hidden');
+  assertEqualLocal(toggle.getAttribute('aria-expanded'), 'false', 'toggle must start collapsed');
+
+  await toggle.dispatch('click');
+  assertEqualLocal(workspace.classList.contains('is-rail-open'), true, 'toggle must open the rail');
+  assertEqualLocal(backdrop.hidden, false, 'opening the rail must show the backdrop');
+  assertEqualLocal(toggle.getAttribute('aria-expanded'), 'true', 'toggle must report expanded');
+
+  await close.dispatch('click');
+  assertEqualLocal(workspace.classList.contains('is-rail-open'), false, 'close button must close the rail');
+  assertEqualLocal(backdrop.hidden, true, 'closing the rail must hide the backdrop');
+
+  await toggle.dispatch('click');
+  await backdrop.dispatch('click');
+  assertEqualLocal(workspace.classList.contains('is-rail-open'), false, 'backdrop click must close the rail');
 });
 
 await check('AI panel history is filtered to the patient and grows without a reload', async () => {
@@ -2332,11 +2415,17 @@ await check('admin staff table renders the Page shape with roles, status, and pa
         staffUser({ id: 'u-1', display_name: 'Ann Doctor', email: 'ann@example.com', roles: ['doctor'] }),
         staffUser({
           id: 'u-2b',
-          display_name: 'Tom Tech',
-          email: 'tom@example.com',
+          display_name: 'Администратор Системен',
+          email: 'admin@example.com',
           roles: ['clinical_admin'],
           is_active: false,
           created_at: '2026-10-20T09:00:00Z',
+        }),
+        staffUser({
+          id: 'u-2c',
+          display_name: 'Мария Николова',
+          email: 'nurse@example.com',
+          roles: ['nurse'],
         }),
       ],
       total: 25,
@@ -2354,15 +2443,19 @@ await check('admin staff table renders the Page shape with roles, status, and pa
   assertContains(region, 'ann@example.com', 'email missing');
   assertContains(region, 'Admin', 'role label missing');
   assertContains(region, ui.displayDate('2026-10-20T09:00:00Z'), 'created date missing');
-  assertContains(region, 'Showing 1\u20132 of 25 staff accounts', 'pagination summary wrong');
+  assertContains(region, 'Showing 1\u20133 of 25 staff accounts', 'pagination summary wrong');
   const staffRows = document.getElementById('staff-region').querySelector('tbody').querySelectorAll('tr');
   const doctorAvatar = staffRows[0].querySelector('.avatar--photo');
   assert(doctorAvatar, 'doctor row must render a demo profile picture');
   const doctorPhoto = doctorAvatar.querySelector('img');
   assert(doctorPhoto, 'doctor avatar must contain a local image');
   assertContains(doctorPhoto.getAttribute('src'), 'assets/images/doctors/doctor-', 'doctor photo must be local');
-  const adminAvatar = staffRows[1].querySelector('.avatar');
-  assert(adminAvatar && !adminAvatar.classList.contains('avatar--photo'), 'non-doctor row must keep initials, not a photo');
+  const adminAvatar = staffRows[1].querySelector('.avatar--photo');
+  assert(adminAvatar, 'seeded admin row must render the dedicated demo portrait');
+  assertContains(adminAvatar.querySelector('img').getAttribute('src'), 'assets/images/staff/admin-1.jpg', 'admin portrait must be the seeded staff image');
+  const nurseAvatar = staffRows[2].querySelector('.avatar--photo');
+  assert(nurseAvatar, 'seeded nurse row must render the dedicated demo portrait');
+  assertContains(nurseAvatar.querySelector('img').getAttribute('src'), 'assets/images/staff/nurse-1.jpg', 'nurse portrait must be the seeded staff image');
   const badges = badgeTexts(firstRow(document.getElementById('staff-region')));
   assert(badges.includes('Doctor') && badges.includes('Active'), `role/status badges wrong: ${badges}`);
   const secondBadges = badgeTexts(document.getElementById('staff-region').querySelector('tbody').querySelectorAll('tr')[1]);
@@ -2660,7 +2753,9 @@ await check('admin page denies a nurse honestly and shows no fake controls', asy
   assertContains(body, 'You do not have permission', 'denial copy missing');
   assertContains(textOf(document.getElementById('site-nav')), 'Dashboard', 'nav must still render');
   assert(!textOf(document.getElementById('site-nav')).includes('Staff Management'), 'Staff Management nav item must not render for a nurse');
-  assert(!document.getElementById('user-area').querySelector('.avatar--photo'), 'nurse must keep initials, not a doctor photo');
+  const nurseTopAvatar = document.getElementById('user-area').querySelector('.avatar--photo');
+  assert(nurseTopAvatar, 'seeded nurse top-bar avatar must use the dedicated demo portrait');
+  assertContains(nurseTopAvatar.querySelector('img').getAttribute('src'), 'assets/images/staff/nurse-1.jpg', 'nurse top-bar photo must be the seeded staff image');
   assert(!textOf(document.body).includes('Grant role'), 'no staff controls may render for a nurse');
   assertEqualLocal(
     calls.filter((call) => call.url.startsWith('/api/v1/staff') || call.url.startsWith('/api/v1/audit')).length,
@@ -2696,7 +2791,7 @@ await check('dashboard renders welcome, role badges, quick actions, and recent p
   assert(topAvatar, 'doctor top-bar avatar must use a demo profile picture');
   const topPhoto = topAvatar.querySelector('img');
   assert(topPhoto, 'doctor top-bar avatar must contain a local image');
-  assertContains(topPhoto.getAttribute('src'), 'assets/images/doctors/doctor-', 'doctor top-bar photo must be local');
+  assertContains(topPhoto.getAttribute('src'), 'assets/images/staff/doctor-', 'seeded doctor top-bar photo must be the dedicated demo image');
   const profileHead = document.getElementById('page-body').querySelector('.profile-card__head');
   const profileAvatar = profileHead && profileHead.querySelector('.avatar--photo');
   assert(profileAvatar, 'doctor dashboard profile card must show the demo picture');
@@ -3073,7 +3168,7 @@ await check('system logs render history, stats, filters, clear, and deny non-adm
   assertContains(textOf(terminal), 'Dr Ada Example', 'event sender missing');
   const senderImages = terminal.querySelectorAll('img');
   assert(senderImages.length > 0, 'doctor profile portrait missing');
-  assert(senderImages[0].getAttribute('src').includes('doctors/doctor-'), 'portrait must use a local doctor image');
+  assert(senderImages[0].getAttribute('src').includes('staff/doctor-'), 'portrait must use the seeded doctor demo image');
   assertEqualLocal(textOf(document.getElementById('logs-stat-total')), '1', 'total counter wrong');
   assertEqualLocal(textOf(document.getElementById('logs-connection')), 'Disconnected', 'status must not claim live');
   assertContains(textOf(document.getElementById('logs-last-event')), '10:00:00.123', 'last-event timestamp missing');
@@ -3087,9 +3182,21 @@ await check('system logs render history, stats, filters, clear, and deny non-adm
   );
 
   const beforeClear = calls.length;
+  const terminalBeforeCancel = textOf(document.getElementById('logs-terminal'));
   await document.getElementById('logs-clear').dispatch('click');
-  assertContains(textOf(document.getElementById('logs-terminal')), 'Waiting for incoming events', 'clear view must empty the terminal');
+  assertContains(textOf(document.getElementById('app-dialog-title')), 'Are you sure?', 'clear view confirmation title missing');
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Persisted audit and operational events will not be deleted', 'clear view safety copy missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Cancel');
+  await settle();
+  assertEqualLocal(textOf(document.getElementById('logs-terminal')), terminalBeforeCancel, 'cancelling clear view must leave the events visible');
+  assertEqualLocal(calls.length, beforeClear, 'cancelling clear view must not call the backend');
+
+  await document.getElementById('logs-clear').dispatch('click');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Clear view');
+  await settle();
+  assertContains(textOf(document.getElementById('logs-terminal')), 'Waiting for incoming events', 'clear view must empty the terminal after confirmation');
   assert(document.getElementById('logs-empty'), 'clear view must leave a replaceable empty marker');
+  assertContains(textOf(document.getElementById('logs-status')), 'Persisted backend events were not deleted', 'clear view must announce that backend events remain');
   assertEqualLocal(calls.length, beforeClear, 'clear view must not call the backend or delete events');
 
   for (const user of [DOCTOR, NURSE]) {
@@ -3106,10 +3213,11 @@ await check('system logs render history, stats, filters, clear, and deny non-adm
 
 /* ------------------------------------------------------------- messages */
 
-await check('messages page renders own inbox, marks read, and sends a message', async () => {
+await check('messages page renders own inbox, marks read, and uses inline composer + attachments', async () => {
   const calls = [];
   const readCalls = [];
   const sentMessages = [];
+  const sentAttachments = [];
   const routes = [
     {
       method: 'POST',
@@ -3121,10 +3229,32 @@ await check('messages page renders own inbox, marks read, and sends a message', 
     },
     {
       method: 'POST',
+      match: '/api/v1/messages/attachments',
+      response: ({ formData }) => {
+        sentAttachments.push(formData);
+        return {
+          status: 201,
+          ok: true,
+          body: {
+            ...MESSAGE_INBOX,
+            id: 'm3',
+            subject: formData.get('subject'),
+            body: formData.get('body'),
+            attachment: { ...MESSAGE_ATTACHMENT, filename: formData.get('file').name },
+          },
+        };
+      },
+    },
+    {
+      method: 'POST',
       match: '/api/v1/messages',
       response: ({ body }) => {
         sentMessages.push(body);
-        return { status: 201, ok: true, body: { ...MESSAGE_INBOX, id: 'm2', ...body } };
+        return {
+          status: 201,
+          ok: true,
+          body: { ...MESSAGE_INBOX, id: 'm2', attachment: null, ...body },
+        };
       },
     },
   ];
@@ -3145,7 +3275,14 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   const region = document.getElementById('messages-region');
   assertContains(textOf(region), 'Doc Sender', 'inbox sender missing');
   assertContains(textOf(region), 'Rota review', 'inbox subject missing');
+  assertContains(textOf(region), 'rota.pdf', 'inbox attachment preview missing');
   assertContains(textOf(region), 'Unread', 'unread marker missing');
+  const listAvatarHost = region.querySelector('.message-row__avatar');
+  const listAvatar = listAvatarHost && listAvatarHost.querySelector('.avatar');
+  assert(
+    listAvatar && listAvatar.classList.contains('avatar--photo'),
+    'conversation list must render a staff profile image',
+  );
   assertContains(textOf(document.getElementById('messages-count')), '1 message in your inbox', 'inbox count missing');
   assertContains(textOf(document.getElementById('messages-unread')), '1 unread', 'unread count missing');
   assertContains(textOf(document.getElementById('messages-inbox-count')), '1', 'inbox tab count missing');
@@ -3175,20 +3312,59 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   assertContains(textOf(document.getElementById('messages-detail')), 'Read', 'detail read state missing');
   assertContains(textOf(document.getElementById('messages-detail')), 'Doc Sender', 'detail sender missing');
   assertContains(textOf(document.getElementById('messages-detail')), 'Cal Admin', 'detail recipient missing');
+  assertContains(textOf(document.getElementById('messages-detail')), 'rota.pdf', 'detail attachment missing');
+  const download = document.getElementById('messages-detail').querySelector('.message-attachment__download');
+  assert(download, 'attachment download action missing');
+  assertContains(download.getAttribute('href'), '/messages/m1/attachment', 'attachment download URL missing');
+  assertEqualLocal(document.getElementById('message-composer') !== null, true, 'inline composer missing');
+  assert(!document.getElementById('app-dialog'), 'messages must not open a modal composer');
+
+  const profile = document.getElementById('messages-profile');
+  assertContains(textOf(profile), 'Doc Sender', 'profile contact name missing');
+  assertContains(textOf(profile), 'Doctor', 'profile role missing');
+  assertContains(textOf(profile), 'Rota review', 'profile subject missing');
+  assertContains(textOf(profile), 'rota.pdf', 'profile attachment missing');
+  assert(!textOf(profile).includes('Only you and'), 'legacy privacy notice must be removed');
+  const profileAvatarHost = profile.querySelector('.messages-profile__avatar');
+  const profileAvatar = profileAvatarHost && profileAvatarHost.querySelector('.avatar');
+  assert(
+    profileAvatar && profileAvatar.classList.contains('avatar--photo'),
+    'profile pane must render the contact image',
+  );
   assert(document.getElementById('messages-workspace').classList.contains('is-reading'), 'selected message must open the reading view on mobile');
 
   await document.getElementById('messages-new').dispatch('click');
   await settle();
-  assertContains(textOf(document.getElementById('app-dialog-title')), 'New message', 'compose dialog missing');
+  assert(document.getElementById('message-recipient'), 'inline new-message recipient field missing');
+  assert(!document.getElementById('app-dialog'), 'New message must not open a dialog');
   document.getElementById('message-recipient').value = 'u9';
   document.getElementById('message-subject').value = 'Reply';
   document.getElementById('message-body').value = 'Thanks for the update.';
-  await clickButton(document.getElementById('app-dialog-actions'), 'Send message');
+  await document.getElementById('message-composer').dispatch('submit');
   await settle();
   assertEqualLocal(sentMessages.length, 1, 'message send request missing');
   assertEqualLocal(sentMessages[0].recipient_id, 'u9', 'recipient missing from message');
   assertEqualLocal(sentMessages[0].subject, 'Reply', 'subject missing from message');
   assertEqualLocal(sentMessages[0].body, 'Thanks for the update.', 'body missing from message');
+
+  // Attachments are sent as multipart from the inline composer.
+  await document.getElementById('messages-inbox-tab').dispatch('click');
+  await settle();
+  await region.querySelector('.message-row').dispatch('click');
+  await settle();
+  const fileInput = document.getElementById('message-file');
+  const file = new File(['hello attachment'], 'note.txt', { type: 'text/plain' });
+  fileInput.files = [file];
+  await fileInput.dispatch('change');
+  assertContains(textOf(document.getElementById('message-attachment-preview')), 'note.txt', 'selected attachment chip missing');
+  document.getElementById('message-body').value = 'Attached notes.';
+  await document.getElementById('message-composer').dispatch('submit');
+  await settle();
+  assertEqualLocal(sentAttachments.length, 1, 'attachment send request missing');
+  assertEqualLocal(sentAttachments[0].get('recipient_id'), 'u9', 'attachment recipient missing');
+  assertEqualLocal(sentAttachments[0].get('file').name, 'note.txt', 'attachment file missing');
+  assertEqualLocal(sentAttachments[0].get('body'), 'Attached notes.', 'attachment body missing');
+  assertContains(String(sentAttachments[0].get('subject')), 'Re: Rota review', 'attachment reply subject missing');
 
   // Doctors get Messages too, but not the Staff Management nav item.
   globalThis.fetch = makeFetch({
@@ -3204,15 +3380,35 @@ await check('messages page renders own inbox, marks read, and sends a message', 
   assert(!doctorNav.includes('Staff Management'), 'doctor must not see Staff Management nav');
   assertContains(textOf(doctorDocument.getElementById('messages-region')), 'Your inbox is empty', 'empty inbox state missing');
 
-  // Nurses have no Messages surface and never fetch it.
+  // Nurses now share the same Messages surface and recipient directory.
   const nurseCalls = [];
-  globalThis.fetch = makeFetch({ me: NURSE, calls: nurseCalls });
+  globalThis.fetch = makeFetch({
+    me: NURSE,
+    calls: nurseCalls,
+    messages: { items: [], total: 0, limit: 50, offset: 0 },
+    messageRecipients: MESSAGE_RECIPIENTS,
+  });
   const nurseDocument = bootDom([...CHROME_IDS, ...MESSAGES_IDS]);
   await freshPage('messages.js');
   await settle();
-  assertContains(textOf(nurseDocument.getElementById('page-body')), 'You do not have permission', 'nurse denial missing');
-  assert(!textOf(nurseDocument.getElementById('site-nav')).includes('Messages'), 'nurse must not see Messages nav');
-  assert(!nurseCalls.some((call) => call.url.includes('/messages')), 'nurse must not fetch messages');
+  const nurseNav = textOf(nurseDocument.getElementById('site-nav'));
+  assertContains(nurseNav, 'Messages', 'nurse nav item missing');
+  assert(!nurseNav.includes('Staff Management'), 'nurse must not see Staff Management nav');
+  assertContains(textOf(nurseDocument.getElementById('messages-region')), 'Your inbox is empty', 'nurse empty inbox state missing');
+  assert(nurseCalls.some((call) => call.url.includes('/messages')), 'nurse must fetch messages');
+
+  await nurseDocument.getElementById('messages-new').dispatch('click');
+  await settle();
+  const recipientSelect = nurseDocument.getElementById('message-recipient');
+  const recipientLabels = recipientSelect.querySelectorAll('option').map((option) => option.textContent);
+  assert(recipientLabels.includes('Doc Sender · Doctor'), 'nurse must be able to select a Doctor');
+  assert(recipientLabels.includes('Nurse Person · Nurse'), 'nurse must be able to select a Nurse');
+  assert(recipientLabels.includes('Admin Person · Admin'), 'nurse must be able to select an Admin');
+  const nurseCancel = buttonByText(nurseDocument.getElementById('messages-detail'), 'Cancel');
+  assert(nurseCancel, 'nurse inline composer cancel missing');
+  await nurseCancel.dispatch('click');
+  await settle();
+  assert(!nurseDocument.getElementById('message-composer'), 'cancel must close the inline composer');
 });
 
 /* -------------------------------------------------------- command menu (⌘K) */
@@ -3801,9 +3997,24 @@ await check('overlay history defers a replacement push until the pending self-ba
 });
 
 await check('expanded history entries unwind through Back in LIFO order', async () => {
-  globalThis.fetch = makeFetch({ me: DOCTOR, conversations: CONVERSATIONS });
-  const document = bootDom([...CHROME_IDS, ...AI_PAGE_IDS]);
-  await freshPage('ai-assistant.js');
+  globalThis.fetch = makeFetch({
+    me: DOCTOR,
+    patient: PATIENT,
+    summary: SUMMARY,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+    conversations: CONVERSATIONS,
+  });
+  const document = bootDom([
+    ...CHROME_IDS,
+    ...PATIENT_IDS,
+    ...PATIENT_TAB_FIXTURE,
+    PRINT_BUTTON_FIXTURE,
+  ]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+  await document.getElementById('tab-ai-patient').dispatch('click');
   await settle();
 
   const list = document.getElementById('ai-history-list');
@@ -4617,6 +4828,7 @@ const APPT_DOCTOR = {
     'appointment:read',
     'appointment:write',
     'appointment:manage_availability',
+    'appointment:export',
   ],
 };
 const APPT_PATIENT_WRITER = {
@@ -4638,6 +4850,13 @@ const APPT_NURSE = {
 };
 const APPT_IDS = [
   'appointments-context',
+  {
+    id: 'appointments-mode-switcher',
+    children: [
+      { tag: 'button', attrs: { 'data-mode': 'calendar' }, text: 'Calendar' },
+      { tag: 'button', attrs: { 'data-mode': 'history' }, text: 'History' },
+    ],
+  },
   'doctor-picker',
   'doctor-select',
   'availability-open',
@@ -4645,12 +4864,17 @@ const APPT_IDS = [
   'voice-region',
   'voice-help',
   'voice-language',
+  'voice-example',
+  'voice-example-text',
+  { id: 'voice-example-use', tag: 'button', text: 'Insert example request' },
+  'voice-listener',
   'voice-record',
-  'voice-record-label',
-  'voice-transcribe',
+  'voice-waveform',
+  'voice-cancel',
   'voice-clear',
   'voice-timer',
   'voice-transcript',
+  'voice-suggestions',
   'voice-hint',
   'voice-interpret',
   'voice-status',
@@ -4673,6 +4897,26 @@ const APPT_IDS = [
   'appointments-loading',
   'appointments-calendar',
   'appointments-upcoming',
+  'appointments-calendar-card',
+  'appointments-history',
+  'appointments-history-heading',
+  'appointments-history-copy',
+  'appointments-history-export',
+  'appointments-history-filters',
+  'appointments-history-search',
+  'appointments-history-suggestions',
+  'appointments-history-search-status',
+  'appointments-history-start',
+  'appointments-history-end',
+  'appointments-history-status',
+  'appointments-history-status-filter',
+  'appointments-history-type',
+  'appointments-history-apply',
+  'appointments-history-reset',
+  'appointments-history-error',
+  'appointments-history-loading',
+  'appointments-history-region',
+  'appointments-history-pagination',
 ];
 const CLINIC_TODAY = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Europe/Sofia',
@@ -4695,6 +4939,47 @@ const APPOINTMENT = {
   created_at: APPT_START.toISOString(),
   updated_at: APPT_START.toISOString(),
 };
+const HISTORY_START = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+const HISTORY_END = new Date(HISTORY_START.getTime() + 30 * 60 * 1000);
+const APPT_HISTORY_UNMARKED = {
+  ...APPOINTMENT,
+  id: 'h1',
+  start_at: HISTORY_START.toISOString(),
+  end_at: HISTORY_END.toISOString(),
+  status: 'confirmed',
+  updated_at: HISTORY_START.toISOString(),
+};
+const APPT_HISTORY_COMPLETED = {
+  ...APPOINTMENT,
+  id: 'h2',
+  start_at: new Date(HISTORY_START.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+  end_at: new Date(HISTORY_END.getTime() - 24 * 60 * 60 * 1000).toISOString(),
+  status: 'completed',
+  updated_at: HISTORY_START.toISOString(),
+};
+const APPT_HISTORY = {
+  items: [APPT_HISTORY_UNMARKED, APPT_HISTORY_COMPLETED],
+  total: 2,
+  limit: 25,
+  offset: 0,
+};
+const APPT_LIFECYCLE = [
+  {
+    id: 'ev1',
+    appointment_id: 'a1',
+    event_type: 'created',
+    actor_user_id: 'u1',
+    actor_display_name: 'Dr Ada Example',
+    old_start_at: null,
+    old_end_at: null,
+    new_start_at: APPT_START.toISOString(),
+    new_end_at: APPT_END.toISOString(),
+    old_status: null,
+    new_status: 'scheduled',
+    request_id: 'req-appt-1',
+    created_at: APPT_START.toISOString(),
+  },
+];
 const APPT_AVAILABILITY = {
   doctor_id: 'u1',
   timezone: 'Europe/Sofia',
@@ -4739,7 +5024,12 @@ function appointmentRoutes(calls, { createdAt = null, interpretBodies = null } =
     {
       method: 'GET',
       match: '/api/v1/appointments/config',
-      response: { timezone: 'Europe/Sofia', max_duration_minutes: 480, max_range_days: 62 },
+      response: {
+        timezone: 'Europe/Sofia',
+        max_duration_minutes: 480,
+        max_range_days: 62,
+        history_max_range_days: 366,
+      },
     },
     {
       method: 'GET',
@@ -4753,8 +5043,23 @@ function appointmentRoutes(calls, { createdAt = null, interpretBodies = null } =
     },
     {
       method: 'GET',
+      match: '/api/v1/appointments/history',
+      response: APPT_HISTORY,
+    },
+    {
+      method: 'GET',
+      match: /\/api\/v1\/appointments\/[^/]+\/history$/,
+      response: APPT_LIFECYCLE,
+    },
+    {
+      method: 'GET',
       match: '/api/v1/appointments',
       response: { items: [APPOINTMENT], total: 1, limit: 100, offset: 0 },
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/patient-suggestions',
+      response: () => ({ items: [] }),
     },
     {
       method: 'POST',
@@ -4980,6 +5285,223 @@ await check('admin removes cancelled appointments and expired cancelled rows are
     !textOf(doctorDocument.getElementById('app-dialog-actions')).includes('Remove from calendar'),
     'doctor must not get the admin removal action',
   );
+});
+
+await check('appointment history separates past records, filters, paginates, and exports', async () => {
+  const calls = [];
+  const staff = {
+    items: [{ id: 'u1', email: 'doctor@example.com', display_name: 'Dr Ada Example', roles: ['doctor'], is_active: true }],
+  };
+  globalThis.fetch = makeFetch({
+    me: APPT_ADMIN,
+    calls,
+    staff,
+    routes: appointmentRoutes(calls),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  await clickButton(document.getElementById('appointments-mode-switcher'), 'History');
+  await settle();
+  assertEqualLocal(document.getElementById('appointments-calendar-card').hidden, true, 'calendar must hide in history mode');
+  assertEqualLocal(document.getElementById('appointments-history').hidden, false, 'history must show in history mode');
+  const regionText = textOf(document.getElementById('appointments-history-region'));
+  assertContains(regionText, 'Ann Test', 'history patient missing');
+  assertContains(regionText, 'MRN-0001', 'history MRN missing');
+  assertContains(regionText, 'Past — Status not updated', 'unmarked past status missing');
+  assertContains(regionText, 'Completed', 'completed status missing');
+  assertContains(textOf(document.getElementById('appointments-history-pagination')), 'Showing 1–2 of 2', 'history pagination summary missing');
+
+  const historyCall = calls.find((call) => call.url.includes('/appointments/history') && !call.url.includes('/export'));
+  assert(historyCall, 'history endpoint not called');
+
+  const startInput = document.getElementById('appointments-history-start');
+  const endInput = document.getElementById('appointments-history-end');
+  const startDate = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const endDate = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  startInput.value = startDate;
+  endInput.value = endDate;
+  document.getElementById('appointments-history-search').value = 'Ann';
+  document.getElementById('appointments-history-status-filter').value = 'past_unmarked';
+  document.getElementById('appointments-history-type').value = 'General Consultation';
+  await document.getElementById('appointments-history-filters').dispatch('submit');
+  await settle();
+  const filtered = calls.filter((call) => call.url.includes('/appointments/history') && !call.url.includes('/export')).at(-1);
+  assertContains(filtered.url, 'q=Ann', 'history patient search not sent');
+  assertContains(filtered.url, 'status=past_unmarked', 'history status filter not sent');
+  assertContains(filtered.url, 'visit_type=General+Consultation', 'history visit type filter not sent');
+  assertContains(filtered.url, 'start=', 'history start date not sent');
+  assertContains(filtered.url, 'end=', 'history end date not sent');
+
+  await document.getElementById('appointments-history-export').dispatch('click');
+  assertContains(
+    globalThis.location.redirectedTo || '',
+    '/appointments/history/export.csv',
+    'history export URL missing',
+  );
+  assertContains(globalThis.location.redirectedTo || '', 'start=', 'export start missing');
+  assertContains(globalThis.location.redirectedTo || '', 'end=', 'export end missing');
+  assertContains(globalThis.location.redirectedTo || '', 'q=Ann', 'export search missing');
+});
+
+await check('appointment history patient search shows live name suggestions and selects them', async () => {
+  const calls = [];
+  const patients = {
+    items: [{ id: 'p1', display_name: 'Elena Georgieva', mrn: 'MRN-0001' }],
+    total: 1,
+    limit: 8,
+    offset: 0,
+  };
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls,
+    patients,
+    routes: appointmentRoutes(calls),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+  await clickButton(document.getElementById('appointments-mode-switcher'), 'History');
+  await settle();
+
+  const input = document.getElementById('appointments-history-search');
+  const list = document.getElementById('appointments-history-suggestions');
+  input.value = 'Ел';
+  await input.dispatch('input');
+  await settle(350);
+
+  assertEqualLocal(list.hidden, false, 'patient suggestion list must open while typing');
+  assertContains(textOf(list), 'Elena Georgieva', 'patient name suggestion missing');
+  assertContains(textOf(list), 'MRN-0001', 'patient MRN suggestion missing');
+  assertEqualLocal(input.getAttribute('aria-expanded'), 'true', 'combobox must report expanded');
+  assert(
+    calls.some((call) => call.url.includes('/patients?') && call.url.includes('limit=8')),
+    'patient suggestion query was not sent',
+  );
+
+  const option = list.querySelector('[role="option"]');
+  assert(option, 'patient suggestion option missing');
+  await option.dispatch('pointerdown', {});
+  await settle();
+
+  assertEqualLocal(input.value, 'Elena Georgieva', 'selecting a suggestion must fill the search field');
+  assertEqualLocal(list.hidden, true, 'suggestion list must close after selection');
+  const selectedCall = calls
+    .filter((call) => call.url.includes('/appointments/history') && !call.url.includes('/export'))
+    .at(-1);
+  assertContains(selectedCall.url, 'q=Elena+Georgieva', 'selected patient must filter appointment history');
+
+  // Keyboard path: arrow down highlights the first option; Enter selects it.
+  input.value = 'Ел';
+  await input.dispatch('input');
+  await settle(350);
+  await input.dispatch('keydown', { key: 'ArrowDown' });
+  assertEqualLocal(
+    input.getAttribute('aria-activedescendant'),
+    'appointments-history-suggestion-0',
+    'ArrowDown must activate the first suggestion',
+  );
+  const activeOption = list.querySelector('[role="option"]');
+  assertEqualLocal(activeOption.getAttribute('aria-selected'), 'true', 'active option must be marked selected');
+  await input.dispatch('keydown', { key: 'Enter' });
+  await settle();
+  assertEqualLocal(input.value, 'Elena Georgieva', 'Enter must select the active suggestion');
+  assertEqualLocal(list.hidden, true, 'suggestion list must close after keyboard selection');
+});
+
+await check('appointment history detail shows lifecycle and doctor status actions', async () => {
+  const patches = [];
+  const routes = [
+    {
+      method: 'PATCH',
+      match: /\/api\/v1\/appointments\/h1$/,
+      response: ({ body }) => {
+        patches.push(body);
+        return { ...APPT_HISTORY_UNMARKED, status: body.status };
+      },
+    },
+    ...appointmentRoutes([]),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  await clickButton(document.getElementById('appointments-mode-switcher'), 'History');
+  await settle();
+  const viewButton = buttonByText(document.getElementById('appointments-history-region'), 'View');
+  assert(viewButton, 'history detail action missing');
+  await viewButton.dispatch('click');
+  await settle(30);
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Lifecycle', 'lifecycle section missing');
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Created', 'lifecycle event missing');
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Scheduled for', 'created lifecycle summary missing');
+  assert(
+    !textOf(document.getElementById('app-dialog-body')).includes('— →'),
+    'lifecycle must not render empty from-values',
+  );
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'Dr Ada Example', 'lifecycle actor missing');
+
+  buttonByText(document.getElementById('app-dialog-actions'), 'Mark completed').dispatch('click', {});
+  await settle(30);
+  assertContains(textOf(document.getElementById('app-dialog-body')), 'records the appointment outcome', 'completed confirmation missing');
+  await clickButton(document.getElementById('app-dialog-actions'), 'Mark as completed');
+  await settle(60);
+  assertEqualLocal(patches.length, 1, 'completed PATCH missing');
+  assertEqualLocal(patches[0].status, 'completed', 'completed status missing');
+
+  // Nurses remain strictly read-only.
+  globalThis.fetch = makeFetch({ me: APPT_NURSE, routes: appointmentRoutes([]) });
+  const nurseDocument = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+  await clickButton(nurseDocument.getElementById('appointments-mode-switcher'), 'History');
+  await settle();
+  assertEqualLocal(nurseDocument.getElementById('appointments-history-export').hidden, true, 'nurse must not get history export');
+  const nurseView = buttonByText(nurseDocument.getElementById('appointments-history-region'), 'View');
+  await nurseView.dispatch('click');
+  await settle(30);
+  const nurseActions = textOf(nurseDocument.getElementById('app-dialog-actions'));
+  assert(!nurseActions.includes('Mark completed'), 'nurse must not get Mark completed');
+  assert(!nurseActions.includes('Mark no-show'), 'nurse must not get Mark no-show');
+  assert(!nurseActions.includes('Reschedule'), 'nurse must not get Reschedule');
+  assert(!nurseActions.includes('Cancel appointment'), 'nurse must not get Cancel');
+});
+
+await check('active calendar refetches when the next appointment reaches end_at', async () => {
+  const calls = [];
+  let calendarCalls = 0;
+  const expiring = {
+    ...APPOINTMENT,
+    id: 'expiring',
+    start_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+    end_at: new Date(Date.now() + 120).toISOString(),
+  };
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls,
+    routes: [
+      {
+        method: 'GET',
+        match: '/api/v1/appointments',
+        response: () => {
+          calendarCalls += 1;
+          return calendarCalls === 1
+            ? { items: [expiring], total: 1, limit: 100, offset: 0 }
+            : { items: [], total: 0, limit: 100, offset: 0 };
+        },
+      },
+      ...appointmentRoutes(calls),
+    ],
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+  assertContains(textOf(document.getElementById('appointments-calendar')), 'Ann Test', 'expiring appointment must start visible');
+  await settle(700);
+  assert(calendarCalls >= 2, 'calendar must refetch after the appointment end time');
+  assert(!textOf(document.getElementById('appointments-calendar')).includes('Ann Test'), 'expired appointment must leave the active calendar');
 });
 
 await check('appointment form selects a slot and stores a custom Other visit type', async () => {
@@ -5211,6 +5733,19 @@ await check('appointments admin day view, availability dialog, and voice proposa
   await settle();
 
   const transcript = document.getElementById('voice-transcript');
+  assert(
+    document.getElementById('voice-example-use'),
+    'voice example insert button missing',
+  );
+  assertContains(textOf(document.getElementById('voice-example-text')), 'Example:', 'voice example text missing');
+  const voiceLanguage = document.getElementById('voice-language');
+  voiceLanguage.value = 'en';
+  await voiceLanguage.dispatch('change');
+  assertContains(textOf(document.getElementById('voice-example-text')), 'Book a 30-minute follow-up visit', 'English example not shown');
+  await document.getElementById('voice-example-use').dispatch('click');
+  assertContains(transcript.value, 'Elena Georgieva', 'example request not inserted');
+  assertEqualLocal(document.getElementById('voice-interpret').disabled, false, 'example must enable the propose action');
+
   transcript.value = 'Book Ann Test tomorrow at 09:00.';
   await transcript.dispatch('input');
   await document.getElementById('voice-interpret').dispatch('click');
@@ -5232,6 +5767,419 @@ await check('appointments admin day view, availability dialog, and voice proposa
   assertEqualLocal(created.length, 1, `explicit confirmation did not create exactly one appointment (dialog: ${textOf(document.getElementById('app-dialog-body'))})`);
   assertEqualLocal(created[0].patient_id, 'p1', 'created appointment patient wrong');
   assertEqualLocal(created[0].doctor_id, 'u1', 'admin creation must target the selected doctor');
+});
+
+await check('voice listener runs idle, listening, processing, success, error, cancel and permission states', async () => {
+  const calls = [];
+  const voiceCalls = [];
+  const suggestionCalls = [];
+  const correctionCalls = [];
+  const stoppedTracks = { count: 0 };
+  let permissionDenied = false;
+  const stream = {
+    getTracks() {
+      return [{ stop() { stoppedTracks.count += 1; } }];
+    },
+  };
+  const fakeNavigator = {
+    mediaDevices: {
+      async getUserMedia() {
+        if (permissionDenied) {
+          const error = new Error('Permission denied');
+          error.name = 'NotAllowedError';
+          throw error;
+        }
+        return stream;
+      },
+    },
+  };
+
+  class FakeMediaRecorder {
+    static isTypeSupported() { return true; }
+    constructor(_stream, options = {}) {
+      this.mimeType = options.mimeType || 'audio/webm';
+      this.state = 'inactive';
+      this.listeners = {};
+    }
+    addEventListener(type, handler) {
+      (this.listeners[type] = this.listeners[type] || []).push(handler);
+    }
+    emit(type, event = {}) {
+      for (const handler of this.listeners[type] || []) handler(event);
+    }
+    start() { this.state = 'recording'; }
+    stop() {
+      if (this.state !== 'recording') return;
+      this.state = 'inactive';
+      this.emit('dataavailable', {
+        data: new Blob(['voice-listener-test-'.repeat(80)], { type: this.mimeType }),
+      });
+      setTimeout(() => this.emit('stop'), 0);
+    }
+  }
+
+  class FakeAudioContext {
+    constructor() { this.closed = false; }
+    resume() { return Promise.resolve(); }
+    close() { this.closed = true; return Promise.resolve(); }
+    createMediaStreamSource() { return { connect() {} }; }
+    createAnalyser() {
+      return {
+        fftSize: 1024,
+        smoothingTimeConstant: 0,
+        connect() {},
+        getByteTimeDomainData(data) { data.fill(170); },
+      };
+    }
+  }
+
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const originalRecorder = globalThis.MediaRecorder;
+  const originalAudioContext = globalThis.AudioContext;
+  const originalRaf = globalThis.requestAnimationFrame;
+  const originalCancelRaf = globalThis.cancelAnimationFrame;
+  let rafCount = 0;
+  try {
+    Object.defineProperty(globalThis, 'navigator', {
+      value: fakeNavigator,
+      configurable: true,
+      writable: true,
+    });
+    globalThis.MediaRecorder = FakeMediaRecorder;
+    globalThis.AudioContext = FakeAudioContext;
+    globalThis.requestAnimationFrame = (handler) => {
+      const id = ++rafCount;
+      if (rafCount <= 4) setTimeout(handler, 0);
+      return id;
+    };
+    globalThis.cancelAnimationFrame = () => {};
+
+    const routes = [
+      {
+        method: 'POST',
+        match: '/api/v1/voice/transcriptions',
+        response: ({ formData }) => {
+          voiceCalls.push(formData);
+          return {
+            text: 'Book a follow-up for Elena Georgievah. M-R-N-0-0-0-1.',
+            language: 'en',
+            model: 'base',
+            duration_seconds: 2.4,
+          };
+        },
+      },
+      {
+        method: 'POST',
+        match: '/api/v1/appointments/patient-suggestions',
+        response: ({ body }) => {
+          suggestionCalls.push(body);
+          return {
+            items: [
+              {
+                display_name: 'Елена Георгиева',
+                mrn: 'MRN-0001',
+                matched_name_text: 'Elena Georgievah',
+                matched_mrn_text: 'M-R-N-0-0-0-1',
+              },
+            ],
+          };
+        },
+      },
+      {
+        method: 'POST',
+        match: '/api/v1/appointments/transcription-corrections',
+        response: ({ body }) => {
+          correctionCalls.push(body);
+          return {
+            language: body.language,
+            has_suggestions: false,
+            suggestions: [],
+            analysis_available: true,
+            model: 'fake-correction-model',
+          };
+        },
+      },
+      ...appointmentRoutes([]),
+    ];
+    globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes });
+    const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+    await freshPage('appointments.js');
+    await settle();
+
+    const listener = document.getElementById('voice-listener');
+    const orb = document.getElementById('voice-record');
+    const status = document.getElementById('voice-status');
+    const waveform = document.getElementById('voice-waveform');
+    assertEqualLocal(listener.dataset.state, 'idle', 'voice listener must start idle');
+    assertContains(textOf(status), 'Tap to speak', 'idle instruction missing');
+    assertEqualLocal(orb.disabled, false, 'idle orb must be enabled');
+    assertEqualLocal(orb.getAttribute('aria-label'), 'Start voice recording', 'idle accessible label missing');
+
+    await orb.dispatch('click');
+    await settle(40);
+    assertEqualLocal(listener.dataset.state, 'listening', 'listening state not entered');
+    assertContains(textOf(status), 'Listening', 'listening label missing');
+    assertEqualLocal(document.getElementById('voice-cancel').hidden, false, 'cancel action must be available while listening');
+    assertContains(textOf(document.getElementById('voice-timer')), '0:0', 'recording timer missing');
+    assertEqualLocal(waveform.dataset.level, '4', 'waveform must respond to microphone input');
+
+    await orb.dispatch('click');
+    await settle(80);
+    assertEqualLocal(voiceCalls.length, 1, 'stopping must submit exactly one transcription request');
+    assertEqualLocal(voiceCalls[0].get('file').type.startsWith('audio/'), true, 'audio upload type missing');
+    assertEqualLocal(voiceCalls[0].get('language'), 'auto', 'auto-detect language not sent');
+    assertEqualLocal(document.getElementById('voice-transcript').value, 'Book a follow-up for Elena Georgievah. M-R-N-0-0-0-1.', 'transcript not returned to workflow');
+    assertEqualLocal(listener.dataset.state, 'success', 'success state missing');
+    assertContains(textOf(status), 'Transcription ready', 'success label missing');
+    assertContains(textOf(status), 'English', 'detected language missing');
+    assertEqualLocal(stoppedTracks.count >= 1, true, 'microphone tracks must be released after recording');
+    assertEqualLocal(suggestionCalls.length, 1, 'patient suggestion request missing');
+    assertEqualLocal(suggestionCalls[0].text, 'Book a follow-up for Elena Georgievah. M-R-N-0-0-0-1.', 'suggestion text not sent');
+    assertEqualLocal(correctionCalls.length, 1, 'transcription correction request missing');
+    assertEqualLocal(correctionCalls[0].language, 'en', 'correction language not sent');
+    assertEqualLocal(correctionCalls[0].text, 'Book a follow-up for Elena Georgievah. M-R-N-0-0-0-1.', 'correction text not sent');
+    const suggestionsHost = document.getElementById('voice-suggestions');
+    assertEqualLocal(suggestionsHost.hidden, false, 'Did-you-mean suggestions must be visible');
+    assertContains(textOf(suggestionsHost), 'Did you mean', 'suggestion heading missing');
+    assertContains(textOf(suggestionsHost), 'Елена Георгиева', 'correct patient name missing');
+    assertContains(textOf(suggestionsHost), 'MRN-0001', 'correct MRN missing');
+    await suggestionsHost.querySelector('.voice-suggestion').dispatch('click');
+    assertEqualLocal(document.getElementById('voice-transcript').value, 'Book a follow-up for Елена Георгиева. MRN-0001.', 'suggestion did not correct the transcript');
+    assertEqualLocal(suggestionsHost.querySelector('.voice-suggestion'), null, 'applied patient suggestion must be removed');
+    assert(suggestionsHost.querySelector('.voice-corrections__applied'), 'applied correction undo row missing');
+
+    permissionDenied = true;
+    await orb.dispatch('click');
+    await settle(40);
+    assertEqualLocal(listener.dataset.state, 'error', 'permission error state missing');
+    assertContains(textOf(status), 'permission was denied', 'permission error message missing');
+    assertEqualLocal(orb.disabled, false, 'orb must allow retry after permission error');
+    permissionDenied = false;
+
+    await orb.dispatch('click');
+    await settle(40);
+    assertEqualLocal(listener.dataset.state, 'listening', 'retry did not start listening');
+    await document.getElementById('voice-cancel').dispatch('click');
+    await settle(40);
+    assertEqualLocal(listener.dataset.state, 'idle', 'cancel must return to idle');
+    assertContains(textOf(status), 'Recording cancelled', 'cancel message missing');
+    assertEqualLocal(document.getElementById('voice-cancel').hidden, true, 'cancel action must hide after cancel');
+
+    delete fakeNavigator.mediaDevices.getUserMedia;
+    await orb.dispatch('click');
+    await settle(20);
+    assertEqualLocal(listener.dataset.state, 'error', 'unsupported microphone state missing');
+    assertContains(textOf(status), 'not supported', 'unsupported microphone message missing');
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    if (originalRecorder === undefined) delete globalThis.MediaRecorder;
+    else globalThis.MediaRecorder = originalRecorder;
+    if (originalAudioContext === undefined) delete globalThis.AudioContext;
+    else globalThis.AudioContext = originalAudioContext;
+    if (originalRaf === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalRaf;
+    if (originalCancelRaf === undefined) delete globalThis.cancelAnimationFrame;
+    else globalThis.cancelAnimationFrame = originalCancelRaf;
+  }
+});
+
+await check('transcription corrections can be checked, accepted, rejected, undone, and invalidated', async () => {
+  const calls = [];
+  const correctionCalls = [];
+  const routes = [
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/patient-suggestions',
+      response: () => ({ items: [] }),
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/transcription-corrections',
+      response: ({ body }) => {
+        correctionCalls.push(body);
+        return {
+          language: body.language,
+          has_suggestions: true,
+          analysis_available: true,
+          model: 'fake-correction-model',
+          suggestions: [
+            {
+              original_text: 'follow-up',
+              suggested_text: 'Follow-up Visit',
+              reason: 'Possible appointment-type mismatch',
+              confidence: 'medium',
+              category: 'appointment_type',
+            },
+            {
+              original_text: 'tomorrow',
+              suggested_text: 'next Monday',
+              reason: 'Possible weekday mismatch',
+              confidence: 'low',
+              category: 'weekday',
+            },
+          ],
+        };
+      },
+    },
+    ...appointmentRoutes(calls),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const transcript = document.getElementById('voice-transcript');
+  const host = document.getElementById('voice-suggestions');
+  transcript.value = 'Book a follow-up for Elena Georgievah tomorrow at 10:00.';
+  await transcript.dispatch('input');
+  await settle(30);
+  assertContains(textOf(host), 'Check transcription', 'manual transcription check action missing');
+
+  await clickButton(host, 'Check transcription');
+  await settle(40);
+  assertEqualLocal(correctionCalls.length, 1, 'correction endpoint not called');
+  assertEqualLocal(correctionCalls[0].language, 'en', 'correction language not sent');
+  assertContains(textOf(host), 'Did you mean', 'correction heading missing');
+  assertContains(textOf(host), 'follow-up', 'original correction phrase missing');
+  assertContains(textOf(host), 'Follow-up Visit', 'suggested correction phrase missing');
+  assertContains(textOf(host), 'Keep original', 'keep-original action missing');
+
+  const cards = host.querySelectorAll('.voice-correction');
+  assertEqualLocal(cards.length, 2, 'two correction cards expected');
+  const weekdayCard = cards.find((card) => textOf(card).includes('next Monday'));
+  assert(weekdayCard, 'weekday correction card missing');
+  await clickButton(weekdayCard, 'Keep original');
+  await settle();
+  assert(!textOf(host).includes('next Monday'), 'dismissed correction must disappear');
+  assertContains(textOf(host), 'Follow-up Visit', 'remaining correction must stay visible');
+
+  const typeCard = host.querySelectorAll('.voice-correction').find((card) => textOf(card).includes('Follow-up Visit'));
+  assert(typeCard, 'appointment-type correction card missing');
+  await clickButton(typeCard, 'Use suggestion');
+  await settle();
+  assertContains(transcript.value, 'Follow-up Visit', 'accepted correction not applied to transcript');
+  assertContains(textOf(host), 'Applied', 'applied-correction row missing');
+  assertContains(textOf(host), 'Applied · Appointment type', 'applied-correction category missing');
+  assertContains(textOf(host), 'Transcript changed. Check transcription again.', 'post-apply recheck state missing');
+  assert(buttonByText(host, 'Check transcription'), 'post-apply recheck action missing');
+  assert(
+    !textOf(host).includes('No obvious transcription issues detected.'),
+    'an applied correction must not report that no issues were detected',
+  );
+  const undo = buttonByText(host, 'Undo');
+  assert(undo, 'undo action missing');
+  await undo.dispatch('click');
+  await settle();
+  assertEqualLocal(
+    transcript.value,
+    'Book a follow-up for Elena Georgievah tomorrow at 10:00.',
+    'undo did not restore the transcript',
+  );
+
+  transcript.value = 'Book a Follow-up Visit for Elena Georgievah tomorrow at 10:00.';
+  await transcript.dispatch('input');
+  await settle(30);
+  assert(!textOf(host).includes('Use suggestion'), 'stale correction cards must be removed after manual edit');
+  assertContains(textOf(host), 'Check transcription', 'recheck action missing after manual edit');
+});
+
+await check('transcription correction failure is non-blocking and retryable', async () => {
+  const calls = [];
+  const routes = [
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/patient-suggestions',
+      response: () => ({ items: [] }),
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/transcription-corrections',
+      response: () => ({ status: 503, message: 'Correction analysis unavailable.' }),
+    },
+    ...appointmentRoutes(calls),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const transcript = document.getElementById('voice-transcript');
+  const host = document.getElementById('voice-suggestions');
+  transcript.value = 'Book a follow-up for Elena Georgievah tomorrow at 10:00.';
+  await transcript.dispatch('input');
+  await settle(30);
+  await clickButton(host, 'Check transcription');
+  await settle(40);
+
+  assertContains(textOf(host), 'Unable to check transcription. You can still edit it manually.', 'correction failure state missing');
+  assertContains(textOf(host), 'Retry check', 'retry action missing');
+  assertEqualLocal(document.getElementById('voice-interpret').disabled, false, 'correction failure must not disable appointment proposal');
+});
+
+await check('transcription correction empty state is honest', async () => {
+  const calls = [];
+  const routes = [
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/patient-suggestions',
+      response: () => ({ items: [] }),
+    },
+    {
+      method: 'POST',
+      match: '/api/v1/appointments/transcription-corrections',
+      response: ({ body }) => ({
+        language: body.language,
+        has_suggestions: false,
+        suggestions: [],
+        analysis_available: true,
+        model: 'fake-correction-model',
+      }),
+    },
+    ...appointmentRoutes(calls),
+  ];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const transcript = document.getElementById('voice-transcript');
+  const host = document.getElementById('voice-suggestions');
+  transcript.value = 'Book a follow-up for Elena Georgievah tomorrow at 10:00.';
+  await transcript.dispatch('input');
+  await settle(30);
+  await clickButton(host, 'Check transcription');
+  await settle(40);
+
+  assertContains(textOf(host), 'No obvious transcription issues detected.', 'empty correction state missing');
+  assertEqualLocal(document.getElementById('voice-interpret').disabled, false, 'empty correction state must not block proposal');
+});
+
+await check('EN/BG switcher translates the shell and restores English', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({ me: APPT_DOCTOR, calls, routes: appointmentRoutes([]) });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const host = document.querySelector('.language-switcher');
+  assert(host, 'language switcher missing from the top bar');
+  const buttons = host.querySelectorAll('.language-switcher__btn');
+  assertEqualLocal(buttons.length, 2, 'expected EN and BG buttons');
+  const bg = buttons.find((button) => button.dataset.language === 'bg');
+  const en = buttons.find((button) => button.dataset.language === 'en');
+  assert(bg && en, 'EN/BG buttons missing');
+  assertEqualLocal(en.getAttribute('aria-pressed'), 'true', 'English must be the test default');
+
+  await bg.dispatch('click');
+  await settle();
+  assertEqualLocal(document.documentElement.getAttribute('lang'), 'bg', 'BG must set the document language');
+  assertContains(textOf(document.getElementById('site-nav')), 'Табло', 'navigation was not translated');
+  assertEqualLocal(bg.getAttribute('aria-pressed'), 'true', 'BG button must be active');
+
+  await en.dispatch('click');
+  await settle();
+  assertEqualLocal(document.documentElement.getAttribute('lang'), 'en', 'EN must restore the document language');
+  assertContains(textOf(document.getElementById('site-nav')), 'Dashboard', 'English navigation was not restored');
 });
 
 /* ------------------------------------------------------------------ report */

@@ -6,7 +6,13 @@
   <meta name="robots" content="noindex, nofollow">
   <title>Appointments — MediCore Clinical Platform</title>
   <meta name="description" content="Plan and manage the clinic appointment calendar.">
-  <link rel="icon" href="assets/images/favicon.svg">
+  <meta name="theme-color" content="#06101e">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/assets/images/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/images/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/images/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <link rel="modulepreload" href="assets/js/ui.js">
@@ -43,10 +49,11 @@
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>
             Need help?
           </p>
-          <p class="help-card__text">Open the About panel or contact the maintainers about a problem.</p>
+          <p class="help-card__text">Open the About panel or review the privacy and terms information for this deployment.</p>
           <ul class="help-card__links">
             <li><button type="button" class="link-button" data-open-about>About</button></li>
-            <li><a href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a></li>
+            <li><a href="privacy.html">Privacy</a></li>
+            <li><a href="terms.html">Terms</a></li>
           </ul>
         </div>
       </div>
@@ -72,6 +79,10 @@
             <p class="text-muted" id="appointments-context">Clinic timezone: loading&hellip;</p>
           </div>
           <div class="page-header__actions">
+            <div class="segmented appointments-mode" id="appointments-mode-switcher" role="group" aria-label="Appointments section">
+              <button type="button" data-mode="calendar" class="is-active" aria-pressed="true">Calendar</button>
+              <button type="button" data-mode="history" aria-pressed="false">History</button>
+            </div>
             <div class="field field--inline" id="doctor-picker" hidden>
               <label for="doctor-select">Doctor</label>
               <select id="doctor-select"></select>
@@ -91,46 +102,77 @@
             <div>
               <h2 class="card__title" id="voice-heading">Voice scheduling</h2>
               <p class="text-muted" id="voice-help">
-                Record a short request, edit the transcript, then review the AI proposal.
+                Tap the circle, speak in Bulgarian or English — only these two languages are supported — then tap again to stop. The model detects which one automatically; you can still choose manually. Review the editable transcript before proposing an appointment.
                 Audio stays in this tab's memory, is never saved, and is cleared when you clear or leave.
               </p>
             </div>
             <label class="field field--inline">
-              <span class="visually-hidden">Transcript language</span>
+              <span class="visually-hidden">Transcript language (auto-detect or manual)</span>
               <select id="voice-language">
+                <option value="auto" selected>Auto-detect</option>
                 <option value="bg">Bulgarian</option>
                 <option value="en">English</option>
               </select>
             </label>
           </div>
-          <div class="voice-controls">
-            <button class="btn btn-accent" type="button" id="voice-record">
-              <svg class="icon icon--sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
-              <span id="voice-record-label">Start recording</span>
+          <div class="voice-listener" id="voice-listener" data-state="idle">
+            <button class="voice-listener__orb" id="voice-record" type="button"
+                    aria-label="Start voice recording" aria-describedby="voice-listener-help">
+              <span class="voice-listener__core">
+                <span class="voice-listener__mic" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/><path d="M9.5 21h5"/></svg>
+                </span>
+                <span class="voice-listener__spinner" aria-hidden="true"></span>
+              </span>
             </button>
-            <button class="btn btn-secondary" type="button" id="voice-transcribe" hidden>
-              Transcribe
+            <p class="voice-listener__status" id="voice-status" role="status" aria-live="polite">Tap to speak</p>
+            <p class="voice-listener__timer" id="voice-timer" aria-hidden="true"></p>
+            <div class="voice-waveform" id="voice-waveform" data-level="0" aria-hidden="true">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+            <p class="voice-listener__hint" id="voice-listener-help">
+              Tap the circle to start; tap again to stop and transcribe. You can cancel while listening.
+            </p>
+            <div class="voice-listener__actions">
+              <button class="btn btn-ghost btn-sm" type="button" id="voice-cancel" hidden>
+                Cancel recording
+              </button>
+              <button class="btn btn-ghost btn-sm" type="button" id="voice-clear" hidden>
+                Clear
+              </button>
+            </div>
+          </div>
+          <div class="voice-example" id="voice-example">
+            <div class="voice-example__head">
+              <p class="voice-example__title">What to say</p>
+              <span class="badge badge--neutral">Example</span>
+            </div>
+            <p class="voice-example__intro">
+              Include the patient's name or MRN, the day and time, the duration or visit type, and a short reason.
+            </p>
+            <p class="voice-example__sample" id="voice-example-text">
+              Example: Запиши 30-минутна контролна визита за Елена Георгиева, MRN-0001, следващия понеделник от 10:00. Причина: контрол на кръвното налягане.
+            </p>
+            <button class="btn btn-secondary btn-sm" type="button" id="voice-example-use">
+              Insert example request
             </button>
-            <button class="btn btn-ghost" type="button" id="voice-clear" hidden>
-              Clear
-            </button>
-            <p class="voice-timer" id="voice-timer" aria-live="polite">Ready</p>
           </div>
           <div class="field">
             <label for="voice-transcript">Transcript (editable)</label>
             <textarea id="voice-transcript" rows="3" maxlength="2000" placeholder="The transcript appears here. You can type or edit it before asking the AI to propose an appointment."></textarea>
+            <div class="voice-suggestions" id="voice-suggestions" role="status" aria-live="polite"
+                 aria-label="Transcription correction suggestions" hidden></div>
             <p class="field-hint" id="voice-hint">Manual text works without a microphone. Nothing is saved until you confirm an appointment.</p>
           </div>
           <div class="form-actions">
             <button class="btn btn-primary" type="button" id="voice-interpret" disabled>
               Propose appointment
             </button>
-            <p class="voice-status" id="voice-status" role="status" aria-live="polite"></p>
           </div>
           <div id="voice-proposal" class="voice-proposal" hidden></div>
         </section>
 
-        <section class="card calendar-card" aria-labelledby="calendar-heading">
+        <section class="card calendar-card" id="appointments-calendar-card" aria-labelledby="calendar-heading">
           <div class="calendar-toolbar">
             <h2 class="visually-hidden" id="calendar-heading">Appointment calendar</h2>
             <div class="segmented" id="view-switcher" role="group" aria-label="Calendar view">
@@ -157,10 +199,86 @@
           <div id="appointments-calendar"></div>
           <div id="appointments-upcoming" hidden></div>
         </section>
+
+        <section class="card appointments-history" id="appointments-history" aria-labelledby="appointments-history-heading" hidden>
+          <div class="appointments-history__head">
+            <div>
+              <h2 id="appointments-history-heading">Appointment history</h2>
+              <p class="text-muted" id="appointments-history-copy">
+                Retained appointment records, including completed, no-show, cancelled and past visits whose outcome was not recorded.
+              </p>
+            </div>
+            <button class="btn btn-secondary" type="button" id="appointments-history-export" hidden>
+              Export CSV
+            </button>
+          </div>
+
+          <form class="appointments-history__filters" id="appointments-history-filters" role="search">
+            <div class="field history-patient-search">
+              <label for="appointments-history-search">Patient search</label>
+              <div class="history-patient-search__control">
+                <input id="appointments-history-search" type="search" autocomplete="off"
+                       spellcheck="false" maxlength="100" placeholder="Name or MRN"
+                       role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+                       aria-expanded="false" aria-controls="appointments-history-suggestions"
+                       aria-describedby="appointments-history-search-help">
+                <ul class="patient-results history-patient-results"
+                    id="appointments-history-suggestions" role="listbox"
+                    aria-label="Matching patients" hidden></ul>
+              </div>
+              <p class="visually-hidden" id="appointments-history-search-help">
+                Start typing a name or MRN to see matching patients.
+              </p>
+              <p class="visually-hidden" id="appointments-history-search-status"
+                 role="status" aria-live="polite"></p>
+            </div>
+            <div class="field">
+              <label for="appointments-history-start">From</label>
+              <input id="appointments-history-start" type="date">
+            </div>
+            <div class="field">
+              <label for="appointments-history-end">To</label>
+              <input id="appointments-history-end" type="date">
+            </div>
+            <div class="field">
+              <label for="appointments-history-status-filter">Status</label>
+              <select id="appointments-history-status-filter">
+                <option value="">All statuses</option>
+                <option value="past_unmarked">Past — Status not updated</option>
+                <option value="scheduled">Scheduled</option>
+                <option value="confirmed">Confirmed</option>
+                <option value="completed">Completed</option>
+                <option value="no_show">No show</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="appointments-history-type">Visit type</label>
+              <select id="appointments-history-type">
+                <option value="">All visit types</option>
+              </select>
+            </div>
+            <div class="appointments-history__filter-actions">
+              <button class="btn btn-primary" type="submit" id="appointments-history-apply">Apply filters</button>
+              <button class="btn btn-secondary" type="button" id="appointments-history-reset">Reset</button>
+            </div>
+          </form>
+
+          <p class="field-error" id="appointments-history-error" role="alert" hidden></p>
+          <div id="appointments-history-status" class="status-region" role="status" aria-live="polite"></div>
+          <div class="loading-block" id="appointments-history-loading" hidden>
+            <div class="heart-loader heart-loader--md">
+              <img class="heart-loader__img" src="assets/images/heart-loader.png" alt="" aria-hidden="true">
+              <p class="heart-loader__label">Loading appointment history&hellip;</p>
+            </div>
+          </div>
+          <div id="appointments-history-region"></div>
+          <div id="appointments-history-pagination"></div>
+        </section>
       </main>
     </div>
   </div>
 
-  <script type="module" src="assets/js/appointments.js?v=20261109j"></script>
+  <script type="module" src="assets/js/appointments.js?v=20261113c"></script>
 </body>
 </html>

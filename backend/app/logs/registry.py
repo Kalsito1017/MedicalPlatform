@@ -65,6 +65,7 @@ AUDIT_EVENT_SPECS: dict[str, EventSpec] = {
     "auth.logout": EventSpec("auth", "info", "User signed out"),
     "authz.denied": EventSpec("security", "security", "Authorization check denied"),
     "patient.read": EventSpec("patients", "info", "Patient record accessed"),
+    "patient.suggest": EventSpec("patients", "info", "Patient name suggestion requested"),
     "patient.summary.read": EventSpec("patients", "info", "Patient summary accessed"),
     "labs.read": EventSpec("labs", "info", "Laboratory records accessed"),
     "prescriptions.read": EventSpec("prescriptions", "info", "Prescription records accessed"),
@@ -79,18 +80,29 @@ AUDIT_EVENT_SPECS: dict[str, EventSpec] = {
     "analytics.read": EventSpec("administration", "info", "Analytics viewed"),
     "message.send": EventSpec("administration", "success", "Message sent"),
     "message.read": EventSpec("administration", "info", "Message read"),
+    "message.attachment.download": EventSpec(
+        "administration", "info", "Message attachment downloaded"
+    ),
     "ai.history.clear": EventSpec("ai", "info", "AI history cleared"),
     "ai.history.delete": EventSpec("ai", "info", "AI history entry deleted"),
     "appointment.create": EventSpec("appointments", "success", "Appointment created"),
     "appointment.update": EventSpec("appointments", "info", "Appointment updated"),
     "appointment.reschedule": EventSpec("appointments", "info", "Appointment rescheduled"),
     "appointment.cancel": EventSpec("appointments", "warning", "Appointment cancelled"),
+    "appointment.complete": EventSpec("appointments", "success", "Appointment marked completed"),
+    "appointment.no_show": EventSpec("appointments", "warning", "Appointment marked no-show"),
+    "appointment.history.export": EventSpec(
+        "appointments", "info", "Appointment history exported"
+    ),
     "appointment.denied": EventSpec("security", "security", "Appointment access denied"),
     "appointment.availability.update": EventSpec(
         "appointments", "info", "Doctor availability updated"
     ),
     "appointment.ai.propose": EventSpec(
         "appointments", "info", "AI appointment proposal generated"
+    ),
+    "appointment.correction": EventSpec(
+        "appointments", "info", "Transcription correction analysis requested"
     ),
     "appointment.remove_from_calendar": EventSpec(
         "appointments", "warning", "Cancelled appointment removed from calendar"
@@ -117,6 +129,9 @@ OPERATIONAL_EVENT_SPECS: dict[str, EventSpec] = {
     "appointment.conflict": EventSpec("appointments", "warning", "Appointment conflict detected"),
     "appointment.create_rejected": EventSpec(
         "appointments", "warning", "Appointment creation rejected"
+    ),
+    "appointment.correction.checked": EventSpec(
+        "appointments", "info", "Transcription correction analysis completed"
     ),
     "system.startup": EventSpec("system", "info", "Application started"),
     "system.api_error": EventSpec("system", "error", "API request failed"),

@@ -23,11 +23,13 @@ KNOWN_ACTIONS = {
     "auth.logout",
     "authz.denied",
     "patient.read",
+    "patient.suggest",
     "patient.summary.read",
     "patient.create",
     "patient.delete",
     "message.send",
     "message.read",
+    "message.attachment.download",
     "labs.read",
     "prescriptions.read",
     "staff.create",
@@ -62,10 +64,14 @@ KNOWN_ACTIONS = {
     "appointment.update",
     "appointment.reschedule",
     "appointment.cancel",
+    "appointment.complete",
+    "appointment.no_show",
+    "appointment.history.export",
     "appointment.remove_from_calendar",
     "appointment.denied",
     "appointment.availability.update",
     "appointment.ai.propose",
+    "appointment.correction",
 }
 
 

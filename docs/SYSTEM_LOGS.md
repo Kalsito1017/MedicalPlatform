@@ -55,13 +55,13 @@ generic `system.audit_event` with a bounded action string.
 |---|---|---|
 | Authentication | `auth` / `security` | `auth.login.success`, `auth.login.failure`, `auth.logout` |
 | Security | `security` | `authz.denied`, `auth.login.failure`, `appointment.denied`, `mcp.unknown_tool`, `ai.ask` denied |
-| Patients | `patients` | `patient.read`, `patient.summary.read`, `patient.create`, `patient.delete` |
+| Patients | `patients` | `patient.read`, `patient.suggest`, `patient.summary.read`, `patient.create`, `patient.delete` |
 | Encounters | `encounters` | `patient.read` when the audited resource type is `encounter` (event type remains `patient.read`; description is “Encounter accessed”) |
 | Laboratories | `labs` | `labs.read` |
 | Prescriptions | `prescriptions` | `prescriptions.read` |
 | Appointments | `appointments` | `appointment.create`, `appointment.update`, `appointment.reschedule`, `appointment.cancel`, `appointment.availability.update`, `appointment.ai.propose`, `appointment.remove_from_calendar` |
 | AI / MCP | `ai` / `mcp` | `ai.ask`, `ai.history.clear`, `ai.history.delete`, `mcp.<tool>` → `mcp.tool.call`, `mcp.unknown_tool` |
-| Administration | `administration` | `staff.create`, `staff.update`, `staff.deactivate`, `role.grant`, `role.revoke`, `session.revoke_all`, `analytics.read`, `message.send`, `message.read` |
+| Administration | `administration` | `staff.create`, `staff.update`, `staff.deactivate`, `role.grant`, `role.revoke`, `session.revoke_all`, `analytics.read`, `message.send`, `message.read`, `message.attachment.download` |
 
 The existing audit inventory is covered by this mapping; the system does not
 claim that every application code path has an audit event. In particular,
@@ -208,15 +208,17 @@ as text nodes — never `innerHTML` — and remains under the existing CSP.
   filters and approved-metadata search;
 - chat bubbles with timestamp (milliseconds), severity, event type, description,
   sender display name/role, request id, resource and safe metadata chips;
-- sender avatars resolved from the Admin staff directory: existing demo doctor
-  portraits where available, colored initials for other staff, and a system
-  avatar for events without an actor;
+- sender avatars resolved from the Admin staff directory: the dedicated seeded
+  Admin/Doctor/Nurse demo portraits, existing demo doctor portraits for other
+  doctors, colored initials for other staff, and a system avatar for events
+  without an actor;
 - day separators (Today / Yesterday / full date) and grouped message styling;
 - chronological insertion, restrained arrival behavior and reduced-motion
   support via the shared CSS;
 - Pause/Resume and Auto-scroll; manual upward scroll disables forced follow;
-- Clear View (browser-only), Copy visible, bounded CSV export of the currently
-  loaded filtered rows, and event details dialog;
+- Clear View (browser-only, behind an “Are you sure?” confirmation that states
+  persisted records are not deleted), Copy visible, bounded CSV export of the
+  currently loaded filtered rows, and event details dialog;
 - bounded client buffer (500 events) and an accessible event-details view.
 
 The page is a normal messaging-style activity conversation, matching the

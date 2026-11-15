@@ -42,7 +42,7 @@ Browser ──HTTPS──> Cloudflare Pages (frontend/, static, buildless)
                      scheduling
                                                           │
                                              optional private speech service
-                                             (whisper.cpp Tiny, CPU, no public port;
+                                             (whisper.cpp Base, CPU, no public port;
                                               see docs/SPEECH_RECOGNITION.md)
 ```
 
@@ -54,7 +54,8 @@ the AI can only propose an appointment and a doctor must confirm it. Full detail
 **`docs/ARCHITECTURE.md`**. Permissions: **`docs/SECURITY.md`**. API contract:
 **`docs/API.md`**. Voice design/limits: **`docs/SPEECH_RECOGNITION.md`**.
 Presentation/defense overview (problem, example questions, agent-vs-REST comparison,
-diagrams): **`docs/CONCEPT.md`**.
+diagrams): **`docs/CONCEPT.md`**. Feature-by-feature guide with diagrams and a demo
+script: **`docs/FEATURES_EXPLAINED.md`**.
 
 ---
 
@@ -119,6 +120,7 @@ configuration comes from `.env` / `backend/.env` via compose `env_file`.
 docker compose up --build -d            # build + start db and app (app on :8000)
 # migrations run automatically on app start (entrypoint: alembic upgrade head)
 docker compose run --rm app python /app/scripts/seed_demo_data.py   # synthetic seed
+docker compose exec app python /app/scripts/cleanup_e2e_staff.py    # remove E2E staff/message artifacts
 docker compose logs -f app              # structured app logs (db: docker compose logs -f db)
 docker compose ps                       # app becomes "healthy" via /health/ready
 bash scripts/e2e_smoke.sh               # end-to-end smoke of the full workflow
@@ -134,6 +136,11 @@ docker compose down                     # stop; data persists in the postgres_da
 docker compose --profile speech up --build
 # compose already points the app at http://speech:8080; without this profile
 # the voice endpoint returns 503 and manual scheduling still works
+
+# Check the real speech-to-text path with a synthetic/demo recording:
+cd backend
+uv run python ../scripts/check_voice_transcription.py \
+  --audio /tmp/voice-sample.wav --language bg --expect "Елена"
 ```
 
 Data persistence: PostgreSQL data lives in the named volume `postgres_data` and survives
@@ -162,13 +169,14 @@ remember a shared public account gives no real accountability.
 
 | Account | Env variables | Role | Permissions (see `docs/SECURITY.md` for the full matrix) |
 |---|---|---|---|
-| Doctor | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | `doctor` | `patient:read`, `patient:write`, `message:read`, `message:write`, `lab:read`, `prescription:read`, `appointment:read`, `appointment:write`, `appointment:manage_availability` |
-| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `lab:read`, `prescription:read`, `appointment:read` (read-only) |
+| Doctor | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | `doctor` | `patient:read`, `patient:write`, `message:read`, `message:write`, `lab:read`, `prescription:read`, `appointment:read`, `appointment:write`, `appointment:manage_availability`, `appointment:export` |
+| Nurse | `DEMO_NURSE_EMAIL` / `DEMO_NURSE_PASSWORD` | `nurse` | `patient:read`, `message:read`, `message:write`, `lab:read`, `prescription:read`, `appointment:read` (read-only clinical/appointment access; messaging only) |
 | Admin | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | `clinical_admin` | **all** permissions, including appointments and analytics |
 
 Note the deliberate asymmetries: the nurse role is **least privilege** — clinical
-reads plus a read-only clinic appointment view, with **no** appointment writes,
-availability management, voice scheduling, or admin panel; the Admin role holds
+reads, internal staff messaging, and a read-only clinic appointment/history view,
+with **no** appointment writes, availability management, voice scheduling,
+history export, staff/audit administration, or admin panel; the Admin role holds
 every permission (clinical reads included); nobody can assign roles to themselves.
 Three roles exactly — `tech_admin` was removed from the system entirely (owner
 decision, 2026-10-26).
@@ -256,8 +264,8 @@ MedicalPlatform/
 │   ├── migrations/          Alembic
 │   ├── Dockerfile           single-origin container image (API + static frontend)
 │   └── tests/               pytest suite
-├── scripts/                 seed_demo_data.py, healthcheck.py, e2e_smoke.sh,
-│                            docker-entrypoint.sh, security_check.py
+├── scripts/                 seed_demo_data.py, healthcheck.py, cleanup_e2e_staff.py,
+│                            e2e_smoke.sh, docker-entrypoint.sh, security_check.py
 ├── docs/
 │   ├── API.md               frozen API contract (source of truth for endpoints)
 │   ├── ARCHITECTURE.md      system design and decision log

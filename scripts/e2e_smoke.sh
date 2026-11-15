@@ -140,6 +140,19 @@ if [[ "$js_type" == text/javascript* || "$js_type" == application/javascript* ]]
 else
   fail "config.js not served correctly ($js_type)"
 fi
+curl -fsS "$BASE_URL/appointments.html" -o "$WORKDIR/appointments.html"
+curl -fsS "$BASE_URL/assets/js/appointments.js" -o "$WORKDIR/appointments.js"
+if grep -q 'voice-example-use' "$WORKDIR/appointments.html" \
+   && grep -q 'voice-listener' "$WORKDIR/appointments.html" \
+   && grep -q 'voice-waveform' "$WORKDIR/appointments.html" \
+   && grep -q 'voice-suggestions' "$WORKDIR/appointments.html" \
+   && grep -q 'VOICE_EXAMPLES' "$WORKDIR/appointments.js" \
+   && grep -q 'startVoiceMeter' "$WORKDIR/appointments.js" \
+   && grep -q 'patient-suggestions' "$WORKDIR/appointments.js"; then
+  pass "served voice UI includes listening orb, live meter, example and patient suggestions"
+else
+  fail "served voice UI is missing the listening orb/meter/example/suggestions"
+fi
 if curl -fsS "$BASE_URL/assets/js/print-record.js" | grep -q 'prepareAndPrint' \
    && curl -fsS "$BASE_URL/assets/css/print.css" | grep -q 'size: A4 portrait'; then
   pass "print record module and A4 stylesheet are served"
@@ -243,6 +256,20 @@ else
   fail "appointment config/availability not readable"
 fi
 
+suggestion_status=$(curl -s -o "$WORKDIR/patient_suggestion.json" -w '%{http_code}' \
+  -X POST "$BASE_URL/api/v1/appointments/patient-suggestions" \
+  -b "$JAR_D" -c "$JAR_D" \
+  -H "Content-Type: application/json" \
+  -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+  --data '{"text":"Book 30 minute follow up for Elena Georgievah. M-R-N-0-0-0-1."}')
+if [ "$suggestion_status" = "200" ] \
+   && grep -q 'Елена Георгиева' "$WORKDIR/patient_suggestion.json" \
+   && grep -q 'MRN-0001' "$WORKDIR/patient_suggestion.json"; then
+  pass "transcript patient suggestion resolves Elena Georgieva / MRN-0001"
+else
+  fail "transcript patient suggestion failed ($suggestion_status)"
+fi
+
 future_date=$(python3 -c "from datetime import datetime, timedelta; from zoneinfo import ZoneInfo
 d = datetime.now(ZoneInfo('Europe/Sofia')).date() + timedelta(days=2)
 d += timedelta(days=(7 - d.weekday()) % 7)
@@ -291,6 +318,78 @@ if [ -n "$slot_start" ]; then
   fi
 else
   fail "no available appointment slot for $future_date (is availability seeded?)"
+fi
+
+# --- 4c. appointment history, status action and export ----------------------
+if [ -n "$slot_start" ]; then
+  python3 -c 'import json, sys; print(json.dumps({"patient_id": sys.argv[1], "start_at": sys.argv[2], "duration_minutes": 30, "appointment_type": "Consultation"}))' \
+    "$patient_id" "$slot_start" > "$WORKDIR/completion_appt.json"
+  completion_create=$(curl -s -o "$WORKDIR/completion_appt_out.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/appointments" \
+    -b "$JAR_D" -c "$JAR_D" \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+    --data-binary @"$WORKDIR/completion_appt.json")
+  completion_id=$(json_eval 'd.get("id", "")' < "$WORKDIR/completion_appt_out.json" 2>/dev/null || echo "")
+  if [ "$completion_create" = "201" ] && [ -n "$completion_id" ]; then
+    completion_patch=$(curl -s -o "$WORKDIR/completion_patch.json" -w '%{http_code}' -X PATCH "$BASE_URL/api/v1/appointments/$completion_id" \
+      -b "$JAR_D" -c "$JAR_D" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: $(csrf_token "$JAR_D")" \
+      --data '{"status":"completed"}')
+    completion_status=$(json_eval 'd.get("status")' < "$WORKDIR/completion_patch.json" 2>/dev/null || echo "")
+    if [ "$completion_patch" = "200" ] && [ "$completion_status" = "completed" ]; then
+      pass "doctor marks an appointment completed -> 200 (status recorded)"
+    else
+      fail "mark completed -> $completion_patch ($completion_status)"
+    fi
+  else
+    fail "history appointment create -> $completion_create"
+  fi
+
+  if [ -n "$completion_id" ]; then
+    # Admin/Nurse sessions are exercised here; step 6 re-logs them in for the
+    # remaining role-boundary checks (login rotates the session cookie).
+    login "$JAR_A" "$ADMIN_EMAIL" ADMIN_PASSWORD >/dev/null
+    login "$JAR_N" "$NURSE_EMAIL" NURSE_PASSWORD >/dev/null
+    # Scope history/export to the appointment's own date so repeated E2E runs
+    # cannot push the row outside a fixed 50-row page.
+    history_range=$(python3 -c "from datetime import datetime, timedelta
+from urllib.parse import urlencode
+import sys
+s = datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00'))
+print(urlencode({'start': (s - timedelta(days=1)).isoformat(), 'end': (s + timedelta(days=1)).isoformat(), 'limit': 50}))" "$slot_start")
+    export_range=$(python3 -c "from datetime import datetime, timedelta
+from urllib.parse import urlencode
+import sys
+s = datetime.fromisoformat(sys.argv[1].replace('Z', '+00:00'))
+print(urlencode({'start': (s - timedelta(days=1)).isoformat(), 'end': (s + timedelta(days=1)).isoformat()}))" "$slot_start")
+    history_ok=0
+    for jar in "$JAR_D" "$JAR_A" "$JAR_N"; do
+      code=$(api_status "$jar" GET "/api/v1/appointments/history?$history_range" "$WORKDIR/appt_history.json")
+      if [ "$code" = "200" ] && grep -q "$completion_id" "$WORKDIR/appt_history.json"; then
+        history_ok=$((history_ok + 1))
+      fi
+    done
+    if [ "$history_ok" = "3" ]; then
+      pass "Doctor/Admin/Nurse read the same retained appointment history -> 200"
+    else
+      fail "appointment history role read failed"
+    fi
+
+    doctor_export=$(api_status "$JAR_D" GET "/api/v1/appointments/history/export.csv?$export_range" "$WORKDIR/appt_export.csv")
+    admin_export=$(api_status "$JAR_A" GET "/api/v1/appointments/history/export.csv?$export_range" "$WORKDIR/appt_export_admin.csv")
+    nurse_export=$(api_status "$JAR_N" GET "/api/v1/appointments/history/export.csv?$export_range" /dev/null)
+    if [ "$doctor_export" = "200" ] && [ "$admin_export" = "200" ] && [ "$nurse_export" = "403" ] \
+       && head -n 1 "$WORKDIR/appt_export.csv" | grep -q "appointment_id" \
+       && grep -q "$completion_id" "$WORKDIR/appt_export.csv" \
+       && grep -q "$completion_id" "$WORKDIR/appt_export_admin.csv"; then
+      pass "appointment history CSV: Doctor/Admin 200 with retained row, Nurse 403"
+    else
+      fail "appointment history export permissions/content failed"
+    fi
+  fi
+else
+  fail "appointment history checks could not resolve a slot"
 fi
 
 # --- 5. AI endpoint: real answer (LLM enabled) or documented 503 ------------
@@ -344,11 +443,12 @@ else
   fail "clinical_admin staff list failed"
 fi
 
+E2E_STAFF_EMAIL="e2e-smoke-$(date +%s)@example.com"
 staff_status=$(curl -s -o "$WORKDIR/staff_new.json" -w '%{http_code}' -X POST "$BASE_URL/api/v1/staff" \
   -b "$JAR_A" -c "$JAR_A" \
   -H "Content-Type: application/json" \
   -H "X-CSRF-Token: $(csrf_token "$JAR_A")" \
-  --data "{\"email\": \"e2e-smoke-$(date +%s)@example.com\", \"display_name\": \"E2E Smoke\"}")
+  --data "{\"email\": \"$E2E_STAFF_EMAIL\", \"display_name\": \"E2E Smoke\"}")
 new_user_id=$(json_eval 'd["user"]["id"]' < "$WORKDIR/staff_new.json" 2>/dev/null || echo "")
 if [ "$staff_status" = "201" ] && [ -n "$new_user_id" ]; then
   pass "clinical_admin creates staff -> 201 (one-time password not printed)"
@@ -367,6 +467,17 @@ if [ -n "$new_user_id" ]; then
   else
     fail "role grant -> $grant_status"
   fi
+fi
+
+# Log in as the temporary Nurse account so E2E can exercise Nurse messaging
+# and prove that an unrelated Nurse cannot read another Nurse's conversation.
+E2E_STAFF_PASSWORD=$(json_eval 'd.get("generated_password") or ""' < "$WORKDIR/staff_new.json" 2>/dev/null || echo "")
+JAR_E2E="$WORKDIR/e2e.jar"
+if [ -n "$new_user_id" ] && [ -n "$E2E_STAFF_PASSWORD" ] \
+   && [ "$(login "$JAR_E2E" "$E2E_STAFF_EMAIL" E2E_STAFF_PASSWORD)" = "200" ]; then
+  pass "temporary E2E Nurse can sign in -> 200 (password never printed)"
+else
+  fail "temporary E2E Nurse login failed"
 fi
 
 nurse_range=$(python3 -c "from datetime import datetime, timedelta, timezone
@@ -391,12 +502,14 @@ fi
 api_status "$JAR_N" GET /api/v1/auth/me "$WORKDIR/me_nurse.json" >/dev/null
 if grep -q '"patient:read"' "$WORKDIR/me_nurse.json" \
    && grep -q '"appointment:read"' "$WORKDIR/me_nurse.json" \
+   && grep -q '"message:read"' "$WORKDIR/me_nurse.json" \
+   && grep -q '"message:write"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"appointment:write"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"appointment:manage_availability"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"staff:read"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"audit:read"' "$WORKDIR/me_nurse.json" \
    && ! grep -q '"logs:read"' "$WORKDIR/me_nurse.json"; then
-  pass "nurse /auth/me permissions: clinical reads + appointment:read only"
+  pass "nurse /auth/me permissions: clinical reads + appointments + messaging, no admin/write access"
 else
   fail "nurse /auth/me permissions wrong"
 fi
@@ -505,16 +618,220 @@ else
   fail "analytics range validation broken"
 fi
 
-if [ "$(api_status "$JAR_D" GET /api/v1/messages /dev/null)" = "200" ] \
-   && [ "$(api_status "$JAR_D" GET '/api/v1/messages?q=rota' /dev/null)" = "200" ] \
-   && [ "$(api_status "$JAR_D" GET /api/v1/messages/counts "$WORKDIR/message_counts.json")" = "200" ] \
-   && grep -q '"unread_total"' "$WORKDIR/message_counts.json" \
-   && [ "$(api_status "$JAR_D" GET /api/v1/messages/recipients /dev/null)" = "200" ] \
-   && [ "$(api_status "$JAR_A" GET /api/v1/messages /dev/null)" = "200" ] \
-   && [ "$(api_status "$JAR_N" GET /api/v1/messages /dev/null)" = "403" ]; then
-  pass "messages: Doctor/Admin 200, search/counts 200, Nurse 403, recipient list 200"
+# Resolve the seeded staff ids from the Admin directory for the messaging
+# lifecycle. The temporary E2E Nurse logs in with its one-time password above.
+read -r DOCTOR_ID NURSE_ID ADMIN_ID <<< "$(python3 - "$WORKDIR/staff.json" "$DOCTOR_EMAIL" "$NURSE_EMAIL" "$ADMIN_EMAIL" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+by_email = {
+    str(item.get("email", "")).lower(): str(item.get("id", ""))
+    for item in data.get("items", [])
+}
+print(" ".join(by_email.get(email.lower(), "") for email in sys.argv[2:]))
+PY
+)"
+
+send_message() {
+  local jar="$1" recipient="$2" subject="$3" body="$4" out="$5"
+  python3 - "$recipient" "$subject" "$body" <<'PY' > "$WORKDIR/message_send_body.json"
+import json
+import sys
+
+print(json.dumps({
+    "recipient_id": sys.argv[1],
+    "subject": sys.argv[2],
+    "body": sys.argv[3],
+}))
+PY
+  curl -s -o "$out" -w '%{http_code}' -X POST "$BASE_URL/api/v1/messages" \
+    -b "$jar" -c "$jar" \
+    -H "Content-Type: application/json" \
+    -H "X-CSRF-Token: $(csrf_token "$jar")" \
+    --data-binary @"$WORKDIR/message_send_body.json"
+}
+
+message_in_box() {
+  local jar="$1" box="$2" subject="$3" message_id="$4" out="$5" status
+  status=$(api_status "$jar" GET "/api/v1/messages?box=$box&q=$subject&limit=50" "$out")
+  [ "$status" = "200" ] || return 1
+  python3 - "$out" "$message_id" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    data = json.load(handle)
+ids = {str(item.get("id", "")) for item in data.get("items", [])}
+raise SystemExit(0 if sys.argv[2] in ids else 1)
+PY
+}
+
+if [ -n "$DOCTOR_ID" ] && [ -n "$NURSE_ID" ] && [ -n "$ADMIN_ID" ] && [ -f "$JAR_E2E" ]; then
+  MSG_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4().hex[:10])')
+
+  nurse_subject="e2e-nurse-doctor-$MSG_TOKEN"
+  nurse_send_status=$(send_message "$JAR_N" "$DOCTOR_ID" "$nurse_subject" \
+    "Private nurse-to-doctor message." "$WORKDIR/msg_nurse_doctor.json")
+  nurse_message_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_nurse_doctor.json" 2>/dev/null || echo "")
+  if [ "$nurse_send_status" = "201" ] && [ -n "$nurse_message_id" ]; then
+    pass "Nurse -> Doctor message -> 201"
+  else
+    fail "Nurse -> Doctor message -> $nurse_send_status (expected 201)"
+  fi
+
+  if message_in_box "$JAR_D" inbox "$nurse_subject" "$nurse_message_id" "$WORKDIR/msg_doctor_inbox.json"; then
+    pass "Doctor sees the Nurse's incoming message"
+  else
+    fail "Doctor inbox missing the Nurse's message"
+  fi
+  if [ "$(api_status "$JAR_D" POST "/api/v1/messages/$nurse_message_id/read" /dev/null)" = "204" ]; then
+    pass "Doctor marks the Nurse's message read -> 204"
+  else
+    fail "Doctor mark-read failed"
+  fi
+
+  # Admin and an unrelated Nurse must not see or mutate the private exchange.
+  if message_in_box "$JAR_A" inbox "$nurse_subject" "$nurse_message_id" "$WORKDIR/msg_admin_private.json"; then
+    fail "Admin must not see a private Nurse -> Doctor message"
+  else
+    pass "Admin cannot see the private Nurse -> Doctor message"
+  fi
+  if [ "$(api_status "$JAR_A" POST "/api/v1/messages/$nurse_message_id/read" /dev/null)" = "404" ]; then
+    pass "Admin cannot mark another user's message read -> 404"
+  else
+    fail "Admin mark-read privacy boundary broken"
+  fi
+  if message_in_box "$JAR_E2E" inbox "$nurse_subject" "$nurse_message_id" "$WORKDIR/msg_outsider_private.json"; then
+    fail "Unrelated Nurse must not see the private Nurse -> Doctor message"
+  else
+    pass "Unrelated Nurse cannot see the private Nurse -> Doctor message"
+  fi
+  if [ "$(api_status "$JAR_E2E" POST "/api/v1/messages/$nurse_message_id/read" /dev/null)" = "404" ]; then
+    pass "Unrelated Nurse cannot mark the message read -> 404"
+  else
+    fail "Unrelated Nurse mark-read privacy boundary broken"
+  fi
+
+  doctor_subject="e2e-doctor-nurse-$MSG_TOKEN"
+  doctor_send_status=$(send_message "$JAR_D" "$NURSE_ID" "$doctor_subject" \
+    "Doctor reply to the Nurse." "$WORKDIR/msg_doctor_nurse.json")
+  doctor_message_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_doctor_nurse.json" 2>/dev/null || echo "")
+  if [ "$doctor_send_status" = "201" ] \
+     && message_in_box "$JAR_N" inbox "$doctor_subject" "$doctor_message_id" "$WORKDIR/msg_nurse_reply.json"; then
+    pass "Doctor -> Nurse reply -> 201 and appears in the Nurse inbox"
+  else
+    fail "Doctor -> Nurse reply lifecycle failed"
+  fi
+
+  admin_subject="e2e-admin-nurse-$MSG_TOKEN"
+  admin_send_status=$(send_message "$JAR_A" "$NURSE_ID" "$admin_subject" \
+    "Admin message to the Nurse." "$WORKDIR/msg_admin_nurse.json")
+  admin_message_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_admin_nurse.json" 2>/dev/null || echo "")
+  if [ "$admin_send_status" = "201" ] \
+     && message_in_box "$JAR_N" inbox "$admin_subject" "$admin_message_id" "$WORKDIR/msg_nurse_admin_inbox.json"; then
+    pass "Admin -> Nurse message -> 201 and appears in the Nurse inbox"
+  else
+    fail "Admin -> Nurse lifecycle failed"
+  fi
+
+  nurse_admin_subject="e2e-nurse-admin-$MSG_TOKEN"
+  nurse_admin_status=$(send_message "$JAR_N" "$ADMIN_ID" "$nurse_admin_subject" \
+    "Nurse message to the Admin." "$WORKDIR/msg_nurse_admin.json")
+  nurse_admin_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_nurse_admin.json" 2>/dev/null || echo "")
+  if [ "$nurse_admin_status" = "201" ] \
+     && message_in_box "$JAR_A" inbox "$nurse_admin_subject" "$nurse_admin_id" "$WORKDIR/msg_admin_inbox.json"; then
+    pass "Nurse -> Admin message -> 201 and appears in the Admin inbox"
+  else
+    fail "Nurse -> Admin lifecycle failed"
+  fi
+
+  doctor_admin_subject="e2e-doctor-admin-$MSG_TOKEN"
+  doctor_admin_status=$(send_message "$JAR_D" "$ADMIN_ID" "$doctor_admin_subject" \
+    "Doctor message to the Admin." "$WORKDIR/msg_doctor_admin.json")
+  doctor_admin_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_doctor_admin.json" 2>/dev/null || echo "")
+  if [ "$doctor_admin_status" = "201" ] \
+     && message_in_box "$JAR_A" inbox "$doctor_admin_subject" "$doctor_admin_id" "$WORKDIR/msg_admin_from_doctor.json"; then
+    pass "Doctor -> Admin message -> 201 and appears in the Admin inbox"
+  else
+    fail "Doctor -> Admin lifecycle failed"
+  fi
+
+  admin_doctor_subject="e2e-admin-doctor-$MSG_TOKEN"
+  admin_doctor_status=$(send_message "$JAR_A" "$DOCTOR_ID" "$admin_doctor_subject" \
+    "Admin message to the Doctor." "$WORKDIR/msg_admin_doctor.json")
+  admin_doctor_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_admin_doctor.json" 2>/dev/null || echo "")
+  if [ "$admin_doctor_status" = "201" ] \
+     && message_in_box "$JAR_D" inbox "$admin_doctor_subject" "$admin_doctor_id" "$WORKDIR/msg_doctor_admin_inbox.json"; then
+    pass "Admin -> Doctor message -> 201 and appears in the Doctor inbox"
+  else
+    fail "Admin -> Doctor lifecycle failed"
+  fi
+
+  nurse_nurse_subject="e2e-nurse-nurse-$MSG_TOKEN"
+  nurse_nurse_status=$(send_message "$JAR_N" "$new_user_id" "$nurse_nurse_subject" \
+    "Nurse message to another Nurse." "$WORKDIR/msg_nurse_nurse.json")
+  nurse_nurse_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_nurse_nurse.json" 2>/dev/null || echo "")
+  if [ "$nurse_nurse_status" = "201" ] \
+     && message_in_box "$JAR_E2E" inbox "$nurse_nurse_subject" "$nurse_nurse_id" "$WORKDIR/msg_e2e_nurse_inbox.json"; then
+    pass "Nurse -> Nurse message -> 201 and appears in the other Nurse inbox"
+  else
+    fail "Nurse -> Nurse lifecycle failed"
+  fi
+
+  if [ "$(send_message "$JAR_N" "$NURSE_ID" "e2e-self-$MSG_TOKEN" "self" "$WORKDIR/msg_self.json")" = "400" ]; then
+    pass "Nurse self-message -> 400"
+  else
+    fail "Nurse self-message was not rejected"
+  fi
+  unknown_message_id=$(python3 -c 'import uuid; print(uuid.uuid4())')
+  if [ "$(send_message "$JAR_N" "$unknown_message_id" "e2e-unknown-$MSG_TOKEN" "unknown" "$WORKDIR/msg_unknown.json")" = "400" ]; then
+    pass "Nurse -> unknown recipient -> 400"
+  else
+    fail "Nurse -> unknown recipient was not rejected"
+  fi
+
+  if [ "$(api_status "$JAR_D" GET /api/v1/messages/counts "$WORKDIR/message_counts.json")" = "200" ] \
+     && grep -q '"unread_total"' "$WORKDIR/message_counts.json" \
+     && [ "$(api_status "$JAR_N" GET /api/v1/messages/recipients /dev/null)" = "200" ] \
+     && [ "$(api_status "$JAR_A" GET /api/v1/messages /dev/null)" = "200" ]; then
+    pass "messages: search/counts/recipients available to Doctor, Nurse and Admin"
+  else
+    fail "messages summary endpoints are not available to all roles"
+  fi
+
+  # Bounded Allowlisted attachment upload + sender/recipient-only download.
+  attachment_subject="e2e-attachment-$MSG_TOKEN"
+  printf 'E2E synthetic message attachment.\n' > "$WORKDIR/e2e-note.txt"
+  attachment_status=$(curl -s -o "$WORKDIR/msg_attachment.json" -w '%{http_code}' \
+    -X POST "$BASE_URL/api/v1/messages/attachments" \
+    -b "$JAR_N" -c "$JAR_N" \
+    -H "X-CSRF-Token: $(csrf_token "$JAR_N")" \
+    -F "recipient_id=$DOCTOR_ID" \
+    -F "subject=$attachment_subject" \
+    -F "body=Please download the attachment." \
+    -F "file=@$WORKDIR/e2e-note.txt;type=text/plain;filename=e2e-note.txt")
+  attachment_id=$(json_eval 'd.get("id") or ""' < "$WORKDIR/msg_attachment.json" 2>/dev/null || echo "")
+  attachment_name=$(json_eval 'd.get("attachment", {}).get("filename") or ""' < "$WORKDIR/msg_attachment.json" 2>/dev/null || echo "")
+  if [ "$attachment_status" = "201" ] && [ -n "$attachment_id" ] \
+     && [ "$attachment_name" = "e2e-note.txt" ]; then
+    pass "Nurse sends an allowlisted file attachment -> 201"
+  else
+    fail "message attachment upload -> $attachment_status ($attachment_name)"
+  fi
+  attachment_download=$(curl -s -o "$WORKDIR/msg_attachment_download.txt" -w '%{http_code}' \
+    -b "$JAR_D" "$BASE_URL/api/v1/messages/$attachment_id/attachment")
+  attachment_unrelated=$(api_status "$JAR_A" GET "/api/v1/messages/$attachment_id/attachment" /dev/null)
+  if [ "$attachment_download" = "200" ] \
+     && grep -q "E2E synthetic message attachment" "$WORKDIR/msg_attachment_download.txt" \
+     && [ "$attachment_unrelated" = "404" ]; then
+    pass "Recipient downloads the attachment; unrelated Admin gets 404"
+  else
+    fail "message attachment download/privacy failed ($attachment_download/$attachment_unrelated)"
+  fi
 else
-  fail "messages permission boundary broken"
+  fail "messaging E2E could not resolve seeded staff ids or the temporary Nurse login"
 fi
 
 # Patient creation is Doctor/Admin only; the invalid-body doctor probe proves
@@ -573,7 +890,9 @@ required = {
     "auth.login.success", "auth.login.failure", "auth.logout", "authz.denied",
     "patient.read", "patient.summary.read", "labs.read", "prescriptions.read",
     "ai.ask", "staff.create", "role.grant",
+    "message.attachment.download",
     "appointment.create", "appointment.update", "appointment.cancel",
+    "appointment.complete", "appointment.history.export",
 }
 with open(sys.argv[1], encoding="utf-8") as handle:
     data = json.load(handle)
@@ -655,8 +974,41 @@ if [ "$DOCKER_STEPS" = "1" ]; then
   else
     fail "patient count changed across restart ($patients_total -> $total_after)"
   fi
+  if [ -n "${completion_id:-}" ] && [ -n "${history_range:-}" ]; then
+    api_status "$JAR_D2" GET "/api/v1/appointments/history?$history_range" "$WORKDIR/history_after.json" >/dev/null
+    if grep -q "$completion_id" "$WORKDIR/history_after.json"; then
+      pass "appointment history persisted across restart"
+    else
+      fail "appointment history missing after restart"
+    fi
+  fi
 else
   echo "-- step 10: skipped (--no-docker)"
+fi
+
+# --- 11. cleanup temporary E2E staff account -------------------------------
+if [ -n "${E2E_STAFF_EMAIL:-}" ] && [ -n "${new_user_id:-}" ]; then
+  echo "-- step 11: cleanup temporary E2E staff account"
+  if [ "$DOCKER_STEPS" = "1" ]; then
+    if $COMPOSE_CMD exec -T app python /app/scripts/cleanup_e2e_staff.py --email "$E2E_STAFF_EMAIL" >/dev/null 2>&1; then
+      pass "soft-deleted the temporary E2E staff account"
+    else
+      fail "temporary E2E staff account cleanup failed"
+    fi
+  else
+    deactivate_status=$(curl -s -o /dev/null -w '%{http_code}' -X PATCH "$BASE_URL/api/v1/staff/$new_user_id" \
+      -b "$JAR_A" -c "$JAR_A" \
+      -H "Content-Type: application/json" \
+      -H "X-CSRF-Token: $(csrf_token "$JAR_A")" \
+      --data '{"is_active": false}')
+    if [ "$deactivate_status" = "200" ]; then
+      pass "deactivated the temporary E2E staff account (no Docker soft-delete)"
+    else
+      fail "temporary E2E staff account deactivation failed"
+    fi
+  fi
+else
+  echo "-- step 11: skipped (no temporary staff account)"
 fi
 
 echo "== summary =="

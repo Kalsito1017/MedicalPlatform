@@ -28,13 +28,14 @@ from starlette.middleware.gzip import GZipMiddleware
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.api import health
+from app.api import health, public
 from app.api.v1 import api_v1
 from app.auth.csrf import CsrfProtectionMiddleware
 from app.auth.identity import resolve_principal
 from app.authorization import policy
 from app.config import (
-    VOICE_MAX_UPLOAD_HARD_LIMIT,
+    MAX_UPLOAD_HARD_LIMIT,
+    MESSAGE_ATTACHMENT_HARD_LIMIT,
     Settings,
     get_settings,
     setup_logging,
@@ -151,10 +152,11 @@ class BodyTooLarge(Exception):
 class BodySizeLimitMiddleware:
     """Rejects request bodies larger than the configured limit.
 
-    The global limit stays at 1 MiB. A strictly bounded per-route allowance
-    exists only for the voice transcription upload: the configured value is
-    clamped to `VOICE_MAX_UPLOAD_HARD_LIMIT` and the match is exact on method +
-    path, so no other route can inherit it.
+    The global limit stays at 1 MiB. Strictly bounded per-route allowances
+    exist only for the voice transcription upload and the staff-message
+    attachment upload: every configured value is clamped to
+    `MAX_UPLOAD_HARD_LIMIT` and the match is exact on method + path, so no
+    other route can inherit it.
 
     Oversized input is reported as 400 validation_error so the status/code pair
     stays within the frozen docs/API.md table.
@@ -170,7 +172,7 @@ class BodySizeLimitMiddleware:
         self.app = app
         self.max_bytes = max_bytes
         self.route_limits = {
-            (method.upper(), path): min(int(limit), VOICE_MAX_UPLOAD_HARD_LIMIT)
+            (method.upper(), path): min(int(limit), MAX_UPLOAD_HARD_LIMIT)
             for (method, path), limit in (route_limits or {}).items()
         }
 
@@ -333,6 +335,8 @@ def security_headers_for(
         "X-Permitted-Cross-Domain-Policies": "none",
         "Content-Security-Policy": build_csp(hashes=hashes, docs=docs),
     }
+    if path.startswith(("/api/", "/health/", "/docs", "/redoc", "/openapi.json")):
+        headers["X-Robots-Tag"] = "noindex, nofollow"
     if https:
         headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return headers
@@ -381,6 +385,24 @@ class SecurityHeadersMiddleware:
 # Top-level path segments that never resolve to frontend files; unknown paths
 # below them keep the frozen JSON error envelope (docs/API.md).
 _NON_STATIC_PREFIXES = ("api", "health", "docs", "redoc", "openapi.json")
+
+# Authenticated clinical pages (and the custom 404 page) must never be indexed.
+# The HTML carries the same meta tag; this header covers direct file/alias
+# requests served by FastAPI as well.
+_NOINDEX_PAGE_NAMES = frozenset(
+    {
+        "dashboard.html",
+        "patients.html",
+        "patient.html",
+        "appointments.html",
+        "messages.html",
+        "ai.html",
+        "analytics.html",
+        "admin.html",
+        "system-logs.html",
+        "404.html",
+    }
+)
 
 _MEDIA_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -457,11 +479,14 @@ def _file_response(path: Path, *, status_code: int = 200) -> FileResponse:
     cache_control = (
         "no-cache" if suffix in {".html", ".js", ".css"} else "public, max-age=3600"
     )
+    headers = {"Cache-Control": cache_control}
+    if path.name in _NOINDEX_PAGE_NAMES:
+        headers["X-Robots-Tag"] = "noindex, nofollow"
     return FileResponse(
         path,
         media_type=media_type,
         status_code=status_code,
-        headers={"Cache-Control": cache_control},
+        headers=headers,
     )
 
 
@@ -669,6 +694,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_bytes=settings.request_max_body_bytes,
         route_limits={
             ("POST", VOICE_TRANSCRIPTION_PATH): settings.voice_max_upload_bytes,
+            (
+                "POST",
+                "/api/v1/messages/attachments",
+            ): MESSAGE_ATTACHMENT_HARD_LIMIT,
         },
     )
     app.add_middleware(CsrfProtectionMiddleware, settings=settings)
@@ -687,6 +716,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(FrontendGZipMiddleware)
     app.add_middleware(RequestContextMiddleware)
 
+    app.include_router(public.router)
     app.include_router(health.router)
     app.include_router(api_v1)
 

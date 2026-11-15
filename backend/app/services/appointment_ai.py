@@ -52,6 +52,10 @@ appointment_ai_rate_limiter = SlidingWindowRateLimiter(
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TIME_RE = re.compile(r"^\d{2}:\d{2}$")
+_MRN_CANONICAL_QUERY_RE = re.compile(r"(?i)\bmrn[\s\-–]*([a-z0-9]{3,20})\b")
+_MRN_SPACED_QUERY_RE = re.compile(
+    r"(?i)\bm(?:\s*[-–]\s*)r(?:\s*[-–]\s*)n(?:\s*[-–]\s*[a-z0-9]){3,20}\b"
+)
 
 _SYSTEM_PROMPT = """\
 You convert ONE doctor's appointment request into a strict JSON proposal.
@@ -134,33 +138,66 @@ def _system_prompt(anchor: datetime, timezone_name: str) -> str:
     )
 
 
-async def _resolve_patient(
-    *,
-    db: AsyncSession,
-    principal,
-    request_id: str | None,
-    ip: str | None,
-    patient_query: str | None,
-    mcp: MCPServer,
-) -> tuple[ProposedPatientOut | None, list[ProposedPatientOut], list[str], bool]:
-    if not patient_query:
-        return None, [], ["No patient was stated. Search and select a patient."], True
+def _canonical_mrn(raw: str) -> str | None:
+    value = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+    if value.startswith("MRN"):
+        value = value[3:]
+    if not 3 <= len(value) <= 20:
+        return None
+    return f"MRN-{value}"
 
-    context = ToolContext(
-        principal=principal,
-        db=db,
-        request_id=request_id or "",
-        ip=ip,
-    )
+
+def _split_patient_query(query: str) -> tuple[str | None, str | None]:
+    """Split a spoken patient reference into an MRN and a name.
+
+    The model may return either one, or both (for example
+    ``"Елена Георгиева, MRN-0001"``). The patient search is a literal substring
+    match, so searching the combined phrase would match neither field.
+    """
+    cleaned = " ".join(str(query).split()).strip(" ,;.")
+    mrn_query: str | None = None
+    match = _MRN_CANONICAL_QUERY_RE.search(cleaned)
+    if match is None:
+        match = _MRN_SPACED_QUERY_RE.search(cleaned)
+    if match is not None:
+        mrn_query = _canonical_mrn(match.group(0))
+        name_query = " ".join(
+            f"{cleaned[:match.start()]} {cleaned[match.end():]}".split()
+        ).strip(" ,;.()[]{}")
+    else:
+        name_query = cleaned
+    if not name_query or len(name_query) < 2:
+        name_query = None
+    return mrn_query, name_query
+
+
+def _dedupe_patients(patients: list[ProposedPatientOut]) -> list[ProposedPatientOut]:
+    seen: set[str] = set()
+    result: list[ProposedPatientOut] = []
+    for patient in patients:
+        key = str(patient.id)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(patient)
+    return result
+
+
+async def _search_patients(
+    *,
+    mcp: MCPServer,
+    context: ToolContext,
+    query: str,
+) -> list[ProposedPatientOut]:
     outcome = await mcp.call_tool(
         "search_authorized_patients",
-        {"query": patient_query, "limit": 5},
+        {"query": query, "limit": 5},
         context,
     )
-    patients: list[ProposedPatientOut] = []
     payload = outcome.model_payload if outcome.ok else {}
     data = payload.get("data") if isinstance(payload, dict) else None
     rows = data.get("patients") if isinstance(data, dict) else None
+    patients: list[ProposedPatientOut] = []
     if isinstance(rows, list):
         for row in rows:
             if not isinstance(row, dict) or not row.get("id"):
@@ -175,16 +212,106 @@ async def _resolve_patient(
                 )
             except (KeyError, TypeError, ValueError):
                 continue
+    return patients
 
-    if len(patients) == 1:
-        return patients[0], patients, [], False
-    if len(patients) > 1:
+
+async def _resolve_patient(
+    *,
+    db: AsyncSession,
+    principal,
+    request_id: str | None,
+    ip: str | None,
+    patient_query: str | None,
+    mcp: MCPServer,
+) -> tuple[ProposedPatientOut | None, list[ProposedPatientOut], list[str], bool]:
+    if not patient_query:
+        return None, [], ["No patient was stated. Search and select a patient."], True
+
+    mrn_query, name_query = _split_patient_query(patient_query)
+    if mrn_query is None and name_query is None:
         return (
             None,
-            patients,
+            [],
+            ["No accessible patient matched that name or MRN. Search and select a patient."],
+            True,
+        )
+
+    context = ToolContext(
+        principal=principal,
+        db=db,
+        request_id=request_id or "",
+        ip=ip,
+    )
+    mrn_patients = (
+        await _search_patients(mcp=mcp, context=context, query=mrn_query)
+        if mrn_query is not None
+        else []
+    )
+    name_patients = (
+        await _search_patients(mcp=mcp, context=context, query=name_query)
+        if name_query is not None
+        else []
+    )
+    combined = _dedupe_patients([*mrn_patients, *name_patients])[:5]
+
+    if mrn_patients and name_patients:
+        mrn_ids = {str(patient.id) for patient in mrn_patients}
+        common = [patient for patient in name_patients if str(patient.id) in mrn_ids]
+        if len(common) == 1:
+            warnings = []
+            if len(name_patients) > 1:
+                warnings.append(
+                    "Several patients match the name; selected by MRN. Verify the patient."
+                )
+            return common[0], combined, warnings, False
+        if len(common) > 1:
+            return (
+                None,
+                combined,
+                ["Several patients match both the name and MRN. Select the correct patient before confirming."],
+                True,
+            )
+        return (
+            None,
+            combined,
+            ["The name and MRN point to different patients. Verify the patient before confirming."],
+            True,
+        )
+
+    if mrn_patients:
+        if len(mrn_patients) == 1:
+            warnings = (
+                ["Matched by MRN; verify the patient name."]
+                if name_query is not None
+                else []
+            )
+            return mrn_patients[0], combined, warnings, False
+        return (
+            None,
+            combined,
+            ["Several patients match the MRN. Select the correct patient before confirming."],
+            True,
+        )
+
+    if name_patients:
+        if mrn_query is not None:
+            # The doctor stated an explicit identifier and it matched no
+            # patient: resolving by name alone could pick the wrong person.
+            return (
+                None,
+                combined,
+                ["The MRN did not match any patient. Verify the patient before confirming."],
+                True,
+            )
+        if len(name_patients) == 1:
+            return name_patients[0], combined, [], False
+        return (
+            None,
+            combined,
             ["Several patients match. Select the correct patient before confirming."],
             True,
         )
+
     return (
         None,
         [],

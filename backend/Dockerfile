@@ -60,7 +60,7 @@ COPY --chown=app:app frontend /app/frontend
 
 # Entrypoint (migrations on start) and operational scripts (seed, healthcheck).
 COPY scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-COPY --chown=app:app scripts/seed_demo_data.py scripts/healthcheck.py /app/scripts/
+COPY --chown=app:app scripts/seed_demo_data.py scripts/healthcheck.py scripts/cleanup_e2e_staff.py /app/scripts/
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
 
 USER app

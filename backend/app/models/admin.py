@@ -17,6 +17,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -156,7 +157,8 @@ class AuditEvent(Base):
 class Message(TimestampMixin, Base):
     """Internal staff-to-staff message (sender/recipient own-inbox only).
 
-    No patient payloads, attachments, or external transport. The body is not
+    One optional attachment may accompany the message; the bytes live in the
+    child table and are never copied into audit events. The body is also not
     copied into audit events; `read_at` is set only by the recipient.
     """
 
@@ -183,6 +185,42 @@ class Message(TimestampMixin, Base):
     body: Mapped[str] = mapped_column(Text, nullable=False)
     read_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, default=None
+    )
+
+
+class MessageAttachment(Base):
+    """One bounded file attached to an internal staff message.
+
+    The payload is stored in PostgreSQL so the message and its attachment are
+    backed up together. Only the sender and recipient may download it; the
+    service/API enforce the allowlist, size and magic-signature checks.
+    """
+
+    __tablename__ = "message_attachment"
+    __table_args__ = (
+        CheckConstraint(
+            "size_bytes BETWEEN 1 AND 8388608",
+            name="ck_message_attachment_size",
+        ),
+        UniqueConstraint("message_id", name="uq_message_attachment_message"),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    message_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.message.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

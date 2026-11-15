@@ -9,6 +9,7 @@ import * as overlayHistory from './overlay-history.js';
 import * as prefetch from './prefetch.js';
 import * as sheet from './sheet.js';
 import * as theme from './theme.js';
+import * as i18n from './i18n.js';
 
 /* ------------------------------------------------------------------ utils */
 
@@ -68,21 +69,32 @@ export function clear(node) {
   return node;
 }
 
-const DATE_FORMAT = new Intl.DateTimeFormat('en-GB', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-  timeZone: 'UTC',
-});
+const DATE_FORMATTERS = new Map();
 
-const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-GB', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-  hour: '2-digit',
-  minute: '2-digit',
-  timeZone: 'UTC',
-});
+function dateLocale() {
+  return i18n.getLanguage() === 'bg' ? 'bg-BG' : 'en-GB';
+}
+
+function dateFormatter(kind) {
+  const locale = dateLocale();
+  const key = `${kind}:${locale}`;
+  let formatter = DATE_FORMATTERS.get(key);
+  if (!formatter) {
+    const options = kind === 'date'
+      ? { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }
+      : {
+          day: 'numeric',
+          month: 'short',
+          year: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          timeZone: 'UTC',
+        };
+    formatter = new Intl.DateTimeFormat(locale, options);
+    DATE_FORMATTERS.set(key, formatter);
+  }
+  return formatter;
+}
 
 function parseDate(iso) {
   if (typeof iso !== 'string' || iso.trim() === '') return null;
@@ -96,13 +108,13 @@ function parseDate(iso) {
 /** ISO-8601 (UTC) -> "26 Oct 2026". Returns null when unparseable. */
 export function formatDate(iso) {
   const date = parseDate(iso);
-  return date ? DATE_FORMAT.format(date) : null;
+  return date ? dateFormatter('date').format(date) : null;
 }
 
 /** ISO-8601 (UTC) -> "26 Oct 2026, 13:00". Returns null when unparseable. */
 export function formatDateTime(iso) {
   const date = parseDate(iso);
-  return date ? DATE_TIME_FORMAT.format(date) : null;
+  return date ? dateFormatter('datetime').format(date) : null;
 }
 
 /** Fallback display for any date-like field. */
@@ -186,6 +198,9 @@ export const ICONS = {
   x: `${SVG_OPEN}<path d="M6 6 18 18"/><path d="M18 6 6 18"/></svg>`,
   plus: `${SVG_OPEN}<path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
   send: `${SVG_OPEN}<path d="m21 3-9.5 9.5"/><path d="M21 3 14.5 21l-3-7.5-7.5-3z"/></svg>`,
+  paperclip: `${SVG_OPEN}<path d="m20.5 11.5-8.4 8.4a5 5 0 0 1-7.1-7.1l9-9a3.4 3.4 0 0 1 4.8 4.8l-8.9 8.9a1.8 1.8 0 0 1-2.5-2.5l8.2-8.2"/></svg>`,
+  file: `${SVG_OPEN}<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>`,
+  download: `${SVG_OPEN}<path d="M12 4v11"/><path d="m7 10 5 5 5-5"/><path d="M5 20h14"/></svg>`,
   info: `${SVG_OPEN}<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5"/><path d="M12 8.2v.2"/></svg>`,
   help: `${SVG_OPEN}<circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 0 1 4.9.6c0 1.7-2.5 2-2.5 3.5"/><path d="M12 16.6v.2"/></svg>`,
   logout: `${SVG_OPEN}<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="m10 8-4 4 4 4"/><path d="M6 12h9"/></svg>`,
@@ -235,6 +250,31 @@ const DOCTOR_PORTRAITS = [
   'assets/images/doctors/doctor-4.jpg',
 ];
 
+// The three canonical demo accounts have their own AI-generated demo portraits.
+// Look them up by the seeded email first (stable even if the display name is
+// edited) and by display name as a fallback when the demo email is overridden.
+// Other accounts keep the existing behavior: doctors draw from the local demo
+// portrait pool and nurses/admins use their initials.
+const SEEDED_STAFF_PORTRAITS = new Map([
+  ['admin@example.com', 'assets/images/staff/admin-1.jpg'],
+  ['администратор системен', 'assets/images/staff/admin-1.jpg'],
+  ['doctor@example.com', 'assets/images/staff/doctor-1.jpg'],
+  ['д-р георги иванов', 'assets/images/staff/doctor-1.jpg'],
+  ['nurse@example.com', 'assets/images/staff/nurse-1.jpg'],
+  ['мария николова', 'assets/images/staff/nurse-1.jpg'],
+]);
+
+function seededStaffPortrait(user) {
+  if (!user) return null;
+  for (const candidate of [user.email, user.display_name]) {
+    const key = String(candidate || '').trim().toLowerCase();
+    if (key && SEEDED_STAFF_PORTRAITS.has(key)) {
+      return SEEDED_STAFF_PORTRAITS.get(key);
+    }
+  }
+  return null;
+}
+
 function stablePortraitIndex(seed) {
   const text = String(seed || 'doctor');
   let hash = 0;
@@ -249,24 +289,26 @@ export function doctorPortrait(seed) {
   const text = String(seed || '').toLowerCase();
   // Keep the seeded demo doctor's portrait aligned with the seeded persona.
   if (text.includes('георги иванов') || text.includes('georgi ivanov')) {
-    return DOCTOR_PORTRAITS[0];
+    return SEEDED_STAFF_PORTRAITS.get('doctor@example.com');
   }
   return DOCTOR_PORTRAITS[stablePortraitIndex(seed)];
 }
 
 /**
- * Avatar for a staff/user identity. Only users holding the doctor role get a
- * demo profile picture; nurses/admins keep the initials circle.
+ * Avatar for a staff/user identity. The seeded Admin, Doctor and Nurse each
+ * have a dedicated AI-generated demo portrait; other doctors draw from the
+ * local portrait pool, and unknown nurses/admins keep the initials circle.
  */
 export function avatarForUser(user, { size = '', label = '' } = {}) {
   const name = user && (user.display_name || user.email || '?');
   const isDoctor = Boolean(
     user && Array.isArray(user.roles) && user.roles.includes('doctor')
   );
+  const seededPhoto = seededStaffPortrait(user);
   return avatar(name, {
     size,
     label,
-    photo: isDoctor ? doctorPortrait(`${user.id || ''}|${name}`) : null,
+    photo: seededPhoto || (isDoctor ? doctorPortrait(`${user.id || ''}|${name}`) : null),
   });
 }
 
@@ -1093,8 +1135,10 @@ export function infoDialog({ title = 'About', bodyHTML = '' } = {}) {
 
 const ABOUT_HTML = `
   <p><strong>MediCore Clinical Platform</strong> &middot; version 1.0.</p>
-  <p>Use the "Report an issue" link in the footer to flag problems. Please do not include
-  any personal or health information in a report.</p>
+  <p>See the <a href="privacy.html">Privacy Policy</a> and
+  <a href="terms.html">Terms and Conditions</a> for how this deployment handles
+  information. Please do not include personal or health information in a report
+  sent through an unverified channel.</p>
 `;
 
 export function openAbout() {
@@ -1141,8 +1185,10 @@ function renderNav(navNode, navItems, activeKey) {
 
 function renderUserArea(host, user, onLogout) {
   clear(host);
+  const languageSwitcher = i18n.mountSwitcher();
   const themeSwitcher = theme.mountSwitcher();
   if (!user) {
+    if (languageSwitcher) host.append(languageSwitcher);
     if (themeSwitcher) host.append(themeSwitcher);
     host.append(
       el('div', { class: 'user-chip' },
@@ -1156,12 +1202,9 @@ function renderUserArea(host, user, onLogout) {
   const roles = Array.isArray(user.roles) ? user.roles : [];
   const roleText = roles.length > 0 ? roles.map(roleLabel).join(', ') : 'No role assigned';
 
+  if (languageSwitcher) host.append(languageSwitcher);
   if (themeSwitcher) host.append(themeSwitcher);
   host.append(
-    el('div', { class: 'role-chip' },
-      icon('flask', 'icon--sm'),
-      el('span', { text: roleText }),
-    ),
     el('div', { class: 'user-chip' },
       avatarForUser(user, { size: 'sm' }),
       el('div', { class: 'user-chip__text' },
@@ -1235,4 +1278,5 @@ export function initChrome({ user = null, active = null, navItems = [], onLogout
   // at chrome-init time warm the patient-detail data on intent; permission
   // gated (patient:read) and in-memory only.
   prefetch.wirePatientIntent(document, user);
+  i18n.applyLanguage();
 }

@@ -50,6 +50,7 @@ async def test_login_success_sets_cookies_and_returns_payload(make_client, make_
         "appointment:read",
         "appointment:write",
         "appointment:manage_availability",
+        "appointment:export",
     }
     assert payload["is_active"] is True
     assert uuid.UUID(payload["id"]) == account.id
@@ -213,10 +214,13 @@ async def test_me_401_anonymous_and_200_authenticated(make_client, api_login, ma
     payload = response.json()
     assert payload["id"] == str(account.id)
     assert payload["roles"] == ["nurse"]
-    # Nurse is least privilege: clinical reads plus read-only appointments —
-    # no staff:read, no audit:read, no appointment writes/availability.
+    # Nurse is least privilege: clinical reads, read-only appointments and
+    # internal staff messaging — no staff/audit permissions, no clinical writes
+    # and no appointment writes/availability.
     assert set(payload["permissions"]) == {
         "patient:read",
+        "message:read",
+        "message:write",
         "lab:read",
         "prescription:read",
         "appointment:read",

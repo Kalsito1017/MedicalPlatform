@@ -3,10 +3,32 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="robots" content="noindex, nofollow">
-  <title>Sign in — MediCore Clinical Platform</title>
-  <meta name="description" content="Sign in to the MediCore Clinical Platform: search patients, review lab results and prescriptions, and manage staff access.">
-  <link rel="icon" href="assets/images/favicon.svg">
+  <meta name="robots" content="index, follow">
+  <title>MediCore | Clinical Platform — Sign in</title>
+  <meta name="description" content="Sign in to MediCore, a role-aware clinical workspace for authorized care teams. Search records, review results, and manage access.">
+  <link rel="canonical" href="/">
+  <meta name="theme-color" content="#06101e">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="MediCore">
+  <meta property="og:title" content="MediCore | Clinical Platform">
+  <meta property="og:description" content="A role-aware clinical workspace for authorized care teams. Sign in to MediCore.">
+  <meta property="og:url" content="/">
+  <meta property="og:image" content="/assets/images/og-medicore.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="MediCore Clinical Platform brand image in navy, blue, and cyan">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="MediCore | Clinical Platform">
+  <meta name="twitter:description" content="A role-aware clinical workspace for authorized care teams. Sign in to MediCore.">
+  <meta name="twitter:image" content="/assets/images/og-medicore.png">
+  <meta name="twitter:image:alt" content="MediCore Clinical Platform brand image in navy, blue, and cyan">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="/assets/images/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/assets/images/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/assets/images/favicon-16x16.png">
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
   <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/styles.css">
   <!-- Pre-rendering: module warm-up for the shared graph (no execution, no external
@@ -54,6 +76,9 @@
             patients, lab results, and prescriptions — faster, smarter, with the
             right answers in the right context.
           </p>
+          <div class="landing-hero__actions">
+            <a class="btn btn-secondary landing-hero__cta" id="landing-hero-cta" href="#login-card">Sign in to MediCore</a>
+          </div>
         </section>
 
         <div class="landing-auth">
@@ -118,10 +143,13 @@
     <footer class="landing-footer">
       <div class="landing-footer__inner">
         <button type="button" class="link-button landing-footer__link" data-open-about>About MediCore</button>
-        <a class="landing-footer__link" href="mailto:support@example.com?subject=Clinical%20AI%20Platform%20issue">Report an issue</a>
+        <a class="landing-footer__link" href="privacy.html">Privacy</a>
+        <a class="landing-footer__link" href="terms.html">Terms</a>
       </div>
     </footer>
   </div>
+
+  <a class="btn btn-primary landing-mobile-cta" id="landing-mobile-cta" href="#login-card" aria-label="Sign in to MediCore">Sign in to MediCore</a>
 
   <script type="module" src="assets/js/login.js"></script>
 </body>

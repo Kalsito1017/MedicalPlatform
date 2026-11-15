@@ -1,11 +1,13 @@
 """Authenticated voice transcription for appointment scheduling.
 
 `POST /api/v1/voice/transcriptions` accepts one bounded audio recording plus a
-language (`en` or `bg`) and returns editable text. The browser records with
-MediaRecorder; the server converts with FFmpeg and calls the private
-whisper.cpp service. Audio and transcripts are never logged, audited, or
-persisted. The final appointment is only created after an explicit doctor
-confirmation through the normal appointment API.
+language (`en`, `bg`, or `auto`) and returns editable text. With `auto` the
+whisper.cpp model detects Bulgarian or English from the audio; the response
+reports the detected language. The browser records with MediaRecorder; the
+server converts with FFmpeg and calls the private whisper.cpp service. Audio
+and transcripts are never logged, audited, or persisted. The final appointment
+is only created after an explicit doctor confirmation through the normal
+appointment API.
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ from app.auth.identity import client_ip
 from app.authorization.policy import Principal, require_permission
 from app.errors import DependencyUnavailable, RateLimited, ValidationFailed
 from app.logs.service import record_operational_event
-from app.schemas.voice import TranscriptionOut, VoiceLanguage
+from app.schemas.voice import TranscriptionOut, VoiceLanguageRequest
 from app.services.voice import SpeechTimeout, transcribe_upload, voice_rate_limiter
 
 router = APIRouter(tags=["voice"])
@@ -29,7 +31,7 @@ async def create_transcription(
     request: Request,
     request_id: RequestId,
     file: UploadFile = File(...),
-    language: VoiceLanguage = Form(...),
+    language: VoiceLanguageRequest = Form(...),
     principal: Principal = Depends(require_permission("appointment:write")),
 ) -> TranscriptionOut:
     settings = request.app.state.settings

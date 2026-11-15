@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm.provider import LLMResult, ToolCallRequest
-from app.models import Appointment
+from app.models import Appointment, Patient
 from app.services import appointment_ai
 from conftest import audit_rows, csrf_headers
 
@@ -168,6 +169,158 @@ async def test_interpret_requires_a_patient_choice_when_ambiguous(
     assert proposal["can_confirm"] is False
     assert "patient" in proposal["missing_fields"]
     assert any("Several patients" in warning for warning in proposal["warnings"])
+
+
+async def test_interpret_resolves_name_and_mrn_together(
+    make_user, auth_client, clinical_data, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    await _set_availability(client)
+    day = _next_weekday()
+    provider = FakeProvider(
+        _proposal(
+            clinical_data,
+            day,
+            patient_query=f"{clinical_data.patient_name}, {clinical_data.patient_mrn}",
+        )
+    )
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: provider)
+
+    response = await _interpret(
+        client,
+        f"Book {clinical_data.patient_name}, {clinical_data.patient_mrn}, tomorrow at 10:00.",
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()
+    assert proposal["patient"] is not None
+    assert proposal["patient"]["id"] == str(clinical_data.patient_id)
+    assert proposal["patient"]["mrn"] == clinical_data.patient_mrn
+    assert "patient" not in proposal["missing_fields"]
+
+
+async def test_interpret_matches_latin_name_to_cyrillic_patient(
+    make_user, auth_client, clinical_data, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    await _set_availability(client)
+    suffix = uuid.uuid4().hex[:6].upper()
+    created = await client.post(
+        "/api/v1/patients",
+        json={
+            "given_name": "Елена",
+            "family_name": f"Тестова {suffix}",
+            "sex": "female",
+        },
+        headers=csrf_headers(client),
+    )
+    assert created.status_code == 201, created.text
+    patient = created.json()
+    day = _next_weekday()
+    provider = FakeProvider(
+        _proposal(
+            clinical_data,
+            day,
+            patient_query=f"Elena Testova {suffix}, {patient['mrn']}",
+        )
+    )
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: provider)
+
+    response = await _interpret(
+        client,
+        f"Book a follow-up for Elena Testova {suffix}, {patient['mrn']}, tomorrow at 10:00.",
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()
+    assert proposal["patient"]["id"] == patient["id"]
+    assert proposal["patient"]["mrn"] == patient["mrn"]
+    assert proposal["warnings"] == []
+    assert proposal["can_confirm"] is True
+
+
+async def test_interpret_does_not_fuzzy_resolve_a_similar_name(
+    make_user, auth_client, clinical_data, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    await _set_availability(client)
+    day = _next_weekday()
+    provider = FakeProvider(
+        _proposal(clinical_data, day, patient_query="Fixture Alfa")
+    )
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: provider)
+
+    response = await _interpret(client, "Book Fixture Alfa tomorrow at 10:00.")
+    assert response.status_code == 200, response.text
+    proposal = response.json()
+    assert proposal["patient"] is None
+    assert proposal["can_confirm"] is False
+    assert "patient" in proposal["missing_fields"]
+    assert any("No accessible patient" in warning for warning in proposal["warnings"])
+
+
+async def test_interpret_requires_verification_when_name_and_mrn_disagree(
+    make_user, auth_client, clinical_data, db_engine, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    await _set_availability(client)
+    day = _next_weekday()
+    async with AsyncSession(db_engine, expire_on_commit=False) as db:
+        other_mrn = await db.scalar(
+            select(Patient.mrn).where(Patient.id == clinical_data.empty_patient_id)
+        )
+    assert other_mrn is not None
+    provider = FakeProvider(
+        _proposal(
+            clinical_data,
+            day,
+            patient_query=f"{clinical_data.patient_name}, {other_mrn}",
+        )
+    )
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: provider)
+
+    response = await _interpret(
+        client,
+        f"Book {clinical_data.patient_name}, {other_mrn}, tomorrow at 10:00.",
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()
+    assert proposal["patient"] is None
+    assert len(proposal["patient_candidates"]) >= 2
+    assert proposal["can_confirm"] is False
+    assert "patient" in proposal["missing_fields"]
+    assert any("different patients" in warning for warning in proposal["warnings"])
+
+
+async def test_interpret_blocks_when_stated_mrn_matches_no_patient(
+    make_user, auth_client, clinical_data, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    await _set_availability(client)
+    day = _next_weekday()
+    provider = FakeProvider(
+        _proposal(
+            clinical_data,
+            day,
+            patient_query=f"{clinical_data.patient_name}, MRN-9999",
+        )
+    )
+    monkeypatch.setattr(appointment_ai, "build_provider", lambda settings: provider)
+
+    response = await _interpret(
+        client,
+        f"Book {clinical_data.patient_name}, MRN-9999, tomorrow at 10:00.",
+    )
+    assert response.status_code == 200, response.text
+    proposal = response.json()
+    assert proposal["patient"] is None
+    assert proposal["patient_candidates"]
+    assert proposal["can_confirm"] is False
+    assert "patient" in proposal["missing_fields"]
+    assert any("MRN did not match" in warning for warning in proposal["warnings"])
 
 
 async def test_interpret_reports_missing_date_and_time(

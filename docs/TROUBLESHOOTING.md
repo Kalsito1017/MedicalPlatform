@@ -233,7 +233,7 @@ default `5432`, or the app port `8000`/`5173`).
 - `WHISPER_AUTH_MODE=bearer` without a non-empty `WHISPER_BEARER_TOKEN`, or
   `gcp_iam` without `WHISPER_AUDIENCE`, fails startup validation. Fix the env
   and restart; never paste the token into an issue.
-- A timeout is a `503` by design. Check CPU/threads; Tiny on CPU is small but
+- A timeout is a `503` by design. Check CPU/threads; Base on CPU is larger but
   the first request loads the model.
 - The speech port is intentionally not published; do not expect
   `http://localhost:8080` to answer from the host.
@@ -247,6 +247,19 @@ default `5432`, or the app port `8000`/`5173`).
   cap 8 MiB): the global 1 MiB limit still applies to every other route.
 - FFmpeg/FFprobe missing outside Docker: install FFmpeg on the host, or run the
   backend image (it installs them). The error stays generic on purpose.
+
+## 15a. Message attachment returns 400
+
+- Allowed types are PDF, PNG, JPEG, WebP, TXT, CSV, DOCX and XLSX. SVG, HTML,
+  archives and executables are rejected on purpose.
+- The file must be non-empty and no larger than
+  `MESSAGE_ATTACHMENT_MAX_BYTES` (default 5 MiB). The exact-route request
+  allowance is the 8 MiB hard ceiling; the global 1 MiB limit still applies to
+  every other route.
+- The content must match the extension (for example, a `.pdf` must contain a
+  PDF header; text files must be UTF-8). This is type validation, not
+  antivirus scanning.
+- A message may have one attachment. Send a new message for another file.
 
 ## 16. Appointment create returns 409 or 400
 
@@ -309,8 +322,8 @@ default `5432`, or the app port `8000`/`5173`).
   load more history first. Exports contain only displayed safe fields.
 - **Copy visible** requires a visible chat message and browser clipboard
   permission; HTTP pages may block clipboard access outside localhost.
-- **Clear View** only empties the browser display/buffer. It never deletes
-  backend audit or operational rows.
+- **Clear View** asks for confirmation and then only empties the browser
+  display/buffer. It never deletes backend audit or operational rows.
 
 ## 20. A clinical action succeeded but no System Logs entry exists
 

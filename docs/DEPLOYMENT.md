@@ -91,6 +91,43 @@ spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
    use the free `*.pages.dev` subdomain. Record the final URL here at deployment time:
    **Public URL: `<to be filled in Phase 15 — do not invent>`**.
 
+## 4a. Public website completeness (metadata, robots, sitemap, legal pages)
+
+- **Canonical origin.** Set `PUBLIC_ORIGIN` to the verified public HTTPS origin
+  (for example the final Pages or custom domain). The backend generates
+  `/robots.txt` and `/sitemap.xml` from this value, so no production domain is
+  hard-coded in the repository. A path/query/fragment is rejected at startup.
+- **Pages hosting.** If the frontend is served by Cloudflare Pages, proxy
+  `/robots.txt` and `/sitemap.xml` to the backend (alongside `/api/*`) or
+  generate static copies with the same canonical origin. The sitemap must
+  contain only `/`, `/privacy.html`, and `/terms.html`.
+- **Noindex.** Authenticated clinical pages and `/404.html` carry
+  `noindex, nofollow` metadata and `X-Robots-Tag` headers. The robots.txt
+  whitelist does not enumerate private routes. robots.txt is **not** an access
+  control; server-side authentication and authorization remain mandatory.
+- **Legal pages.** `privacy.html` and `terms.html` are public templates with
+  clearly marked placeholders for the legal entity, address, contacts, legal
+  bases, retention, transfers, and governing law. Qualified legal counsel must
+  review and complete them before real patient data is used. Do not invent a
+  company, address, registration number, or certification.
+- **Cookies and measurement.** The current app uses only strictly necessary
+  authentication/CSRF cookies plus the local theme preference. No analytics,
+  advertising, session-recording, or third-party tracking is installed, so no
+  cookie banner is shown. If optional tracking is added, implement consent,
+  withdrawal, and a privacy-policy update first. If aggregate product usage is
+  later required, the smallest acceptable option is a first-party aggregate
+  counter with no cookies, no user identifiers, no patient/clinical data, no
+  URLs containing sensitive values, short retention, and a consent gate where
+  required; do not add a third-party tracker or session recorder.
+- **Contact information.** The repository has no verified support, privacy, or
+  business contact. The former placeholder `support@example.com` link has been
+  removed. Supply a real, verified contact before publishing; do not invent one.
+- **Open Graph.** The 1200x630 image is local at
+  `frontend/assets/images/og-medicore.png`; public pages use root-relative
+  canonical/OG URLs until the deployment origin is configured. For reliable
+  social previews, set absolute `og:url`/`og:image` values from the canonical
+  origin at deploy time.
+
 ## 5. Environment variables
 
 Set in the Render dashboard (backend) unless noted. **Examples are placeholders — never
@@ -120,6 +157,7 @@ real values.**
 | `WHISPER_AUDIENCE` | Cloud Run ID-token audience when `gcp_iam` is used | Render (optional) | `https://<speech-service-url>` |
 | `VOICE_MAX_UPLOAD_BYTES` | exact-route voice upload allowance (64 KiB–8 MiB) | Render (optional) | `4194304` |
 | `VOICE_MAX_DURATION_SECONDS` | maximum recording duration | Render (optional) | `60` |
+| `MESSAGE_ATTACHMENT_MAX_BYTES` | one staff-message attachment (64 KiB–8 MiB) | Render (optional) | `5242880` |
 | `ALLOWED_ORIGINS` | CORS allowlist (single frontend origin) | Render | `https://<frontend-pages-domain>` |
 | `DEMO_ADMIN_EMAIL` / `DEMO_ADMIN_PASSWORD` | seeds the Admin demo account (`clinical_admin`, all permissions) | seed-time env only | `admin@example.com` / `replace-me-at-seed-time` |
 | `DEMO_DOCTOR_EMAIL` / `DEMO_DOCTOR_PASSWORD` | seeds the doctor demo account | seed-time env only | `doctor@example.com` / `replace-me-at-seed-time` |
@@ -145,7 +183,7 @@ docker compose --profile speech up --build
 The `speech` service has **no published host port**; it is reachable only on the
 compose network. Without the speech profile the app still starts and the voice
 endpoint fails closed with `503`; manual scheduling remains available. The image builds whisper.cpp v1.9.5 (checksum-pinned) and bakes
-in the checksum-verified Tiny multilingual model. The first build downloads the
+in the checksum-verified Base multilingual model. The first build downloads the
 model and compiles the CPU engine, so it is slow.
 
 The backend image installs FFmpeg/FFprobe at runtime; no host FFmpeg is needed
@@ -264,6 +302,48 @@ deliberate coherent abnormal lab patterns for AI lookups. The dataset is
 Bulgarian-language (names, clinical notes, diagnoses, lab and medication display
 names in Cyrillic UTF-8; machine identifiers stay ASCII). Resetting clears audit
 history along with the data — expected for a demo.
+
+## 9a. Database backup and restore (appointment history and all records)
+
+PostgreSQL is the source of truth. A `.txt` file, CSV export or a printed
+appointment summary is **not** a database backup. Appointment history survives
+application restarts and non-destructive migrations because it remains in
+`scheduling.appointment` and `scheduling.appointment_event`. Internal-message
+attachment bytes live in `admin.message_attachment`, so the same encrypted
+database dump backs up messages and their attachments together.
+
+**Local/self-managed PostgreSQL (recommended baseline for this repository)**
+
+```bash
+# 1. Logical dump in PostgreSQL custom format (all schemas, roles omitted unless needed)
+pg_dump --format=custom --no-owner --no-acl "$DATABASE_URL" \
+  > clinical_demo-$(date -u +%Y%m%dT%H%M%SZ).dump
+
+# 2. Encrypt before storing it off-host (age is shown; use your approved KMS/age key)
+age --encrypt --recipient "<approved-backup-recipient>" \
+  clinical_demo-*.dump > clinical_demo-*.dump.age
+
+# 3. Keep the encryption key separate from the backup. Verify restore regularly
+#    against an isolated PostgreSQL instance:
+createdb clinical_demo_restore
+pg_restore --clean --if-exists --no-owner --no-acl \
+  --dbname clinical_demo_restore clinical_demo-*.dump
+# then run the application migrations/readiness checks against the restored DB
+```
+
+- Use the host's managed PITR/snapshot feature where available; enable
+  encryption at rest and in transit, restrict who can restore, and record
+  restore tests.
+- Store backups outside the application host, with a separate encryption key
+  managed by an approved secret manager/KMS. Do not commit dumps, keys or
+  connection strings.
+- The demo's synthetic data may be rebuilt from migrations + seed, but that is
+  **not** a retention policy for real records. Real patient-data backup,
+  retention, deletion, jurisdiction-specific legal/privacy review, and
+  restoration SLAs remain required before real use (`docs/BACKLOG.md`).
+- Supplementary exports (CSV now; individual PDF summary is deferred) are
+  generated from the authorized persisted query, respect filters/role scope,
+  exclude notes/clinical content, and are not substitutes for backups.
 
 ## 10. Known free-tier risks and cost
 

@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
+import * as i18n from './i18n.js';
 import * as ui from './ui.js';
 
 export const PRINT_PAGE_LIMIT = 100;
@@ -227,13 +228,6 @@ function buildRunningHeader(patient, mrn) {
   );
 }
 
-function buildRunningFooter(mrn, generatedAt) {
-  return ui.el('footer', { class: 'print-running-foot' },
-    ui.el('span', { text: `MediCore \u00b7 Patient Medical Record \u00b7 MRN ${mrn}` }),
-    ui.el('span', { text: `Generated ${generatedAt}` }),
-  );
-}
-
 function buildDocumentHeader(generatedAt) {
   return ui.el('header', { class: 'print-doc-header' },
     ui.el('h1', { text: 'Patient Medical Record' }),
@@ -354,7 +348,7 @@ function buildLabSection(labs) {
     const collectedCell = ui.el('td', { class: 'print-date' },
       ui.el('div', { text: displayDateTime(lab.collected_at) }),
       lab.resulted_at
-        ? ui.el('div', { class: 'print-meta', text: `Resulted ${displayDateTime(lab.resulted_at)}` })
+        ? ui.el('div', { class: 'print-meta', text: `${i18n.t('Resulted')} ${displayDateTime(lab.resulted_at)}` })
         : null,
     );
     return ui.el('tr', { class: flag.rowClass },
@@ -451,17 +445,29 @@ export function renderPrintRecord(container, data, generatedAt) {
   const patient = data.patient || {};
   const mrn = text(patient.mrn, 'Not recorded');
   container.append(
-    buildRunningHeader(patient, mrn),
-    buildRunningFooter(mrn, generatedAt),
-    ui.el('main', { class: 'print-doc' },
-      buildDocumentHeader(generatedAt),
-      buildPatientSection(patient),
-      buildSummarySection(data.summary || {}),
-      buildEncounterSection(sortEncounters(data.encounters || [])),
-      buildLabSection(data.labs || []),
-      buildPrescriptionSection(data.prescriptions || []),
+    ui.el('table', { class: 'print-repeat' },
+      ui.el('thead', {},
+        ui.el('tr', {},
+          ui.el('td', {}, buildRunningHeader(patient, mrn)),
+        ),
+      ),
+      ui.el('tbody', {},
+        ui.el('tr', {},
+          ui.el('td', {},
+            ui.el('main', { class: 'print-doc' },
+              buildDocumentHeader(generatedAt),
+              buildPatientSection(patient),
+              buildSummarySection(data.summary || {}),
+              buildEncounterSection(sortEncounters(data.encounters || [])),
+              buildLabSection(data.labs || []),
+              buildPrescriptionSection(data.prescriptions || []),
+            ),
+          ),
+        ),
+      ),
     ),
   );
+  i18n.applyLanguage(container);
 }
 
 function setStatus(node, message, { tone = 'info', retry = null } = {}) {

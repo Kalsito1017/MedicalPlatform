@@ -287,6 +287,52 @@ async def test_search_empty_state(auth_client, make_user) -> None:
     assert body == {"items": [], "total": 0, "limit": 20, "offset": 0}
 
 
+@pytest.mark.postgres
+async def test_search_matches_latin_spelling_of_cyrillic_name(
+    auth_client, make_user
+) -> None:
+    account = await make_user(roles=("doctor",))
+    client = await auth_client(account)
+    suffix = uuid.uuid4().hex[:6].upper()
+    created = await client.post(
+        "/api/v1/patients",
+        json={
+            "given_name": "Елена",
+            "family_name": f"Тестова {suffix}",
+            "sex": "female",
+        },
+        headers=csrf_headers(client),
+    )
+    assert created.status_code == 201, created.text
+    patient = created.json()
+
+    latin = await client.get("/api/v1/patients", params={"q": "Elena Testova"})
+    assert latin.status_code == 200
+    assert patient["id"] in {item["id"] for item in latin.json()["items"]}
+    assert latin.json()["total"] >= 1
+
+    # A one-letter misspelling is still recognizable.
+    misspelled = await client.get(
+        "/api/v1/patients", params={"q": "Elena Testovaa"}
+    )
+    assert misspelled.status_code == 200
+    assert patient["id"] in {
+        item["id"] for item in misspelled.json()["items"]
+    }
+
+    # Literal Cyrillic and exact MRN searches keep working.
+    cyrillic = await client.get("/api/v1/patients", params={"q": "Тестова"})
+    assert patient["id"] in {
+        item["id"] for item in cyrillic.json()["items"]
+    }
+    by_mrn = await client.get(
+        "/api/v1/patients", params={"q": patient["mrn"]}
+    )
+    assert patient["id"] in {
+        item["id"] for item in by_mrn.json()["items"]
+    }
+
+
 # --- patient detail and summary --------------------------------------------
 
 

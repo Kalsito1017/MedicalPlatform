@@ -106,7 +106,7 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| GET | `/api/v1/patients` | `patient:read` | Paginated. `?q=` filters name/MRN. |
+| GET | `/api/v1/patients` | `patient:read` | Paginated. `?q=` filters name/MRN literally (escaped wildcards); when nothing matches, a bounded transliteration-aware fallback recognizes the Latin spelling of a Cyrillic name (`Elena Georgieva` → `Елена Георгиева`) and one-letter misspellings. |
 | POST | `/api/v1/patients` | `patient:write` | Creates a synthetic patient. Body `{given_name, family_name, display_name?, date_of_birth?, sex?, blood_type?}`; `sex` is `female|male|other|unknown` (default `unknown`), `blood_type` is the closed ABO/Rh vocabulary or `null`. MRN and `provenance` are server-assigned; the MRN is generated and unique. `201` with `PatientOut`; `400 validation_error` for blank names, future DOB, unknown enum values or extra fields. Audited `patient.create` (metadata only). Doctor/Admin only; Nurse `403`. |
 | DELETE | `/api/v1/patients/{patient_id}` | `patient:delete` | **Admin-only soft delete.** `204` empty body; the patient row gets `deleted_at` and disappears from list/search/detail and appointment reads, while child clinical rows and audit history are retained internally. Unknown/already-deleted id is `404 not_found`. Audited `patient.delete` (metadata only). Doctor/Nurse `403`. |
 | GET | `/api/v1/patients/{patient_id}` | `patient:read` | Demographics. |
@@ -121,17 +121,29 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 but provenance is database-internal and is not serialized into clinical payloads.
 By product decision, the UI has no visible demo/synthetic/disclaimer/provenance copy.
 
-### Messages (Doctor/Admin internal)
+### Messages (all staff roles)
+
+All three roles — Doctor, Nurse and Admin — can send private staff-to-staff
+messages to any other active, non-deleted staff member. Messaging does not grant
+any additional clinical or administrative permission.
 
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| GET | `/api/v1/messages` | `message:read` | Own messages only. Query `box=inbox|sent` (default `inbox`), optional bounded search `q` (1–100 chars; sender/recipient display name, subject or body), and bounded `limit`/`offset`. Newest first. Response is the standard page envelope; each item contains sender/recipient ids and display names, subject, body, `read_at`, and timestamps. Search is always scoped to the caller's own mailbox. |
-| GET | `/api/v1/messages/recipients` | `message:read` | Active, non-deleted Doctor/Admin recipients (the caller is excluded). Returns `{items: [{id, display_name, roles}]}`, bounded to 100. |
+| GET | `/api/v1/messages` | `message:read` | Own messages only. Query `box=inbox|sent` (default `inbox`), optional bounded search `q` (1–100 chars; sender/recipient display name, subject or body), and bounded `limit`/`offset`. Newest first. Response is the standard page envelope; each item contains sender/recipient ids and display names, subject, body, `read_at`, optional `attachment` metadata (`id`, `filename`, `content_type`, `size_bytes`, `created_at`) and timestamps. Search is always scoped to the caller's own mailbox. |
+| GET | `/api/v1/messages/recipients` | `message:read` | Active, non-deleted Doctor/Nurse/Admin recipients (the caller is excluded). Returns `{items: [{id, display_name, roles}]}`, bounded to 100. |
 | GET | `/api/v1/messages/counts` | `message:read` | Caller-private counts: `{inbox_total, unread_total, sent_total}`. Never includes another user's mailbox. |
-| POST | `/api/v1/messages` | `message:write` | Body `{recipient_id, subject?, body}`; subject ≤200 chars, body 1–5000 chars. Recipient must be an active Doctor/Admin and cannot be self. `201` with the message; audited `message.send` (metadata only — never subject/body). |
+| POST | `/api/v1/messages` | `message:write` | Text-only body `{recipient_id, subject?, body}`; subject ≤200 chars, body 1–5000 chars. Recipient must be an active, non-deleted staff member with `message:read`, and cannot be self. `201` with the message; audited `message.send` (metadata only — never subject/body/filename). |
+| POST | `/api/v1/messages/attachments` | `message:write` | `multipart/form-data` with `recipient_id`, optional `subject`, optional `body` (≤5000 chars; an attachment-only message is allowed) and one `file`. File ≤5 MiB by default (`MESSAGE_ATTACHMENT_MAX_BYTES`; hard ceiling 8 MiB). Allowlist: PDF, PNG, JPEG, WebP, TXT, CSV, DOCX, XLSX. The declared extension is normalized, the basename sanitized, and the content checked against simple magic signatures. Stored in PostgreSQL with the message; `201` with the same message shape plus attachment metadata. Audited `message.send` (metadata only). |
+| GET | `/api/v1/messages/{message_id}/attachment` | `message:read` | Download the attachment only as the message sender or recipient; another staff member (including Admin) gets `404`. Returns the exact stored bytes with `Content-Disposition: attachment`, canonical content type, `Content-Length`, and `Cache-Control: no-store`. Audited `message.attachment.download` (metadata only). |
 | POST | `/api/v1/messages/{message_id}/read` | `message:read` | Recipient-only mark-read; `204`, idempotent, another user's/unknown id is `404`. Audited `message.read` (metadata only). |
 
-Messages are internal staff-to-staff records: no attachments, no patient payload validation, and no raw message content in audit events. Nurse has no message permissions (`403`). Body/subject are rendered as plain text in the UI.
+Messages are internal staff-to-staff records: no patient payload validation, no
+group messaging, and no raw message content or filenames in audit events. The
+sender is derived only from the authenticated session. Inbox and sent views are
+caller-private; knowing a message UUID does not grant access, and Admin does not
+gain access to another user's private conversation. Body/subject are rendered as
+plain text in the UI. Attachments are never rendered inline or executed; they
+are served as downloads and are not scanned by antivirus software.
 
 ### Synthetic patient summary payload (`GET /patients/{patient_id}/summary`)
 
@@ -553,20 +565,40 @@ interpretation use `CLINIC_TIMEZONE` (**`Europe/Sofia`** in the demo). Working
 hours are clinic-local `TIME` values; time off is UTC. DST holes and ambiguous
 fall-back times are rejected with `400 validation_error`.
 
+**Active vs historical.** The calendar endpoint returns only active/upcoming
+records by actual `end_at`: scheduled/confirmed rows remain visible while
+`end_at > now` (including in-progress appointments) and stop appearing at the
+scheduled end time. Completed and no-show rows are historical immediately;
+cancelled rows keep the existing five-minute calendar grace period. Expiration
+never changes status or deletes a record. The history endpoint reads retained
+records independently of that visibility rule.
+
 | Method | Path | Permission | Notes |
 |---|---|---|---|
-| GET | `/api/v1/appointments/config` | `appointment:read` | `{timezone, max_duration_minutes: 480, max_range_days: 62}`. |
-| GET | `/api/v1/appointments` | `appointment:read` | Required query `start`, `end` (aware ISO-8601); optional `doctor_id`, `patient_id`, `status`, `limit`, `offset`. Range ≤ **62 days**; `end > start`. A Doctor is always scoped to their own calendar server-side; an Admin may list all doctors or filter by `doctor_id`; a Nurse has a **read-only clinic-wide** view (optional `doctor_id` filter) and cannot write. Response items include display patient name/MRN and doctor name (calendar display fields), duration, status, type, notes, timestamps. Cancelled entries are calendar-visible for **5 minutes** after cancellation and are then omitted from list responses; rows explicitly removed via the admin endpoint are omitted immediately. Records and audit history are retained. The patient filter is concealment-checked (`404` for inaccessible patients). |
+| GET | `/api/v1/appointments/config` | `appointment:read` | `{timezone, max_duration_minutes: 480, max_range_days: 62, history_max_range_days: 366}`. |
+| GET | `/api/v1/appointments` | `appointment:read` | Active calendar only. Required query `start`, `end` (aware ISO-8601); optional `doctor_id`, `patient_id`, `status`, `limit`, `offset`. Range ≤ **62 days**; `end > start`. Rows with `end_at <= now` no longer appear; terminal completed/no-show rows are omitted; cancelled rows keep the **5-minute** grace period. A Doctor is always scoped to their own calendar server-side; an Admin may list all doctors or filter by `doctor_id`; a Nurse has a **read-only clinic-wide** view (optional `doctor_id` filter) and cannot write. Rows explicitly removed via the admin endpoint are omitted immediately. Records and audit history are retained. The patient filter is concealment-checked (`404` for inaccessible patients). |
+| GET | `/api/v1/appointments/history` | `appointment:read` | Retained historical appointments, including completed, no-show, cancelled and past unmarked visits. Optional `start`/`end` (both or neither; ≤ **366 days**), `doctor_id`, `patient_id`, `status` (including `past_unmarked`), `visit_type`, patient/MRN search `q` (≤100 chars), bounded `limit`/`offset`. A Doctor sees only their own history; Admin and Nurse see the clinic-wide history (Nurse read-only). Rows are ordered newest scheduled start first. No calendar range cap is applied to history. |
+| GET | `/api/v1/appointments/history/export.csv` | `appointment:export` | Doctor/Admin CSV export for an explicit `start`/`end` range (both required, ≤366 days) plus the same optional filters as history. Doctor scope is own-history; Admin may filter by doctor. Nurse receives `403`. Content-Disposition attachment; UTC + Europe/Sofia timestamps, patient name/MRN, doctor, visit type, duration, status, derived past-unmarked label, created/updated and calendar-removal time. Notes and other clinical content are excluded. Bounded to 5,000 rows; larger selections are `400`. Audited `appointment.history.export` (metadata only). |
 | POST | `/api/v1/appointments` | `appointment:write` | Body `{patient_id, start_at, duration_minutes (5–480), appointment_type?, notes?, status?}`. A Doctor may omit `doctor_id` (resolved to the caller) and may not name another doctor; an Admin must name one. `201` on success. The time must be in the future, inside the doctor's working hours, outside time off, and non-overlapping for both doctor and patient. Conflicts are `409`. Patient access failure is `404`. Concurrent bookings for the same doctor or patient are serialized with PostgreSQL transaction advisory locks and re-checked inside the transaction. Appointment mutations are audited (`appointment.create`); the AI never calls this endpoint. |
-| GET | `/api/v1/appointments/{appointment_id}` | `appointment:read` | A Doctor sees only their own; another doctor's id is concealed as `404` and audited `appointment.denied`. Admin and read-only Nurse may read any appointment; all write actions stay forbidden for Nurse. |
-| PATCH | `/api/v1/appointments/{appointment_id}` | `appointment:write` | Reschedule and/or edit `start_at`, `duration_minutes`, `appointment_type`, `notes`, or close with `status` (`completed` or `no_show`). Cancellation has its own endpoint. A cancelled/completed/no-show appointment is `409` and cannot be modified. Rescheduling runs the same availability/conflict checks. Audited `appointment.update` or `appointment.reschedule`. |
-| POST | `/api/v1/appointments/{appointment_id}/cancel` | `appointment:write` | Sets status `cancelled`; idempotent for an already-cancelled row. A completed/no-show row is `409`. The cancelled entry remains in calendar list responses for **5 minutes**, then is omitted automatically. Audited `appointment.cancel`. |
-| POST | `/api/v1/appointments/{appointment_id}/remove-from-calendar` | `appointment:write` + **Admin role** | Removes a cancelled appointment from calendar list responses immediately; `204`, idempotent, `409` if the appointment is not cancelled, `404` if missing. This is a visibility change, not a record deletion: the scheduling row, cancellation status and audit history remain, and `GET /appointments/{id}` still returns the record. Body is empty. Audited `appointment.remove_from_calendar`. Doctors and Nurses get `403`. |
+| GET | `/api/v1/appointments/{appointment_id}` | `appointment:read` | A Doctor sees only their own; another doctor's id is concealed as `404` and audited `appointment.denied`. Admin and read-only Nurse may read any appointment; all write actions stay forbidden for Nurse. Historical rows remain directly readable. |
+| GET | `/api/v1/appointments/{appointment_id}/history` | `appointment:read` | Immutable lifecycle events for the appointment: `created`, `updated`, `rescheduled`, `status_changed`, `calendar_removed`; actor display name, timestamp, request id, and old/new status/times where applicable. Same role/concealment rules as appointment detail; bounded to 100 events. |
+| PATCH | `/api/v1/appointments/{appointment_id}` | `appointment:write` | Reschedule and/or edit `start_at`, `duration_minutes`, `appointment_type`, `notes`, or record an outcome with `status` (`completed` or `no_show`). Cancellation has its own endpoint. A cancelled/completed/no-show appointment is `409` and cannot be modified. Rescheduling runs the same availability/conflict checks. Audited `appointment.update`, `appointment.reschedule`, `appointment.complete` or `appointment.no_show`; every status/time change also appends a lifecycle event. |
+| POST | `/api/v1/appointments/{appointment_id}/cancel` | `appointment:write` | Sets status `cancelled`; idempotent for an already-cancelled row. A completed/no-show row is `409`. The cancelled entry remains in calendar list responses for **5 minutes**, then is omitted automatically. Audited `appointment.cancel`; the transition is recorded in the lifecycle timeline. |
+| POST | `/api/v1/appointments/{appointment_id}/remove-from-calendar` | `appointment:write` + **Admin role** | Removes a cancelled appointment from calendar list responses immediately; `204`, idempotent, `409` if the appointment is not cancelled, `404` if missing. This is a visibility change, not a record deletion: the scheduling row, cancellation status and audit history remain, and `GET /appointments/{id}` still returns the record. Body is empty. Audited `appointment.remove_from_calendar`; the lifecycle timeline records `calendar_removed`. Doctors and Nurses get `403`. |
 | GET | `/api/v1/appointments/availability` | `appointment:read` | Optional `doctor_id` (required for Admin and read-only Nurse; a Doctor may omit or name only self). Returns `{doctor_id, timezone, default_duration_minutes, slot_increment_minutes, working_hours: [{weekday 0=Mon..6=Sun, start_time, end_time}], time_off: [{id, start_at, end_at, reason}]}`. A missing schedule returns defaults and empty hours. |
 | PUT | `/api/v1/appointments/availability` | `appointment:manage_availability` | Replaces the doctor's schedule. Body `{default_duration_minutes (5–240), slot_increment_minutes (5–60), working_hours ≤21 intervals, time_off ≤100 rows}`. Intervals for one weekday must not overlap; end must be after start. Time off is UTC with an optional ≤200-char reason. Audited `appointment.availability.update`. |
 | GET | `/api/v1/appointments/slots` | `appointment:read` | Required `date=YYYY-MM-DD` (today … +366), optional `doctor_id` (required for Admin and read-only Nurse). Returns slots at the configured increment across the day's working intervals: `{start_at, end_at, local_start, local_end, available, reason: available|past|booked|time_off|outside_hours}`. Slots are display/booking suggestions; `POST /appointments` revalidates. |
+| POST | `/api/v1/appointments/patient-suggestions` | `patient:read` | Body `{text}` (3–2000 chars). Deterministic “Did you mean?” patient corrections for an editable voice transcript: up to 3 `{display_name, mrn, matched_name_text, matched_mrn_text}` items. Recognizes spaced/hyphenated MRN forms (for example `M-R-N-0-0-0-1`) and uses a bounded 1,000-patient scan, Bulgarian Cyrillic→Latin transliteration and fuzzy name comparison. Returns no patient ids or clinical data; never writes. Audited `patient.suggest` (metadata only, never the transcript, name or MRN). |
+| POST | `/api/v1/appointments/transcription-corrections` | `appointment:write` | Body `{text, language: "bg"\|"en"}` (3–2000 chars). Read-only “Did you mean?” analysis for an editable voice transcript. Uses the deployment’s existing appointment-type values for conservative vocabulary checks and the existing configured LLM provider for text-only phonetic/lexical suggestions. Raw audio is never sent. Exact authorized patient names and MRN-like identifiers are replaced with placeholders before any external model call; patient-name corrections remain in the deterministic authorized endpoint above. Returns `{language, has_suggestions, analysis_available, model, suggestions: [{original_text, suggested_text, reason, confidence: high\|medium\|low, category}]}` with at most 4 suggestions. Every `original_text` must be an exact substring of the submitted transcript; malformed/HTML/placeholder/overlapping output is rejected. If the model is unavailable or malformed, deterministic suggestions may still return with `analysis_available: false`. Rate limited 6/min per user. It never writes, applies, or confirms anything; the doctor must accept each suggestion. Audited `appointment.correction` and an operational metadata event only; never the transcript or suggestion content. |
 | POST | `/api/v1/appointments/interpret` | `appointment:write` | Optional `doctor_id` (required for Admin). Body `{text}` (3–2000 chars). Calls the LLM **with `tools=[]`** and returns a **non-persisted proposal**: resolved/ambiguous patient candidates, clinic-local `date`/`start_time`, UTC `start_at`/`end_at`, duration, type, notes, `missing_fields`, `warnings`, `can_confirm`, `model`, `ai_generated: true`. The server resolves patients through the existing read-only MCP tool `search_authorized_patients`, converts local time to UTC, and runs the same slot/conflict checks. It NEVER creates or mutates an appointment; confirmation is a separate `POST /appointments` with explicit doctor action and full revalidation. Rate limited 10/min per user. `503` when the LLM is disabled/unreachable; `403` on guardrail block; `400` for malformed text. Audited as `appointment.ai.propose` (metadata only, never the text). |
-| POST | `/api/v1/voice/transcriptions` | `appointment:write` | `multipart/form-data` with `file` (audio) and `language` (`en` or `bg`). The global 1 MiB body limit is raised **only for this exact route** to `VOICE_MAX_UPLOAD_BYTES` (default 4 MiB; hard ceiling 8 MiB). Audio is streamed to a private temp directory, checked with FFprobe, converted with FFmpeg to 16 kHz mono PCM WAV, and sent to the private whisper.cpp service; `VOICE_MAX_DURATION_SECONDS` (default 60) bounds duration. Response `{text, language, model, duration_seconds}`. Audio and transcripts are never persisted, logged, or audited. `400` for unsupported/empty/corrupt/too-long audio; `429` when the per-user transcription limiter is saturated; `503` when speech recognition is not configured/unreachable. `text` is editable in the browser; final scheduling still requires an explicit appointment create. |
+| POST | `/api/v1/voice/transcriptions` | `appointment:write` | `multipart/form-data` with `file` (audio) and `language` (`en`, `bg`, or `auto`). `auto` lets the private whisper.cpp Base multilingual model detect Bulgarian or English; a manual value overrides detection. The global 1 MiB body limit is raised **only for this exact route** to `VOICE_MAX_UPLOAD_BYTES` (default 4 MiB; hard ceiling 8 MiB). Audio is streamed to a private temp directory, checked with FFprobe, converted with FFmpeg to 16 kHz mono PCM WAV, and sent to the private whisper.cpp service with `verbose_json`; `VOICE_MAX_DURATION_SECONDS` (default 60) bounds duration. Response `{text, language, model, duration_seconds}`, where `language` is the detected/selected code (`bg` or `en`). If auto-detection returns any other language, the request is rejected with `400`; only Bulgarian and English transcripts are accepted. Audio and transcripts are never persisted, logged, or audited. `400` for unsupported/empty/corrupt/too-long audio; `429` when the per-user transcription limiter is saturated; `503` when speech recognition is not configured/unreachable. `text` is editable in the browser; final scheduling still requires an explicit appointment create. |
+
+**Change record (2026-11-11):** the active list now filters by actual
+`scheduling.appointment.end_at`; completed/no-show rows leave the active view
+immediately, while cancelled rows retain the five-minute grace period. Added
+the retained history list, lifecycle-events endpoint, `appointment:export`
+permission and CSV export. Expiration does not mutate status or delete rows.
+No existing appointment record or `calendar_removed_at` semantics were removed.
 
 **Visit catalogue.** The appointment form offers 19 suggested visit types
 (New Patient Consultation 45 min, General Consultation 30, Follow-up Visit 20,
@@ -691,8 +723,8 @@ analytics page and is now enforced by `GET /api/v1/analytics/summary` (see
 | `patient:read` | ✔ | ✔ | ✔ |
 | `patient:write` | ✔ | ✖ | ✔ |
 | `patient:delete` | ✖ | ✖ | ✔ |
-| `message:read` | ✔ | ✖ | ✔ |
-| `message:write` | ✔ | ✖ | ✔ |
+| `message:read` | ✔ | ✔ | ✔ |
+| `message:write` | ✔ | ✔ | ✔ |
 | `lab:read` | ✔ | ✔ | ✔ |
 | `prescription:read` | ✔ | ✔ | ✔ |
 | `staff:read` | ✖ | ✖ | ✔ |
@@ -704,16 +736,18 @@ analytics page and is now enforced by `GET /api/v1/analytics/summary` (see
 | `appointment:read` | ✔ | ✔ | ✔ |
 | `appointment:write` | ✔ | ✖ | ✔ |
 | `appointment:manage_availability` | ✔ | ✖ | ✔ |
+| `appointment:export` | ✔ | ✖ | ✔ |
 
-Deny by default. `nurse` is least-privilege clinical read with **read-only**
-clinic-wide appointments (`appointment:read` only; no staff/audit
-administration, no appointment writes or availability management).
+Deny by default. `nurse` is least-privilege clinical read with internal staff
+messaging and **read-only** clinic-wide appointments (`appointment:read` only;
+no staff/audit administration, no appointment writes, availability management
+or history export).
 `clinical_admin` (Admin) holds **every** permission including clinical reads.
 Doctors may read/write only their own calendar; the Admin may act across
 doctors and must name `doctor_id` for scoped appointment actions. Nurses may
 read the clinic-wide schedule and, for availability/slots, must name a doctor;
-their write/availability/voice requests remain `403`. There are now **16**
-permission keys (the seed/tests assert 16).
+their write/availability/voice requests remain `403`. There are now **17**
+permission keys (the seed/tests assert 17).
 
 The MCP server remains at exactly **seven read-only tools**. Appointment
 scheduling is deliberately not exposed as an MCP tool: the AI interpreter uses

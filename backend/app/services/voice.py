@@ -18,12 +18,13 @@ import base64
 import json
 import logging
 import math
+import re
 import tempfile
 import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from fastapi import UploadFile
@@ -63,11 +64,67 @@ voice_rate_limiter = SlidingWindowRateLimiter(
 
 
 @dataclass(frozen=True)
+class WhisperResult:
+    """The transcribed text plus the language whisper detected or was given."""
+
+    text: str
+    language: str
+
+
+@dataclass(frozen=True)
 class TranscriptionResult:
     text: str
     language: Literal["en", "bg"]
     model: str
     duration_seconds: float
+
+
+_WHISPER_LANGUAGE_ALIASES = {
+    "en": "en",
+    "eng": "en",
+    "english": "en",
+    "bg": "bg",
+    "bul": "bg",
+    "bulgarian": "bg",
+}
+_LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2,8}$")
+_CYRILLIC_RE = re.compile(r"[А-Яа-яЁё]")
+
+
+def _detected_language(payload: dict[str, Any], *, requested: str, text: str) -> str:
+    """Return the language whisper detected, or the doctor's manual choice.
+
+    `verbose_json` exposes `language_probabilities` and `detected_language`.
+    A fixed request language always wins (the doctor explicitly overrode
+    detection); `auto` trusts the model and falls back to the transcript's
+    script only when the response carries no usable language field.
+    """
+    if requested in {"en", "bg"}:
+        return requested
+
+    probabilities = payload.get("language_probabilities")
+    if isinstance(probabilities, dict) and probabilities:
+        candidates = [
+            (str(code).strip().lower(), value)
+            for code, value in probabilities.items()
+            if isinstance(code, str) and isinstance(value, (int, float))
+        ]
+        if candidates:
+            code = max(candidates, key=lambda item: item[1])[0]
+            if _LANGUAGE_CODE_RE.fullmatch(code):
+                return code
+
+    for key in ("detected_language", "language"):
+        raw = payload.get(key)
+        if isinstance(raw, str):
+            normalized = raw.strip().lower()
+            alias = _WHISPER_LANGUAGE_ALIASES.get(normalized)
+            if alias:
+                return alias
+            if _LANGUAGE_CODE_RE.fullmatch(normalized):
+                return normalized
+
+    return "bg" if _CYRILLIC_RE.search(text) else "en"
 
 
 class _ToolFailure(Exception):
@@ -136,42 +193,120 @@ async def _persist_upload(upload: UploadFile, target: Path, *, max_bytes: int) -
     return total
 
 
-async def _probe_duration(path: Path, *, timeout: float) -> float:
+def _parse_duration(stdout: bytes) -> float | None:
+    """Parse an ffprobe duration value; `N/A` and non-positive values are unknown."""
+    try:
+        text = stdout.decode("ascii", errors="strict").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text or text.upper() in {"N/A", "NAN"}:
+        return None
+    first = text.splitlines()[0].strip()
+    try:
+        duration = float(first)
+    except ValueError:
+        return None
+    if not math.isfinite(duration) or duration <= 0:
+        return None
+    return duration
+
+
+def _packet_end_seconds(stdout: bytes) -> float | None:
+    """Compute the last packet end time for containers without a duration tag."""
+    try:
+        text = stdout.decode("ascii", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    end = 0.0
+    for line in text.splitlines():
+        parts = line.strip().split(",")
+        if len(parts) < 2:
+            continue
+        try:
+            pts = float(parts[0])
+            duration = float(parts[1]) if parts[1].strip() else 0.0
+        except ValueError:
+            continue
+        if math.isfinite(pts) and math.isfinite(duration) and duration >= 0:
+            end = max(end, pts + duration)
+    return end if end > 0 else None
+
+
+async def _probe_duration(path: Path, *, timeout: float) -> float | None:
+    """Best-effort duration before conversion.
+
+    Browser `MediaRecorder` WebM output is streamed and frequently omits the
+    container/stream duration (`N/A`). That is still valid audio: fall back to
+    the last packet timestamp. If no metadata is available, return None and let
+    the bounded conversion below determine the duration from decoded frames.
+    """
+    for entries, extra in (
+        ("format=duration", []),
+        ("stream=duration", ["-select_streams", "a:0"]),
+    ):
+        code, stdout = await _run_tool(
+            "ffprobe",
+            [
+                "-v",
+                "error",
+                *extra,
+                "-show_entries",
+                entries,
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            timeout=timeout,
+        )
+        if code != 0:
+            raise ValidationFailed("The uploaded file could not be read as audio.")
+        duration = _parse_duration(stdout)
+        if duration is not None:
+            return duration
+
     code, stdout = await _run_tool(
         "ffprobe",
         [
             "-v",
             "error",
+            "-select_streams",
+            "a:0",
             "-show_entries",
-            "format=duration",
+            "packet=pts_time,duration_time",
             "-of",
-            "default=noprint_wrappers=1:nokey=1",
+            "csv=p=0",
             str(path),
         ],
         timeout=timeout,
     )
     if code != 0:
         raise ValidationFailed("The uploaded file could not be read as audio.")
-    try:
-        duration = float(stdout.decode("ascii", errors="strict").strip().splitlines()[0])
-    except (ValueError, IndexError, UnicodeDecodeError):
-        raise ValidationFailed("The uploaded file could not be read as audio.") from None
-    if not math.isfinite(duration) or duration <= _MIN_AUDIO_SECONDS:
-        raise ValidationFailed("The uploaded audio is too short or contains no audio track.")
-    return duration
+    return _packet_end_seconds(stdout)
 
 
-async def _convert_to_pcm_wav(source: Path, target: Path, *, timeout: float) -> float:
-    code, _ = await _run_tool(
-        "ffmpeg",
+async def _convert_to_pcm_wav(
+    source: Path,
+    target: Path,
+    *,
+    timeout: float,
+    max_duration: float | None = None,
+) -> float:
+    args = [
+        "-nostdin",
+        "-v",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-vn",
+    ]
+    if max_duration is not None:
+        # Bound decoding even when the container does not carry a duration.
+        # The caller deliberately sets this slightly above the accepted limit
+        # so a too-long file is truncated to a detectable over-limit duration.
+        args.extend(["-t", f"{max_duration:.3f}"])
+    args.extend(
         [
-            "-nostdin",
-            "-v",
-            "error",
-            "-y",
-            "-i",
-            str(source),
-            "-vn",
             "-ac",
             str(_WAV_CHANNELS),
             "-ar",
@@ -181,9 +316,9 @@ async def _convert_to_pcm_wav(source: Path, target: Path, *, timeout: float) -> 
             "-f",
             "wav",
             str(target),
-        ],
-        timeout=timeout,
+        ]
     )
+    code, _ = await _run_tool("ffmpeg", args, timeout=timeout)
     if code != 0 or not target.is_file():
         raise ValidationFailed("The uploaded audio could not be converted.")
     if target.stat().st_size > _MAX_CONVERTED_BYTES:
@@ -281,10 +416,10 @@ async def _speech_headers(settings: Settings) -> dict[str, str]:
 async def _call_whisper(
     wav_path: Path,
     *,
-    language: Literal["en", "bg"],
+    language: Literal["en", "bg", "auto"],
     settings: Settings,
     transport: httpx.AsyncBaseTransport | None = None,
-) -> str:
+) -> WhisperResult:
     base_url = settings.whisper_base_url
     if not base_url:
         raise DependencyUnavailable(
@@ -302,7 +437,9 @@ async def _call_whisper(
                     headers=headers,
                     data={
                         "language": language,
-                        "response_format": "json",
+                        # verbose_json carries the detected language and its
+                        # probabilities; plain json returns text only.
+                        "response_format": "verbose_json",
                         "temperature": "0",
                     },
                     files={"file": ("audio.wav", audio, "audio/wav")},
@@ -337,16 +474,22 @@ async def _call_whisper(
         raise DependencyUnavailable(
             "Speech recognition returned an unusable response."
         ) from None
-    text = payload.get("text") if isinstance(payload, dict) else None
+    if not isinstance(payload, dict):
+        raise DependencyUnavailable("Speech recognition returned an unusable response.")
+    text = payload.get("text")
     if not isinstance(text, str):
         raise DependencyUnavailable("Speech recognition returned an unusable response.")
-    return text.strip()
+    cleaned = text.strip()
+    return WhisperResult(
+        text=cleaned,
+        language=_detected_language(payload, requested=language, text=cleaned),
+    )
 
 
 async def transcribe_upload(
     *,
     upload: UploadFile,
-    language: Literal["en", "bg"],
+    language: Literal["en", "bg", "auto"],
     settings: Settings,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> TranscriptionResult:
@@ -362,27 +505,41 @@ async def transcribe_upload(
         await _persist_upload(upload, source, max_bytes=max_bytes)
 
         timeout = float(settings.voice_ffmpeg_timeout_seconds)
+        allowed_duration = (
+            settings.voice_max_duration_seconds + _MAX_DURATION_TOLERANCE_SECONDS
+        )
         probed_duration = await _probe_duration(source, timeout=timeout)
-        if probed_duration > settings.voice_max_duration_seconds + _MAX_DURATION_TOLERANCE_SECONDS:
+        if probed_duration is not None and probed_duration > allowed_duration:
             raise ValidationFailed(
                 f"Audio must be no longer than {settings.voice_max_duration_seconds} seconds."
             )
 
-        duration = await _convert_to_pcm_wav(source, converted, timeout=timeout)
-        if duration > settings.voice_max_duration_seconds + _MAX_DURATION_TOLERANCE_SECONDS:
+        duration = await _convert_to_pcm_wav(
+            source,
+            converted,
+            timeout=timeout,
+            # Leave a margin above the accepted limit so a no-metadata source
+            # longer than the limit decodes to a duration we can reject rather
+            # than being silently truncated to an apparently valid length.
+            max_duration=allowed_duration + 1.0,
+        )
+        if duration > allowed_duration:
             raise ValidationFailed(
                 f"Audio must be no longer than {settings.voice_max_duration_seconds} seconds."
             )
 
-        text = (
-            await _call_whisper(
-                converted, language=language, settings=settings, transport=transport
+        whisper_result = await _call_whisper(
+            converted, language=language, settings=settings, transport=transport
+        )
+        if whisper_result.language not in {"en", "bg"}:
+            raise ValidationFailed(
+                "Speech recognition supports Bulgarian and English only. "
+                "Please speak in Bulgarian or English, or choose a language manually."
             )
-        ).strip()
 
     return TranscriptionResult(
-        text=text,
-        language=language,
+        text=whisper_result.text.strip(),
+        language=whisper_result.language,
         model=settings.whisper_model_name,
         duration_seconds=round(duration, 2),
     )

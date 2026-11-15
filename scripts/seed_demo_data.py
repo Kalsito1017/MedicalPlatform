@@ -549,6 +549,7 @@ PERMISSION_SPECS: tuple[tuple[str, str], ...] = (
     ("appointment:read", "View the authorized appointment calendar."),
     ("appointment:write", "Create, reschedule and cancel appointments."),
     ("appointment:manage_availability", "Manage doctor working hours and time off."),
+    ("appointment:export", "Export authorized appointment history."),
 )
 
 # Test catalog categories for the 17 LAB_TESTS codes (human-facing Bulgarian

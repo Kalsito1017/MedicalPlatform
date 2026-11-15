@@ -12,7 +12,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
@@ -23,6 +23,7 @@ from app.models.scheduling import (
     ACTIVE_APPOINTMENT_STATUSES,
     APPOINTMENT_STATUSES,
     Appointment,
+    AppointmentEvent,
     DoctorSchedule,
     TimeOff,
     WorkingHours,
@@ -31,6 +32,9 @@ from app.models.scheduling import (
 DEFAULT_DURATION_MINUTES = 30
 DEFAULT_SLOT_INCREMENT_MINUTES = 30
 MAX_RANGE_DAYS = 62
+HISTORY_MAX_RANGE_DAYS = 366
+HISTORY_EXPORT_MAX_ROWS = 5000
+PAST_UNMARKED = "past_unmarked"
 # Cancelled appointments clutter the calendar but remain in the scheduling
 # record and audit history. They disappear from calendar list responses after
 # this interval; an Admin may also remove one immediately.
@@ -80,6 +84,20 @@ def _validate_duration(duration_minutes: int) -> None:
             f"Appointment duration must be between {MIN_DURATION_MINUTES} and "
             f"{MAX_DURATION_MINUTES} minutes."
         )
+
+
+def _search_pattern(term: str) -> str:
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def appointment_display_status(
+    status: str, end_at: datetime, *, now: datetime | None = None
+) -> str:
+    """Derived, non-persisted history label for an unmarked past visit."""
+    if status in ACTIVE_APPOINTMENT_STATUSES and end_at <= (now or utc_now()):
+        return PAST_UNMARKED
+    return status
 
 
 async def ensure_doctor(db: AsyncSession, doctor_id: uuid.UUID) -> StaffUser:
@@ -444,6 +462,53 @@ async def remove_from_calendar(db: AsyncSession, row: Appointment) -> bool:
     return True
 
 
+async def add_appointment_event(
+    db: AsyncSession,
+    *,
+    appointment_id: uuid.UUID,
+    event_type: str,
+    actor_user_id: uuid.UUID | None,
+    request_id: str | None,
+    old_start_at: datetime | None = None,
+    old_end_at: datetime | None = None,
+    new_start_at: datetime | None = None,
+    new_end_at: datetime | None = None,
+    old_status: str | None = None,
+    new_status: str | None = None,
+) -> AppointmentEvent:
+    """Append one immutable lifecycle event (never clinical notes)."""
+    event = AppointmentEvent(
+        appointment_id=appointment_id,
+        event_type=event_type,
+        actor_user_id=actor_user_id,
+        old_start_at=_as_utc(old_start_at) if old_start_at is not None else None,
+        old_end_at=_as_utc(old_end_at) if old_end_at is not None else None,
+        new_start_at=_as_utc(new_start_at) if new_start_at is not None else None,
+        new_end_at=_as_utc(new_end_at) if new_end_at is not None else None,
+        old_status=old_status,
+        new_status=new_status,
+        request_id=request_id,
+    )
+    db.add(event)
+    await db.flush()
+    return event
+
+
+async def list_appointment_events(
+    db: AsyncSession, appointment_id: uuid.UUID, *, limit: int = 100
+) -> list[tuple[AppointmentEvent, str | None]]:
+    rows = (
+        await db.execute(
+            select(AppointmentEvent, StaffUser.display_name)
+            .outerjoin(StaffUser, StaffUser.id == AppointmentEvent.actor_user_id)
+            .where(AppointmentEvent.appointment_id == appointment_id)
+            .order_by(AppointmentEvent.created_at, AppointmentEvent.id)
+            .limit(limit)
+        )
+    ).all()
+    return [(event, actor_name) for event, actor_name in rows]
+
+
 async def list_appointments(
     db: AsyncSession,
     *,
@@ -461,10 +526,12 @@ async def list_appointments(
         raise ValidationFailed("The appointment range end must be after start.")
     if end - start > timedelta(days=MAX_RANGE_DAYS):
         raise ValidationFailed(f"The appointment range may not exceed {MAX_RANGE_DAYS} days.")
-    # Calendar visibility: an explicit removal always hides the row; a
-    # cancelled row otherwise disappears after the short visibility window.
-    # The row is never deleted, and the detail endpoint remains authoritative.
-    cancelled_cutoff = utc_now() - timedelta(minutes=CANCELLED_CALENDAR_VISIBLE_MINUTES)
+    # Active calendar visibility: scheduled/confirmed rows remain until their
+    # actual end_at. Completed/no-show rows are historical; cancelled rows keep
+    # their existing five-minute calendar grace period. Explicit Admin removal
+    # always hides a cancelled row. Nothing is deleted.
+    now = utc_now()
+    cancelled_cutoff = now - timedelta(minutes=CANCELLED_CALENDAR_VISIBLE_MINUTES)
     filters = [
         Appointment.start_at < end,
         Appointment.end_at > start,
@@ -473,8 +540,14 @@ async def list_appointments(
         ),
         Appointment.calendar_removed_at.is_(None),
         or_(
-            Appointment.status != "cancelled",
-            Appointment.updated_at >= cancelled_cutoff,
+            and_(
+                Appointment.status.in_(ACTIVE_APPOINTMENT_STATUSES),
+                Appointment.end_at > now,
+            ),
+            and_(
+                Appointment.status == "cancelled",
+                Appointment.updated_at >= cancelled_cutoff,
+            ),
         ),
     ]
     if doctor_id is not None:
@@ -507,6 +580,106 @@ async def list_appointments(
         (
             await db.execute(
                 base.order_by(Appointment.start_at, Appointment.id)
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+    )
+    return rows, int(total)
+
+
+async def list_appointment_history(
+    db: AsyncSession,
+    *,
+    start: datetime | None,
+    end: datetime | None,
+    doctor_id: uuid.UUID | None,
+    patient_id: uuid.UUID | None,
+    status: str | None,
+    visit_type: str | None,
+    query: str | None,
+    limit: int,
+    offset: int,
+) -> tuple[list[tuple[Appointment, str, str, str]], int]:
+    """Bounded historical records, including past unmarked visits.
+
+    The active-calendar 62-day range cap is deliberately not applied here. An
+    optional date range is capped separately at 366 days; without it, pagination
+    bounds the result. Rows are never removed by this query.
+    """
+    now = utc_now()
+    if (start is None) != (end is None):
+        raise ValidationFailed("History start and end must be provided together.")
+    if start is not None and end is not None:
+        start = _as_utc(start)
+        end = _as_utc(end)
+        if end <= start:
+            raise ValidationFailed("The history range end must be after start.")
+        if end - start > timedelta(days=HISTORY_MAX_RANGE_DAYS):
+            raise ValidationFailed(
+                f"The history range may not exceed {HISTORY_MAX_RANGE_DAYS} days."
+            )
+    if status is not None and status not in (*APPOINTMENT_STATUSES, PAST_UNMARKED):
+        raise ValidationFailed("Unknown appointment status.")
+    if visit_type is not None and len(visit_type) > 100:
+        raise ValidationFailed("Visit type filter is too long.")
+    search = query.strip() if query else None
+
+    filters = [
+        Appointment.patient_id.in_(select(Patient.id).where(Patient.not_deleted())),
+        or_(
+            Appointment.end_at <= now,
+            Appointment.status.in_(("completed", "no_show", "cancelled")),
+        ),
+    ]
+    if start is not None and end is not None:
+        filters.append(Appointment.start_at >= start)
+        filters.append(Appointment.start_at < end)
+    if doctor_id is not None:
+        filters.append(Appointment.doctor_id == doctor_id)
+    if patient_id is not None:
+        filters.append(Appointment.patient_id == patient_id)
+    if status == PAST_UNMARKED:
+        filters.append(Appointment.status.in_(ACTIVE_APPOINTMENT_STATUSES))
+        filters.append(Appointment.end_at <= now)
+    elif status is not None:
+        filters.append(Appointment.status == status)
+    if visit_type:
+        filters.append(Appointment.appointment_type == visit_type)
+    if search:
+        pattern = _search_pattern(search)
+        filters.append(
+            or_(
+                Patient.display_name.ilike(pattern, escape="\\"),
+                Patient.mrn.ilike(pattern, escape="\\"),
+            )
+        )
+
+    base = (
+        select(
+            Appointment,
+            Patient.display_name.label("patient_display_name"),
+            Patient.mrn.label("patient_mrn"),
+            StaffUser.display_name.label("doctor_display_name"),
+        )
+        .join(Patient, Patient.id == Appointment.patient_id)
+        .join(StaffUser, StaffUser.id == Appointment.doctor_id)
+        .where(*filters)
+    )
+    total = (
+        await db.scalar(
+            select(func.count()).select_from(
+                select(Appointment.id)
+                .join(Patient, Patient.id == Appointment.patient_id)
+                .where(*filters)
+                .subquery()
+            )
+        )
+    ) or 0
+    rows = list(
+        (
+            await db.execute(
+                base.order_by(Appointment.start_at.desc(), Appointment.id.desc())
                 .limit(limit)
                 .offset(offset)
             )

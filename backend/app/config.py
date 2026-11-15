@@ -31,9 +31,11 @@ SENSITIVE_FIELD_MARKERS: tuple[str, ...] = (
 )
 REDACTED = "[REDACTED]"
 
-# Absolute ceiling for the route-specific voice upload allowance. The body-size
-# middleware clamps the configured value to this constant.
-VOICE_MAX_UPLOAD_HARD_LIMIT = 8 * 1024 * 1024
+# Absolute ceiling for any exact-route upload allowance. The body-size
+# middleware clamps every configured route value to this constant.
+MAX_UPLOAD_HARD_LIMIT = 8 * 1024 * 1024
+VOICE_MAX_UPLOAD_HARD_LIMIT = MAX_UPLOAD_HARD_LIMIT
+MESSAGE_ATTACHMENT_HARD_LIMIT = MAX_UPLOAD_HARD_LIMIT
 
 _DSN_CREDENTIALS_RE = re.compile(r"(://[^/\s:@]+):[^/\s@]+@")
 
@@ -94,7 +96,7 @@ class Settings(BaseSettings):
     # --- Voice transcription (optional self-hosted whisper.cpp) ---
     whisper_base_url: str | None = None
     whisper_timeout_seconds: int = 45
-    whisper_model_name: str = "tiny"
+    whisper_model_name: str = "base"
     whisper_auth_mode: Literal["none", "bearer", "gcp_iam"] = "none"
     whisper_bearer_token: SecretStr | None = None
     whisper_audience: str | None = None
@@ -105,6 +107,11 @@ class Settings(BaseSettings):
     voice_max_duration_seconds: int = 60
     voice_ffmpeg_timeout_seconds: int = 30
 
+    # --- Staff-message attachments ---
+    # Stored in PostgreSQL with the message; the exact-route body allowance is
+    # the hard ceiling, while this file-size limit bounds the stored bytes.
+    message_attachment_max_bytes: int = 5 * 1024 * 1024
+
     @field_validator("clinic_timezone")
     @classmethod
     def _validate_clinic_timezone(cls, value: str) -> str:
@@ -113,6 +120,30 @@ class Settings(BaseSettings):
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("CLINIC_TIMEZONE must be a valid IANA timezone name.") from exc
         return value
+
+    @field_validator("public_origin")
+    @classmethod
+    def _validate_public_origin(cls, value: str) -> str:
+        """The canonical public origin used by robots.txt and sitemap.xml.
+
+        It must be an origin only (no path/query/fragment) so generated
+        absolute URLs cannot be ambiguous. The deployment owner sets it to the
+        verified production origin; local defaults remain valid.
+        """
+        parsed = urlparse(value)
+        if (
+            parsed.scheme not in ("http", "https")
+            or not parsed.netloc
+            or parsed.path not in ("", "/")
+            or parsed.query
+            or parsed.fragment
+            or parsed.username
+            or parsed.password
+        ):
+            raise ValueError(
+                "PUBLIC_ORIGIN must be an http(s) origin without a path, query, or fragment."
+            )
+        return value.rstrip("/")
 
     @field_validator("voice_max_upload_bytes")
     @classmethod
@@ -129,6 +160,16 @@ class Settings(BaseSettings):
     def _validate_voice_duration(cls, value: int) -> int:
         if not 1 <= value <= 300:
             raise ValueError("VOICE_MAX_DURATION_SECONDS must be between 1 and 300.")
+        return value
+
+    @field_validator("message_attachment_max_bytes")
+    @classmethod
+    def _validate_message_attachment_size(cls, value: int) -> int:
+        if not 64 * 1024 <= value <= MESSAGE_ATTACHMENT_HARD_LIMIT:
+            raise ValueError(
+                "MESSAGE_ATTACHMENT_MAX_BYTES must be between 65536 and "
+                f"{MESSAGE_ATTACHMENT_HARD_LIMIT} bytes."
+            )
         return value
 
     @field_validator("whisper_timeout_seconds", "voice_ffmpeg_timeout_seconds")

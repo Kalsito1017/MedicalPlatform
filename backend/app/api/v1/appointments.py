@@ -10,8 +10,11 @@ before the `/{appointment_id}` route so FastAPI does not swallow them as UUIDs.
 """
 from __future__ import annotations
 
+import csv
+import io
+import time
 import uuid
-from datetime import date as date_type, datetime, timedelta
+from datetime import date as date_type, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 
@@ -34,19 +37,28 @@ from app.logs.service import record_operational_event
 from app.schemas.appointment import (
     AppointmentConfigOut,
     AppointmentCreate,
+    AppointmentEventOut,
     AppointmentInterpretRequest,
     AppointmentOut,
     AppointmentProposalOut,
     AppointmentUpdate,
     AvailabilityOut,
     AvailabilityWrite,
+    PatientSuggestionListOut,
+    PatientSuggestionOut,
+    PatientSuggestionRequest,
     SlotsOut,
     TimeOffOut,
+    TranscriptionCorrectionRequest,
+    TranscriptionCorrectionResponse,
+    TranscriptionCorrectionSuggestionOut,
     WorkingHoursOut,
 )
 from app.schemas.common import Page
 from app.services import appointment_ai
 from app.services import appointments as appointments_service
+from app.services import patient_suggestions
+from app.services import transcription_corrections
 from app.services.access import check_patient_access
 
 router = APIRouter(tags=["appointments"])
@@ -110,8 +122,28 @@ def _appointment_out(row) -> AppointmentOut:
         patient_display_name=str(patient_name),
         patient_mrn=str(patient_mrn),
         doctor_display_name=str(doctor_name),
+        calendar_removed_at=appointment.calendar_removed_at,
         created_at=appointment.created_at,
         updated_at=appointment.updated_at,
+    )
+
+
+def _appointment_event_out(row) -> AppointmentEventOut:
+    event, actor_name = row
+    return AppointmentEventOut(
+        id=event.id,
+        appointment_id=event.appointment_id,
+        event_type=event.event_type,
+        actor_user_id=event.actor_user_id,
+        actor_display_name=str(actor_name) if actor_name else None,
+        old_start_at=event.old_start_at,
+        old_end_at=event.old_end_at,
+        new_start_at=event.new_start_at,
+        new_end_at=event.new_end_at,
+        old_status=event.old_status,
+        new_status=event.new_status,
+        request_id=event.request_id,
+        created_at=event.created_at,
     )
 
 
@@ -169,6 +201,129 @@ async def get_appointment_config(
         timezone=settings.clinic_timezone,
         max_duration_minutes=appointments_service.MAX_DURATION_MINUTES,
         max_range_days=appointments_service.MAX_RANGE_DAYS,
+        history_max_range_days=appointments_service.HISTORY_MAX_RANGE_DAYS,
+    )
+
+
+@router.post(
+    "/appointments/patient-suggestions",
+    response_model=PatientSuggestionListOut,
+)
+async def suggest_patients_for_transcript(
+    body: PatientSuggestionRequest,
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("patient:read")),
+) -> PatientSuggestionListOut:
+    """Return bounded name/MRN corrections for a voice transcript.
+
+    Deterministic, read-only, and limited to patients the caller can already
+    read. Neither the submitted transcript nor the suggestions are logged.
+    """
+    suggestions = await patient_suggestions.suggest_patients(db, text=body.text)
+    await _audit(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="patient.suggest",
+        resource_type="patient",
+        resource_id=None,
+        outcome="success",
+    )
+    return PatientSuggestionListOut(
+        items=[
+            PatientSuggestionOut(
+                display_name=item.display_name,
+                mrn=item.mrn,
+                matched_name_text=item.matched_name_text,
+                matched_mrn_text=item.matched_mrn_text,
+            )
+            for item in suggestions
+        ]
+    )
+
+
+@router.post(
+    "/appointments/transcription-corrections",
+    response_model=TranscriptionCorrectionResponse,
+)
+async def suggest_transcription_corrections(
+    body: TranscriptionCorrectionRequest,
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("appointment:write")),
+) -> TranscriptionCorrectionResponse:
+    """Analyze one transcript for likely speech-recognition mistakes.
+
+    Read-only: it never creates or modifies an appointment. The transcript is
+    not persisted or logged; only bounded metadata is recorded. The existing
+    patient-suggestion endpoint remains the authorized deterministic source for
+    patient-name/MRN alternatives.
+    """
+    started = time.perf_counter()
+    try:
+        result = await transcription_corrections.suggest_corrections(
+            db,
+            text=body.text,
+            language=body.language,
+            principal=principal,
+            request_id=request_id,
+            settings=get_settings(),
+        )
+    except RateLimited:
+        await _audit(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="appointment.correction",
+            resource_type="appointment_transcript",
+            resource_id=None,
+            outcome="denied",
+        )
+        raise
+
+    await _audit(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="appointment.correction",
+        resource_type="appointment_transcript",
+        resource_id=None,
+        outcome="success",
+    )
+    await record_operational_event(
+        event_type="appointment.correction.checked",
+        actor_id=principal.user_uuid,
+        request_id=request_id,
+        outcome="success" if result.analysis_available else "warning",
+        metadata={
+            "language": body.language,
+            "count": len(result.suggestions),
+            "model": result.model or "",
+            "status": "available" if result.analysis_available else "unavailable",
+            "duration_ms": round((time.perf_counter() - started) * 1000),
+        },
+    )
+    return TranscriptionCorrectionResponse(
+        language=result.language,
+        has_suggestions=bool(result.suggestions),
+        suggestions=[
+            TranscriptionCorrectionSuggestionOut(
+                original_text=item.original_text,
+                suggested_text=item.suggested_text,
+                reason=item.reason,
+                confidence=item.confidence,
+                category=item.category,
+            )
+            for item in result.suggestions
+        ],
+        analysis_available=result.analysis_available,
+        model=result.model,
     )
 
 
@@ -449,6 +604,16 @@ async def create_appointment(
             metadata={"reason": "validation"},
         )
         raise
+    await appointments_service.add_appointment_event(
+        db,
+        appointment_id=appointment.id,
+        event_type="created",
+        actor_user_id=principal.user_uuid,
+        request_id=request_id,
+        new_start_at=appointment.start_at,
+        new_end_at=appointment.end_at,
+        new_status=appointment.status,
+    )
     await _audit(
         db,
         request=request,
@@ -462,6 +627,213 @@ async def create_appointment(
     row = await appointments_service.get_appointment_with_names(db, appointment.id)
     assert row is not None
     return _appointment_out(row)
+
+
+@router.get("/appointments/history", response_model=Page[AppointmentOut])
+async def list_appointment_history(
+    db: DbSession,
+    pagination: Pagination,
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    doctor_id: uuid.UUID | None = Query(default=None),
+    patient_id: uuid.UUID | None = Query(default=None),
+    status: str | None = Query(default=None, max_length=32),
+    visit_type: str | None = Query(default=None, max_length=100),
+    q: str | None = Query(default=None, max_length=100),
+    _unknown: None = Depends(
+        reject_unknown_query(
+            "start",
+            "end",
+            "doctor_id",
+            "patient_id",
+            "status",
+            "visit_type",
+            "q",
+            "limit",
+            "offset",
+        )
+    ),
+    principal: Principal = Depends(require_permission("appointment:read")),
+) -> Page[AppointmentOut]:
+    """Historical appointments, including past visits with no recorded outcome."""
+    scoped_doctor = _resolve_read_doctor_id(principal, doctor_id, required=False)
+    if patient_id is not None and not await check_patient_access(principal, patient_id, db=db):
+        raise NotFound()
+    rows, total = await appointments_service.list_appointment_history(
+        db,
+        start=start,
+        end=end,
+        doctor_id=scoped_doctor,
+        patient_id=patient_id,
+        status=status,
+        visit_type=visit_type,
+        query=q,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+    return Page[AppointmentOut](
+        items=[_appointment_out(row) for row in rows],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
+@router.get("/appointments/history/export.csv")
+async def export_appointment_history_csv(
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    doctor_id: uuid.UUID | None = Query(default=None),
+    patient_id: uuid.UUID | None = Query(default=None),
+    status: str | None = Query(default=None, max_length=32),
+    visit_type: str | None = Query(default=None, max_length=100),
+    q: str | None = Query(default=None, max_length=100),
+    _unknown: None = Depends(
+        reject_unknown_query(
+            "start",
+            "end",
+            "doctor_id",
+            "patient_id",
+            "status",
+            "visit_type",
+            "q",
+        )
+    ),
+    principal: Principal = Depends(require_permission("appointment:export")),
+) -> Response:
+    """CSV of persisted history for Doctor/Admin; bounded to one selected range."""
+    if start is None or end is None:
+        raise ValidationFailed("History export requires both start and end.")
+    scoped_doctor = _resolve_read_doctor_id(principal, doctor_id, required=False)
+    if patient_id is not None and not await check_patient_access(principal, patient_id, db=db):
+        raise NotFound()
+    rows, total = await appointments_service.list_appointment_history(
+        db,
+        start=start,
+        end=end,
+        doctor_id=scoped_doctor,
+        patient_id=patient_id,
+        status=status,
+        visit_type=visit_type,
+        query=q,
+        limit=appointments_service.HISTORY_EXPORT_MAX_ROWS + 1,
+        offset=0,
+    )
+    if total > appointments_service.HISTORY_EXPORT_MAX_ROWS:
+        raise ValidationFailed(
+            "The selected history range contains too many appointments; narrow the range."
+        )
+
+    zone = appointments_service.clinic_zone()
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        [
+            "appointment_id",
+            "patient_name",
+            "patient_mrn",
+            "doctor_name",
+            "start_at_utc",
+            "end_at_utc",
+            "start_at_clinic",
+            "end_at_clinic",
+            "visit_type",
+            "duration_minutes",
+            "status",
+            "display_status",
+            "created_at_utc",
+            "updated_at_utc",
+            "calendar_removed_at_utc",
+        ]
+    )
+    labels = {
+        "scheduled": "Scheduled",
+        "confirmed": "Confirmed",
+        "completed": "Completed",
+        "cancelled": "Cancelled",
+        "no_show": "No show",
+        "past_unmarked": "Past — Status not updated",
+    }
+    now = appointments_service.utc_now()
+    for appointment, patient_name, patient_mrn, doctor_name in rows:
+        display = appointments_service.appointment_display_status(
+            appointment.status, appointment.end_at, now=now
+        )
+        writer.writerow(
+            [
+                appointment.id,
+                patient_name,
+                patient_mrn,
+                doctor_name,
+                appointment.start_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                appointment.end_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                appointment.start_at.astimezone(zone).isoformat(),
+                appointment.end_at.astimezone(zone).isoformat(),
+                appointment.appointment_type or "",
+                int((appointment.end_at - appointment.start_at).total_seconds() // 60),
+                appointment.status,
+                labels.get(display, display.replace("_", " ").title()),
+                appointment.created_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                appointment.updated_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                appointment.calendar_removed_at.astimezone(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+                if appointment.calendar_removed_at
+                else "",
+            ]
+        )
+    filename = (
+        "appointment-history-"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.csv"
+    )
+    await _audit(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="appointment.history.export",
+        resource_type="appointment_history",
+        resource_id=None,
+        outcome="success",
+    )
+    return Response(
+        content=output.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/appointments/{appointment_id}/history", response_model=list[AppointmentEventOut])
+async def get_appointment_lifecycle(
+    appointment_id: uuid.UUID,
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("appointment:read")),
+) -> list[AppointmentEventOut]:
+    row = await appointments_service.get_appointment_with_names(db, appointment_id)
+    if row is None:
+        raise NotFound()
+    if not _is_read_all(principal) and row[0].doctor_id != principal.user_uuid:
+        await _audit(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="appointment.denied",
+            resource_type="appointment",
+            resource_id=str(appointment_id),
+            outcome="denied",
+        )
+        raise NotFound()
+    events = await appointments_service.list_appointment_events(db, appointment_id)
+    return [_appointment_event_out(event) for event in events]
 
 
 @router.get("/appointments/{appointment_id}", response_model=AppointmentOut)
@@ -503,9 +875,12 @@ async def update_appointment(
     if row is None or (not _is_admin(principal) and row[0].doctor_id != principal.user_uuid):
         raise NotFound()
     appointment = row[0]
+    old_start = appointment.start_at
+    old_end = appointment.end_at
+    old_status = appointment.status
+    old_type = appointment.appointment_type
+    old_notes = appointment.notes
     action = "appointment.update"
-    if body.start_at is not None and body.start_at != appointment.start_at:
-        action = "appointment.reschedule"
     try:
         await appointments_service.update_appointment(
             db,
@@ -527,6 +902,62 @@ async def update_appointment(
             metadata={"reason": "conflict"},
         )
         raise
+
+    times_changed = appointment.start_at != old_start or appointment.end_at != old_end
+    status_changed = appointment.status != old_status
+    details_changed = (
+        appointment.appointment_type != old_type or appointment.notes != old_notes
+    )
+    if times_changed:
+        await appointments_service.add_appointment_event(
+            db,
+            appointment_id=appointment.id,
+            event_type="rescheduled",
+            actor_user_id=principal.user_uuid,
+            request_id=request_id,
+            old_start_at=old_start,
+            old_end_at=old_end,
+            new_start_at=appointment.start_at,
+            new_end_at=appointment.end_at,
+            old_status=old_status,
+            new_status=appointment.status,
+        )
+    if status_changed:
+        await appointments_service.add_appointment_event(
+            db,
+            appointment_id=appointment.id,
+            event_type="status_changed",
+            actor_user_id=principal.user_uuid,
+            request_id=request_id,
+            old_start_at=old_start,
+            old_end_at=old_end,
+            new_start_at=appointment.start_at,
+            new_end_at=appointment.end_at,
+            old_status=old_status,
+            new_status=appointment.status,
+        )
+        if appointment.status == "completed":
+            action = "appointment.complete"
+        elif appointment.status == "no_show":
+            action = "appointment.no_show"
+        else:
+            action = "appointment.update"
+    elif times_changed:
+        action = "appointment.reschedule"
+    if not times_changed and not status_changed and details_changed:
+        await appointments_service.add_appointment_event(
+            db,
+            appointment_id=appointment.id,
+            event_type="updated",
+            actor_user_id=principal.user_uuid,
+            request_id=request_id,
+            old_start_at=old_start,
+            old_end_at=old_end,
+            new_start_at=appointment.start_at,
+            new_end_at=appointment.end_at,
+            old_status=old_status,
+            new_status=appointment.status,
+        )
     await _audit(
         db,
         request=request,
@@ -553,7 +984,18 @@ async def cancel_appointment(
     row = await appointments_service.get_appointment_with_names(db, appointment_id)
     if row is None or (not _is_admin(principal) and row[0].doctor_id != principal.user_uuid):
         raise NotFound()
-    await appointments_service.cancel_appointment(db, row[0])
+    old_status = row[0].status
+    changed = await appointments_service.cancel_appointment(db, row[0])
+    if changed:
+        await appointments_service.add_appointment_event(
+            db,
+            appointment_id=row[0].id,
+            event_type="status_changed",
+            actor_user_id=principal.user_uuid,
+            request_id=request_id,
+            old_status=old_status,
+            new_status="cancelled",
+        )
     await _audit(
         db,
         request=request,
@@ -589,6 +1031,15 @@ async def remove_from_calendar(
         raise NotFound()
     changed = await appointments_service.remove_from_calendar(db, row[0])
     if changed:
+        await appointments_service.add_appointment_event(
+            db,
+            appointment_id=row[0].id,
+            event_type="calendar_removed",
+            actor_user_id=principal.user_uuid,
+            request_id=request_id,
+            old_status=row[0].status,
+            new_status=row[0].status,
+        )
         await _audit(
             db,
             request=request,

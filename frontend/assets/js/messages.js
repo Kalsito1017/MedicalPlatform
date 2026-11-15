@@ -2,9 +2,11 @@
 // messages.html page module — internal staff-to-staff messages.
 //
 // Endpoints: GET /messages?box=inbox|sent&q=, GET /messages/counts,
-// GET /messages/recipients, POST /messages, POST /messages/{id}/read.
+// GET /messages/recipients, POST /messages, POST /messages/attachments,
+// GET /messages/{id}/attachment, POST /messages/{id}/read.
 // Only the caller's own inbox/sent items are returned; the backend re-checks
-// message:read/message:write. Message text is rendered as text only.
+// message:read/message:write and sender/recipient attachment ownership.
+// Message text is rendered as text only; attachments are always downloads.
 // ---------------------------------------------------------------------------
 
 import * as api from './api.js';
@@ -15,6 +17,12 @@ import * as ui from './ui.js';
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 250;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_ACCEPT = '.pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,.docx,.xlsx';
+const ATTACHMENT_EXTENSIONS = new Set(
+  ATTACHMENT_ACCEPT.split(',').map((value) => value.trim().toLowerCase()),
+);
+const ATTACHMENT_HINT = 'PDF, PNG, JPEG, WebP, TXT, CSV, DOCX or XLSX · up to 5 MB';
 
 const state = {
   user: null,
@@ -26,6 +34,8 @@ const state = {
   q: '',
   loading: false,
   sending: false,
+  composeMode: false,
+  composer: null,
   searchTimer: null,
 };
 
@@ -76,6 +86,29 @@ function messageCounterpart(message) {
     : message.recipient_display_name || 'Unknown recipient';
 }
 
+function messageCounterpartId(message) {
+  return state.box === 'inbox' ? message.sender_id : message.recipient_id;
+}
+
+/** The counterpart directory record (roles/photo) for a message. */
+function counterpartRecord(message) {
+  const id = String(messageCounterpartId(message) || '');
+  const name = messageCounterpart(message);
+  const match = Array.isArray(state.recipients)
+    ? state.recipients.find((person) => String(person.id) === id)
+    : null;
+  return match
+    ? { ...match, display_name: name || match.display_name }
+    : { id, display_name: name, roles: [] };
+}
+
+function roleText(record) {
+  const roles = Array.isArray(record.roles)
+    ? record.roles.map(ui.roleLabel).filter(Boolean)
+    : [];
+  return roles.length > 0 ? roles.join(' · ') : 'Internal staff';
+}
+
 function fullMessageTime(value) {
   return ui.formatDateTime(value) || 'Unknown time';
 }
@@ -93,6 +126,71 @@ function relativeMessageTime(value) {
 
 function messagePreview(body) {
   return String(body || '').replace(/\s+/g, ' ').trim();
+}
+
+function formatFileSize(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value < 0) return 'Unknown size';
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentExtension(name) {
+  const match = /\.([^.]+)$/.exec(String(name || ''));
+  return match ? `.${match[1].toLowerCase()}` : '';
+}
+
+function replyComposerFor(message) {
+  return {
+    mode: 'reply',
+    messageId: message.id,
+    recipientId: String(messageCounterpartId(message) || ''),
+    recipientName: messageCounterpart(message),
+    subject: message.subject ? `Re: ${message.subject}` : '',
+    body: '',
+    file: null,
+    error: '',
+  };
+}
+
+function newComposer() {
+  return {
+    mode: 'new',
+    messageId: null,
+    recipientId: '',
+    recipientName: '',
+    subject: '',
+    body: '',
+    file: null,
+    error: '',
+  };
+}
+
+function composerAttachmentCard(attachment, messageId) {
+  if (!attachment) return null;
+  const href = api.buildUrl(
+    `/messages/${encodeURIComponent(messageId)}/attachment`,
+  );
+  return ui.el('div', { class: 'message-attachment' },
+    ui.el('span', { class: 'message-attachment__icon', 'aria-hidden': 'true' },
+      ui.icon('file'),
+    ),
+    ui.el('span', { class: 'message-attachment__info' },
+      ui.el('span', { class: 'message-attachment__name', text: attachment.filename }),
+      ui.el('span', {
+        class: 'message-attachment__size',
+        text: formatFileSize(attachment.size_bytes),
+      }),
+    ),
+    ui.el('a', {
+      class: 'message-attachment__download',
+      href,
+      download: attachment.filename,
+      title: `Download ${attachment.filename}`,
+      'aria-label': `Download ${attachment.filename}`,
+    }, ui.icon('download', 'icon--sm')),
+  );
 }
 
 function messageEmptyState(region) {
@@ -126,8 +224,13 @@ function renderMessageRows() {
   for (const message of state.messages) {
     const unread = state.box === 'inbox' && !message.read_at;
     const counterpart = messageCounterpart(message);
+    const record = counterpartRecord(message);
     const subject = message.subject?.trim() || '(No subject)';
     const time = message.created_at;
+    const preview = messagePreview(message.body);
+    const previewText = message.attachment
+      ? `${preview ? `${preview} · ` : ''}${message.attachment.filename}`
+      : preview;
     const row = ui.el('button', {
       type: 'button',
       class: `message-row${unread ? ' message-row--unread' : ''}${
@@ -137,7 +240,7 @@ function renderMessageRows() {
       'aria-label': `${unread ? 'Unread message. ' : ''}${counterpart}: ${subject}`,
       onClick: () => selectMessage(message),
     },
-      ui.el('span', { class: 'message-row__avatar' }, ui.avatar(counterpart, { size: 'sm' })),
+      ui.el('span', { class: 'message-row__avatar' }, ui.avatarForUser(record, { size: 'lg' })),
       ui.el('span', { class: 'message-row__content' },
         ui.el('span', { class: 'message-row__top' },
           ui.el('span', { class: 'message-row__person', text: counterpart }),
@@ -149,7 +252,7 @@ function renderMessageRows() {
           }),
         ),
         ui.el('span', { class: 'message-row__subject', text: subject }),
-        ui.el('span', { class: 'message-row__preview', text: messagePreview(message.body) }),
+        ui.el('span', { class: 'message-row__preview', text: previewText }),
       ),
       unread
         ? ui.el('span', { class: 'message-row__unread', 'aria-hidden': 'true' })
@@ -169,20 +272,301 @@ function emptyDetailNode() {
   );
 }
 
+function messageIsOutgoing(message) {
+  return String(message.sender_id) === String(state.user && state.user.id);
+}
+
+function newComposeHeader() {
+  return ui.el('header', { class: 'message-detail__header message-detail__header--compose' },
+    ui.el('div', { class: 'message-detail__identity' },
+      ui.el('p', { class: 'message-detail__sender', text: 'New message' }),
+      ui.el('p', {
+        class: 'message-detail__recipient',
+        text: 'Send a private message to another staff member.',
+      }),
+    ),
+    ui.el('div', { class: 'message-detail__head-actions' },
+      ui.el('button', {
+        class: 'link-button',
+        type: 'button',
+        onClick: () => cancelCompose(),
+      }, 'Cancel'),
+    ),
+  );
+}
+
+function composerNode() {
+  const draft = state.composer;
+  if (!draft) return null;
+
+  const errorNode = ui.el('p', {
+    class: 'field-error message-composer__error',
+    id: 'message-compose-error',
+    role: 'alert',
+  });
+  errorNode.hidden = !draft.error;
+  errorNode.textContent = draft.error || '';
+  const showError = (message) => {
+    draft.error = message;
+    errorNode.textContent = message || '';
+    errorNode.hidden = !message;
+  };
+
+  const recipients = Array.isArray(state.recipients) ? state.recipients : [];
+  const recipientSelect = draft.mode === 'new'
+    ? ui.el('select', {
+        id: 'message-recipient',
+        class: 'message-composer__recipient',
+        'aria-label': 'Recipient',
+      },
+      ui.el('option', { value: '', text: 'Choose a recipient' }),
+      recipients.map((person) => ui.el('option', {
+        value: person.id,
+        text: recipientLabel(person),
+      })),
+    )
+    : null;
+  if (recipientSelect) {
+    recipientSelect.value = draft.recipientId || '';
+    recipientSelect.addEventListener('change', () => {
+      draft.recipientId = recipientSelect.value || '';
+      const selected = recipients.find(
+        (person) => String(person.id) === draft.recipientId,
+      );
+      draft.recipientName = selected ? selected.display_name : '';
+    });
+  }
+
+  const subjectInput = ui.el('input', {
+    id: 'message-subject',
+    class: 'message-composer__subject',
+    type: 'text',
+    maxlength: 200,
+    placeholder: 'Subject (optional)',
+    value: draft.subject,
+    autocomplete: 'off',
+  });
+  subjectInput.addEventListener('input', () => {
+    draft.subject = subjectInput.value;
+  });
+
+  const bodyInput = ui.el('textarea', {
+    id: 'message-body',
+    class: 'message-composer__body',
+    rows: 1,
+    maxlength: 5000,
+    placeholder: draft.mode === 'new'
+      ? 'Write a message…'
+      : `Reply to ${draft.recipientName}…`,
+  });
+  bodyInput.value = draft.body;
+  bodyInput.addEventListener('input', () => {
+    draft.body = bodyInput.value;
+  });
+
+  const fileInput = ui.el('input', {
+    id: 'message-file',
+    type: 'file',
+    accept: ATTACHMENT_ACCEPT,
+    hidden: true,
+  });
+  const attachmentHost = ui.el('div', {
+    class: 'message-composer__attachment',
+    id: 'message-attachment-preview',
+  });
+  const renderSelectedFile = () => {
+    ui.clear(attachmentHost);
+    if (!draft.file) return;
+    attachmentHost.append(
+      ui.el('div', { class: 'message-attachment-chip' },
+        ui.el('span', { class: 'message-attachment-chip__icon', 'aria-hidden': 'true' },
+          ui.icon('file', 'icon--sm'),
+        ),
+        ui.el('span', { class: 'message-attachment-chip__info' },
+          ui.el('span', { class: 'message-attachment-chip__name', text: draft.file.name }),
+          ui.el('span', {
+            class: 'message-attachment-chip__size',
+            text: formatFileSize(draft.file.size),
+          }),
+        ),
+        ui.el('button', {
+          class: 'message-composer__icon message-composer__icon--remove',
+          type: 'button',
+          'aria-label': 'Remove attachment',
+          title: 'Remove attachment',
+          onClick: () => {
+            draft.file = null;
+            fileInput.value = '';
+            renderSelectedFile();
+            bodyInput.focus();
+          },
+        }, ui.icon('x', 'icon--sm')),
+      ),
+    );
+  };
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    if (!ATTACHMENT_EXTENSIONS.has(attachmentExtension(file.name))) {
+      showError(`Unsupported attachment type. Use ${ATTACHMENT_HINT}.`);
+      fileInput.value = '';
+      return;
+    }
+    if (Number(file.size) > MAX_ATTACHMENT_BYTES) {
+      showError('The attachment exceeds the 5 MB limit.');
+      fileInput.value = '';
+      return;
+    }
+    draft.file = file;
+    showError('');
+    renderSelectedFile();
+  });
+
+  const attachButton = ui.el('button', {
+    class: 'message-composer__icon',
+    type: 'button',
+    id: 'message-attach',
+    'aria-label': 'Attach a file',
+    title: 'Attach a file',
+    onClick: () => {
+      if (typeof fileInput.click === 'function') fileInput.click();
+    },
+  }, ui.icon('paperclip'));
+
+  const sendButton = ui.el('button', {
+    class: 'message-composer__send',
+    type: 'submit',
+    id: 'message-send',
+    'aria-label': 'Send message',
+    title: 'Send message',
+  }, ui.icon('send', 'icon--sm'));
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (state.sending) return;
+    showError('');
+    if (recipientSelect) {
+      draft.recipientId = recipientSelect.value || '';
+      const selected = recipients.find(
+        (person) => String(person.id) === draft.recipientId,
+      );
+      draft.recipientName = selected ? selected.display_name : '';
+    }
+    if (!draft.recipientId) {
+      showError('Choose a recipient.');
+      if (recipientSelect) recipientSelect.focus();
+      return;
+    }
+    const bodyValue = bodyInput.value.trim();
+    draft.body = bodyInput.value;
+    draft.subject = subjectInput.value;
+    if (!bodyValue && !draft.file) {
+      showError('Write a message or attach a file.');
+      bodyInput.focus();
+      return;
+    }
+    if (bodyValue.length > 5000) {
+      showError('The message must be at most 5000 characters.');
+      bodyInput.focus();
+      return;
+    }
+
+    state.sending = true;
+    sendButton.disabled = true;
+    sendButton.setAttribute('aria-busy', 'true');
+    try {
+      let response;
+      if (draft.file) {
+        const formData = new FormData();
+        formData.append('recipient_id', draft.recipientId);
+        const subjectValue = draft.subject.trim();
+        if (subjectValue) formData.append('subject', subjectValue);
+        formData.append('body', draft.body);
+        formData.append('file', draft.file, draft.file.name);
+        response = await api.postForm('/messages/attachments', formData);
+      } else {
+        response = await api.post('/messages', {
+          recipient_id: draft.recipientId,
+          subject: draft.subject.trim() || null,
+          body: draft.body,
+        });
+      }
+      const sentId = response && response.id ? String(response.id) : null;
+      state.composer = null;
+      state.composeMode = false;
+      toast.showToast({ message: 'Message sent.', tone: 'success' });
+      state.box = 'sent';
+      state.q = '';
+      const search = document.getElementById('messages-search');
+      if (search) search.value = '';
+      state.selectedId = sentId;
+      setTabs();
+      await Promise.all([loadMessages(), loadCounts()]);
+    } catch (error) {
+      showError(api.describeApiError(error).message);
+    } finally {
+      state.sending = false;
+      sendButton.disabled = false;
+      sendButton.removeAttribute('aria-busy');
+    }
+  };
+
+  const form = ui.el('form', {
+    class: 'message-composer',
+    id: 'message-composer',
+    onSubmit: submit,
+  },
+    ui.el('div', { class: 'message-composer__meta' },
+      recipientSelect || ui.el('span', {
+        class: 'message-composer__to',
+        text: `To ${draft.recipientName}`,
+      }),
+      subjectInput,
+    ),
+    attachmentHost,
+    ui.el('div', { class: 'message-composer__row' },
+      attachButton,
+      fileInput,
+      bodyInput,
+      sendButton,
+    ),
+    ui.el('p', { class: 'message-composer__hint', text: ATTACHMENT_HINT }),
+    errorNode,
+  );
+  renderSelectedFile();
+  return form;
+}
+
 function renderDetail(message) {
   const region = document.getElementById('messages-detail');
   if (!region) return;
   ui.clear(region);
   if (!message) {
-    region.append(emptyDetailNode());
+    if (state.composeMode && state.composer) {
+      region.append(newComposeHeader(), composerNode());
+    } else {
+      region.append(emptyDetailNode());
+    }
     return;
   }
 
+  if (
+    !state.composer ||
+    state.composer.mode !== 'reply' ||
+    state.composer.messageId !== message.id
+  ) {
+    state.composer = replyComposerFor(message);
+  }
+  state.composeMode = false;
+
+  const record = counterpartRecord(message);
+  const name = record.display_name || messageCounterpart(message);
+  const role = roleText(record);
   const sender = message.sender_display_name || 'Unknown sender';
   const recipient = message.recipient_display_name || 'Unknown recipient';
   const subject = message.subject?.trim() || '(No subject)';
-  const isSent = state.box === 'sent';
   const timestamp = message.created_at;
+  const outgoing = messageIsOutgoing(message);
   const readState = message.read_at ? 'Read' : 'Unread';
 
   const back = ui.el('button', {
@@ -194,42 +578,132 @@ function renderDetail(message) {
   const reply = ui.el('button', {
     class: 'btn btn-primary btn-sm',
     type: 'button',
-    onClick: () => openCompose({
-      recipientId: isSent ? message.recipient_id : message.sender_id,
-      recipientName: isSent ? recipient : sender,
-      subject: message.subject ? `Re: ${message.subject}` : '',
-    }),
-  }, 'Reply');
+    onClick: () => focusComposer(message),
+  }, ui.icon('mail', 'icon--sm'), 'Reply');
 
   const newMessage = ui.el('button', {
     class: 'btn btn-secondary btn-sm',
     type: 'button',
-    onClick: () => openCompose(),
-  }, 'New message');
+    onClick: () => openNewComposer(),
+  }, ui.icon('plus', 'icon--sm'), 'New message');
+
+  const header = ui.el('header', { class: 'message-detail__header' },
+    ui.el('div', { class: 'message-detail__avatar' }, ui.avatarForUser(record, { size: 'lg' })),
+    ui.el('div', { class: 'message-detail__identity' },
+      ui.el('p', { class: 'message-detail__sender', text: name }),
+      ui.el('p', { class: 'message-detail__recipient', text: role }),
+      ui.el('p', {
+        class: 'message-detail__route',
+        text: outgoing
+          ? `From you · To ${recipient}`
+          : `From ${sender} · To ${recipient}`,
+      }),
+    ),
+    ui.el('div', { class: 'message-detail__stamp' },
+      ui.el('time', {
+        datetime: timestamp || null,
+        title: fullMessageTime(timestamp),
+        text: fullMessageTime(timestamp),
+      }),
+      ui.el('span', {
+        class: `badge ${message.read_at ? 'badge--neutral' : 'badge--info'}`,
+        text: readState,
+      }),
+    ),
+    ui.el('div', { class: 'message-detail__head-actions' }, reply, newMessage),
+  );
+
+  const thread = ui.el('div', { class: 'message-detail__thread' },
+    ui.el('div', { class: 'message-day' },
+      ui.el('span', { class: 'message-day__label', text: ui.displayDate(timestamp) }),
+    ),
+  );
+  const bubble = ui.el('div', {
+    class: `message-bubble ${outgoing ? 'message-bubble--outgoing' : 'message-bubble--incoming'}`,
+  },
+    ui.el('p', { class: 'message-bubble__subject', text: subject }),
+    message.body ? ui.el('p', { class: 'message-bubble__body', text: message.body }) : null,
+    message.attachment
+      ? composerAttachmentCard(message.attachment, message.id)
+      : null,
+    ui.el('p', {
+      class: 'message-bubble__meta',
+      text: `${fullMessageTime(timestamp)} · ${readState}`,
+    }),
+  );
+  const avatar = outgoing
+    ? ui.avatarForUser(state.user || {}, { size: 'sm' })
+    : ui.avatarForUser(record, { size: 'sm' });
+  const bubbleRow = ui.el('div', {
+    class: `message-bubble-row ${outgoing ? 'is-outgoing' : 'is-incoming'}`,
+  });
+  if (outgoing) bubbleRow.append(bubble, avatar);
+  else bubbleRow.append(avatar, bubble);
+  thread.append(bubbleRow);
+
+  region.append(back, header, thread, composerNode());
+}
+
+function emptyProfileNode() {
+  return ui.el('div', { class: 'messages-profile__empty' },
+    ui.el('span', { class: 'messages-detail__empty-icon', 'aria-hidden': 'true' }, ui.icon('users')),
+    ui.el('p', { class: 'messages-detail__empty-title', text: 'Contact details' }),
+    ui.el('p', {
+      class: 'messages-detail__empty-text',
+      text: 'Select a message to see the staff member and message details.',
+    }),
+  );
+}
+
+function renderProfile(message) {
+  const region = document.getElementById('messages-profile');
+  if (!region) return;
+  ui.clear(region);
+  if (!message) {
+    region.append(emptyProfileNode());
+    return;
+  }
+
+  const record = counterpartRecord(message);
+  const name = record.display_name || messageCounterpart(message);
+  const subject = message.subject?.trim() || '(No subject)';
+  const outgoing = messageIsOutgoing(message);
+  const reply = ui.el('button', {
+    class: 'messages-profile__action',
+    type: 'button',
+    onClick: () => focusComposer(message),
+  }, ui.icon('mail'), 'Reply');
+  const newMessage = ui.el('button', {
+    class: 'messages-profile__action',
+    type: 'button',
+    onClick: () => openNewComposer(),
+  }, ui.icon('plus'), 'New message');
+  const details = ui.el('dl', { class: 'messages-profile__details' },
+    ui.el('dt', { text: 'Subject' }),
+    ui.el('dd', { text: subject }),
+    ui.el('dt', { text: 'Direction' }),
+    ui.el('dd', { text: outgoing ? 'Sent' : 'Received' }),
+    ui.el('dt', { text: 'Time' }),
+    ui.el('dd', { text: fullMessageTime(message.created_at) }),
+    ui.el('dt', { text: 'Read state' }),
+    ui.el('dd', { text: message.read_at ? 'Read' : 'Unread' }),
+    ...(message.attachment
+      ? [
+          ui.el('dt', { text: 'Attachment' }),
+          ui.el('dd', { text: message.attachment.filename }),
+        ]
+      : []),
+  );
 
   region.append(
-    back,
-    ui.el('header', { class: 'message-detail__header' },
-      ui.el('div', { class: 'message-detail__avatar' }, ui.avatar(sender, { size: 'lg' })),
-      ui.el('div', { class: 'message-detail__identity' },
-        ui.el('p', { class: 'message-detail__sender', text: sender }),
-        ui.el('p', { class: 'message-detail__recipient', text: `To: ${recipient}` }),
-      ),
-      ui.el('div', { class: 'message-detail__stamp' },
-        ui.el('time', {
-          datetime: timestamp || null,
-          title: fullMessageTime(timestamp),
-          text: fullMessageTime(timestamp),
-        }),
-        ui.el('span', {
-          class: `badge ${message.read_at ? 'badge--neutral' : 'badge--info'}`,
-          text: readState,
-        }),
-      ),
+    ui.el('div', { class: 'messages-profile__avatar' }, ui.avatarForUser(record, { size: 'lg' })),
+    ui.el('h2', { class: 'messages-profile__name', text: name }),
+    ui.el('p', { class: 'messages-profile__role', text: roleText(record) }),
+    ui.el('div', { class: 'messages-profile__actions' }, reply, newMessage),
+    ui.el('div', { class: 'messages-profile__section' },
+      ui.el('h3', { class: 'messages-profile__section-title', text: 'Message details' }),
+      details,
     ),
-    ui.el('h2', { class: 'message-detail__subject', text: subject }),
-    ui.el('div', { class: 'message-detail__body', text: message.body }),
-    ui.el('footer', { class: 'message-detail__actions' }, reply, newMessage),
   );
 }
 
@@ -239,8 +713,11 @@ function openDetailOnMobile() {
 
 function closeDetail() {
   state.selectedId = null;
+  state.composeMode = false;
+  state.composer = null;
   document.getElementById('messages-workspace')?.classList.remove('is-reading');
   renderDetail(null);
+  renderProfile(null);
   renderMessageRows();
 }
 
@@ -248,12 +725,14 @@ async function selectMessage(message) {
   state.selectedId = message.id;
   openDetailOnMobile();
   renderDetail(message);
+  renderProfile(message);
   renderMessageRows();
   if (state.box !== 'inbox' || message.read_at) return;
   try {
     await api.post(`/messages/${encodeURIComponent(message.id)}/read`, {});
     message.read_at = new Date().toISOString();
     renderDetail(message);
+    renderProfile(message);
     renderMessageRows();
     await loadCounts();
   } catch (error) {
@@ -295,10 +774,13 @@ async function loadMessages() {
     const selected = state.messages.find((message) => message.id === state.selectedId) || null;
     if (!selected) {
       state.selectedId = null;
-      document.getElementById('messages-workspace')?.classList.remove('is-reading');
+      if (!state.composeMode) {
+        document.getElementById('messages-workspace')?.classList.remove('is-reading');
+      }
     }
     renderMessageRows();
     renderDetail(selected);
+    renderProfile(selected);
     const total = Number.isFinite(page.total) ? Number(page.total) : state.messages.length;
     if (total === 0) {
       setStatus(state.q ? 'No messages match your search.' : (
@@ -322,6 +804,8 @@ function setBox(box) {
   if (state.box === box) return;
   state.box = box;
   state.selectedId = null;
+  state.composeMode = false;
+  state.composer = null;
   document.getElementById('messages-workspace')?.classList.remove('is-reading');
   setTabs();
   loadMessages();
@@ -335,6 +819,8 @@ function wireSearch() {
     event.preventDefault();
     state.q = input.value.trim();
     state.selectedId = null;
+    state.composeMode = false;
+    state.composer = null;
     loadMessages();
   });
   input.addEventListener('input', () => {
@@ -343,6 +829,8 @@ function wireSearch() {
       state.searchTimer = null;
       state.q = input.value.trim();
       state.selectedId = null;
+      state.composeMode = false;
+      state.composer = null;
       loadMessages();
     }, SEARCH_DEBOUNCE_MS);
   });
@@ -355,108 +843,77 @@ async function ensureRecipients() {
   return state.recipients;
 }
 
+/** Load the staff directory so list/detail avatars and roles can use it. */
+function loadDirectory() {
+  ensureRecipients()
+    .then(() => {
+      const selected = state.messages.find((message) => message.id === state.selectedId) || null;
+      renderMessageRows();
+      renderDetail(selected);
+      renderProfile(selected);
+    })
+    .catch(() => {
+      // Directory/photo enrichment is optional; initials remain the fallback.
+    });
+}
+
 function recipientLabel(person) {
   const roles = Array.isArray(person.roles) ? person.roles.map(ui.roleLabel).filter(Boolean) : [];
   return roles.length > 0 ? `${person.display_name} · ${roles.join(', ')}` : person.display_name;
 }
 
-function openCompose({ recipientId = '', recipientName = '', subject = '' } = {}) {
+function focusComposer(message) {
   if (!state.user || !auth.hasPermission(state.user, 'message:write')) return;
-  ensureRecipients().then((recipients) => {
+  if (
+    !state.composer ||
+    state.composer.mode !== 'reply' ||
+    state.composer.messageId !== message.id
+  ) {
+    state.composer = replyComposerFor(message);
+  }
+  state.composeMode = false;
+  openDetailOnMobile();
+  renderDetail(message);
+  renderProfile(message);
+  renderMessageRows();
+  document.getElementById('message-body')?.focus();
+}
+
+async function openNewComposer() {
+  if (!state.user || !auth.hasPermission(state.user, 'message:write')) return;
+  try {
+    const recipients = await ensureRecipients();
     if (recipients.length === 0) {
       toast.showToast({ message: 'No available staff recipients.', tone: 'error' });
       return;
     }
-    const recipient = ui.el('select', { id: 'message-recipient' },
-      ui.el('option', { value: '', text: 'Choose a recipient' }),
-      recipients.map((person) => ui.el('option', {
-        value: person.id,
-        text: recipientLabel(person),
-      })),
-    );
-    recipient.value = recipientId || '';
-    const subjectInput = ui.el('input', {
-      id: 'message-subject',
-      type: 'text',
-      maxlength: 200,
-      value: subject,
-      autocomplete: 'off',
-    });
-    const bodyInput = ui.el('textarea', {
-      id: 'message-body',
-      rows: 8,
-      maxlength: 5000,
-      placeholder: 'Write a message…',
-    });
-    const errorNode = ui.el('p', { class: 'field-error', id: 'message-compose-error', role: 'alert' });
-    errorNode.hidden = true;
-    const form = ui.el('div', { class: 'form-grid message-compose' },
-      ui.el('div', { class: 'field' },
-        ui.el('label', { for: 'message-recipient', text: 'Recipient' }),
-        recipient,
-        recipientName ? ui.el('p', { class: 'field-hint', text: `Replying to ${recipientName}` }) : null,
-      ),
-      ui.el('div', { class: 'field' },
-        ui.el('label', { for: 'message-subject', text: 'Subject (optional)' }),
-        subjectInput,
-      ),
-      ui.el('div', { class: 'field' },
-        ui.el('label', { for: 'message-body', text: 'Message' }),
-        bodyInput,
-      ),
-    );
-    const cancel = ui.el('button', { class: 'btn btn-secondary', type: 'button', onClick: () => close() }, 'Cancel');
-    const send = ui.el('button', { class: 'btn btn-primary', type: 'button', onClick: () => submit() }, 'Send message');
-    const submit = async () => {
-      if (state.sending) return;
-      errorNode.hidden = true;
-      if (!recipient.value) {
-        errorNode.textContent = 'Choose a recipient.';
-        errorNode.hidden = false;
-        recipient.focus();
-        return;
-      }
-      if (!bodyInput.value.trim()) {
-        errorNode.textContent = 'Enter a message.';
-        errorNode.hidden = false;
-        bodyInput.focus();
-        return;
-      }
-      state.sending = true;
-      ui.setBusy(send, true, 'Sending…');
-      try {
-        await api.post('/messages', {
-          recipient_id: recipient.value,
-          subject: subjectInput.value.trim() || null,
-          body: bodyInput.value,
-        });
-        close();
-        toast.showToast({ message: 'Message sent.', tone: 'success' });
-        state.box = 'sent';
-        state.q = '';
-        const search = document.getElementById('messages-search');
-        if (search) search.value = '';
-        state.selectedId = null;
-        setTabs();
-        await Promise.all([loadMessages(), loadCounts()]);
-      } catch (error) {
-        errorNode.textContent = api.describeApiError(error).message;
-        errorNode.hidden = false;
-        ui.setBusy(send, false);
-      } finally {
-        state.sending = false;
-      }
-    };
-    const { close } = ui.openDialog({
-      title: 'New message',
-      icon: 'mail',
-      bodyNodes: [form, errorNode],
-      actionNodes: [cancel, send],
-    });
-    recipient.focus();
-  }).catch((error) => {
+    state.composeMode = true;
+    state.selectedId = null;
+    state.composer = newComposer();
+    openDetailOnMobile();
+    renderDetail(null);
+    renderProfile(null);
+    renderMessageRows();
+    document.getElementById('message-recipient')?.focus();
+  } catch (error) {
     toast.showToast({ message: api.describeApiError(error).message, tone: 'error' });
-  });
+  }
+}
+
+function cancelCompose() {
+  state.composeMode = false;
+  state.composer = null;
+  const selected = state.messages.find(
+    (message) => message.id === state.selectedId,
+  ) || null;
+  if (!selected) {
+    document.getElementById('messages-workspace')?.classList.remove('is-reading');
+  } else {
+    state.composer = replyComposerFor(selected);
+  }
+  renderDetail(selected);
+  renderProfile(selected);
+  renderMessageRows();
 }
 
 function renderPermissionDenied() {
@@ -498,7 +955,7 @@ ui.onReady(async () => {
           hint: 'Compose an internal staff message',
           keywords: 'message compose send staff',
           group: 'Actions',
-          run: () => openCompose(),
+          run: () => openNewComposer(),
         }]
       : [],
   });
@@ -511,11 +968,14 @@ ui.onReady(async () => {
   const newButton = document.getElementById('messages-new');
   if (newButton) {
     newButton.hidden = !auth.hasPermission(user, 'message:write');
-    newButton.addEventListener('click', () => openCompose());
+    newButton.addEventListener('click', () => openNewComposer());
   }
   document.getElementById('messages-inbox-tab')?.addEventListener('click', () => setBox('inbox'));
   document.getElementById('messages-sent-tab')?.addEventListener('click', () => setBox('sent'));
   wireSearch();
+  renderDetail(null);
+  renderProfile(null);
+  loadDirectory();
   setTabs();
   loadCounts();
   loadMessages();

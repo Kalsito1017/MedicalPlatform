@@ -91,28 +91,17 @@ function citationsBlock(citations) {
 }
 
 /**
- * One collapsible history entry. `entry` speaks the docs/API.md conversation
- * item shape: { question, answer, used_tools, citations, model, created_at,
- * patient_id? }.
+ * The saved question and answer as chat bubbles, shared by the inline history
+ * entry and the AI Assistant page's selected-conversation view.
  */
-export function historyEntryNode(entry, { compact = false } = {}) {
+export function historyConversationNodes(entry) {
   const question = typeof entry.question === 'string' ? entry.question.trim() : '';
   const answer = typeof entry.answer === 'string' ? entry.answer.trim() : '';
   const tools = Array.isArray(entry.used_tools) ? entry.used_tools.map(String) : [];
   const citations = Array.isArray(entry.citations) ? entry.citations.filter(Boolean) : [];
-  const patientScoped = entry.patient_id != null && entry.patient_id !== '';
-  const when = ui.formatRelativeTime(entry.created_at) || ui.formatDateTime(entry.created_at) || '';
   const whenExact = ui.formatDateTime(entry.created_at) || '';
 
-  entrySequence += 1;
-  const detailId = `ai-history-detail-${entrySequence}`;
-
-  const detail = ui.el('div', {
-    class: 'ai-history__detail',
-    id: detailId,
-    tabindex: '-1',
-    hidden: true,
-  },
+  return [
     ui.el('div', { class: 'chat-bubble chat-bubble--user' },
       ui.el('p', { text: question || '(no question text)' }),
       whenExact ? ui.el('p', { class: 'chat-bubble__meta', text: whenExact }) : null,
@@ -131,7 +120,69 @@ export function historyEntryNode(entry, { compact = false } = {}) {
         ? ui.el('p', { class: 'chat-bubble__meta', text: whenExact })
         : null,
     ),
+  ];
+}
+
+/** Stable key for a saved exchange in the AI Assistant conversation rail. */
+export function historyRailKey(entry) {
+  return String(
+    entry.id ||
+    entry.local_id ||
+    `${entry.created_at || ''}|${entry.question || ''}`,
   );
+}
+
+/** One selectable conversation in the AI Assistant left rail. */
+export function historyRailNode(entry, { selected = false, onSelect = null } = {}) {
+  const question = typeof entry.question === 'string' ? entry.question.trim() : '';
+  const tools = Array.isArray(entry.used_tools) ? entry.used_tools.map(String) : [];
+  const patientScoped = entry.patient_id != null && entry.patient_id !== '';
+  const when = ui.formatRelativeTime(entry.created_at) || ui.formatDateTime(entry.created_at) || '';
+
+  return ui.el('li', { class: `ai-rail__item${selected ? ' is-active' : ''}` },
+    ui.el('button', {
+      class: 'ai-rail__conversation',
+      type: 'button',
+      'aria-current': selected ? 'true' : null,
+      onClick: () => {
+        if (typeof onSelect === 'function') onSelect(entry);
+      },
+    },
+      ui.el('span', { class: 'ai-rail__question', text: question || '(no question text)' }),
+      ui.el('span', { class: 'ai-rail__meta' },
+        ui.el('span', {
+          class: patientScoped ? 'badge badge--info' : 'badge badge--neutral',
+          text: patientScoped ? 'Patient' : 'General',
+        }),
+        ui.el('span', { class: 'ai-rail__time', text: when || 'Time not recorded' }),
+      ),
+      tools.length > 0
+        ? ui.el('span', { class: 'ai-rail__tools', text: tools.join(' · ') })
+        : null,
+    ),
+  );
+}
+
+/**
+ * One collapsible history entry. `entry` speaks the docs/API.md conversation
+ * item shape: { question, answer, used_tools, citations, model, created_at,
+ * patient_id? }.
+ */
+export function historyEntryNode(entry, { compact = false } = {}) {
+  const question = typeof entry.question === 'string' ? entry.question.trim() : '';
+  const tools = Array.isArray(entry.used_tools) ? entry.used_tools.map(String) : [];
+  const patientScoped = entry.patient_id != null && entry.patient_id !== '';
+  const when = ui.formatRelativeTime(entry.created_at) || ui.formatDateTime(entry.created_at) || '';
+
+  entrySequence += 1;
+  const detailId = `ai-history-detail-${entrySequence}`;
+
+  const detail = ui.el('div', {
+    class: 'ai-history__detail',
+    id: detailId,
+    tabindex: '-1',
+    hidden: true,
+  }, historyConversationNodes(entry));
 
   const summary = ui.el('button', {
     class: 'ai-history__summary',
@@ -171,6 +222,27 @@ export function renderHistoryList(listNode, entries, { compact = false, emptyTex
     return;
   }
   for (const entry of items) listNode.append(historyEntryNode(entry, { compact }));
+}
+
+/** Render the AI Assistant conversation rail (newest first). */
+export function renderHistoryRail(
+  listNode,
+  entries,
+  { selectedKey = null, onSelect = null, emptyText = 'No questions yet.' } = {},
+) {
+  if (!listNode) return;
+  ui.clear(listNode);
+  const items = Array.isArray(entries) ? entries.filter(Boolean) : [];
+  if (items.length === 0) {
+    listNode.append(ui.el('p', { class: 'text-muted ai-history__empty', text: emptyText }));
+    return;
+  }
+  for (const entry of items) {
+    listNode.append(historyRailNode(entry, {
+      selected: selectedKey != null && historyRailKey(entry) === selectedKey,
+      onSelect,
+    }));
+  }
 }
 
 /** Prepend one just-completed exchange so it appears without a reload. */

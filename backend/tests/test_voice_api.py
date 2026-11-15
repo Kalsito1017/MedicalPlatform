@@ -10,6 +10,7 @@ import io
 import math
 import shutil
 import struct
+import subprocess
 import wave
 from pathlib import Path
 
@@ -18,7 +19,7 @@ import pytest
 from starlette.datastructures import Headers, UploadFile
 
 from app.config import load_settings
-from app.errors import DependencyUnavailable, RateLimited
+from app.errors import DependencyUnavailable, RateLimited, ValidationFailed
 from app.services import voice as voice_service
 from app.services.voice import transcribe_upload, voice_rate_limiter
 from conftest import csrf_headers
@@ -76,13 +77,15 @@ async def test_transcription_returns_editable_text_and_cleans_up(
         return directory
 
     async def fake_transcriber(wav_path, *, language, settings, transport=None):
-        assert language == "bg"
+        assert language == "auto"
         with wave.open(str(wav_path), "rb") as converted:
             assert converted.getnchannels() == 1
             assert converted.getframerate() == 16_000
             assert converted.getsampwidth() == 2
         observed["path"] = wav_path
-        return "  Утре в десет часа  "
+        return voice_service.WhisperResult(
+            text="  Утре в десет часа  ", language="bg"
+        )
 
     monkeypatch.setattr(voice_service, "_call_whisper", fake_transcriber)
     monkeypatch.setattr(
@@ -91,7 +94,7 @@ async def test_transcription_returns_editable_text_and_cleans_up(
 
     response = await client.post(
         "/api/v1/voice/transcriptions",
-        data={"language": "bg"},
+        data={"language": "auto"},
         files={"file": ("recording.wav", _wav_bytes(), "audio/wav")},
         headers=csrf_headers(client),
     )
@@ -99,10 +102,93 @@ async def test_transcription_returns_editable_text_and_cleans_up(
     payload = response.json()
     assert payload["text"] == "Утре в десет часа"
     assert payload["language"] == "bg"
-    assert payload["model"] == "tiny"
+    assert payload["model"] == "base"
     assert 0.9 <= payload["duration_seconds"] <= 1.1
     assert observed
     assert created_dirs and not Path(created_dirs[0]).exists()
+
+
+
+def _webm_without_duration(duration: float = 2.0) -> bytes:
+    """Create a streamed WebM like MediaRecorder (no container duration tag)."""
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            f"sine=frequency=440:duration={duration}",
+            "-c:a",
+            "libopus",
+            "-f",
+            "webm",
+            "pipe:1",
+        ],
+        check=False,
+        capture_output=True,
+        timeout=60,
+    )
+    if result.returncode != 0:
+        pytest.skip("ffmpeg lacks libopus/WebM support on this host")
+    assert result.stdout
+    return result.stdout
+
+
+@requires_ffmpeg
+async def test_transcription_accepts_webm_without_duration_metadata(
+    make_user, auth_client, app, monkeypatch
+) -> None:
+    """MediaRecorder WebM commonly reports N/A for duration; it is still valid."""
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+    payload = _webm_without_duration(2.0)
+
+    async def fake_transcriber(wav_path, *, language, settings, transport=None):
+        with wave.open(str(wav_path), "rb") as converted:
+            assert converted.getframerate() == 16_000
+        return voice_service.WhisperResult(text="Book a follow-up visit", language="en")
+
+    monkeypatch.setattr(voice_service, "_call_whisper", fake_transcriber)
+
+    response = await client.post(
+        "/api/v1/voice/transcriptions",
+        data={"language": "en"},
+        files={"file": ("appointment-recording.webm", payload, "audio/webm")},
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["text"] == "Book a follow-up visit"
+    assert 1.8 <= response.json()["duration_seconds"] <= 2.3
+
+    # If no container/stream/packet metadata is usable, the bounded conversion
+    # must still determine the duration from decoded frames.
+    async def unknown_duration(_path, *, timeout):
+        return None
+
+    monkeypatch.setattr(voice_service, "_probe_duration", unknown_duration)
+    fallback = await client.post(
+        "/api/v1/voice/transcriptions",
+        data={"language": "en"},
+        files={"file": ("appointment-recording.webm", payload, "audio/webm")},
+        headers=csrf_headers(client),
+    )
+    assert fallback.status_code == 200, fallback.text
+    assert 1.8 <= fallback.json()["duration_seconds"] <= 2.3
+
+    # A no-metadata file longer than the configured limit is rejected, not
+    # silently truncated to an apparently valid length.
+    app.state.settings.voice_max_duration_seconds = 1
+    too_long = await client.post(
+        "/api/v1/voice/transcriptions",
+        data={"language": "en"},
+        files={"file": ("appointment-recording.webm", payload, "audio/webm")},
+        headers=csrf_headers(client),
+    )
+    assert too_long.status_code == 400
+    assert "no longer than" in too_long.json()["error"]["message"]
 
 
 @requires_ffmpeg
@@ -163,7 +249,7 @@ async def test_transcription_fails_closed_when_speech_is_not_configured(
 async def test_speech_client_posts_pcm_wav_and_parses_json() -> None:
     settings = load_settings(env_file=None)
     settings.whisper_base_url = "http://speech.test"
-    settings.whisper_model_name = "tiny"
+    settings.whisper_model_name = "base"
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -180,12 +266,130 @@ async def test_speech_client_posts_pcm_wav_and_parses_json() -> None:
     )
     assert result.text == "Book a follow-up"
     assert result.language == "bg"
-    assert result.model == "tiny"
+    assert result.model == "base"
     assert seen["url"] == "http://speech.test/inference"
     body = seen["body"]
     assert isinstance(body, bytes)
     assert b'name="language"' in body and b"bg" in body
     assert b"RIFF" in body  # the converted 16 kHz mono WAV is what is sent
+
+
+@requires_ffmpeg
+async def test_speech_client_auto_detects_language() -> None:
+    settings = load_settings(env_file=None)
+    settings.whisper_base_url = "http://speech.test"
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = request.read()
+        return httpx.Response(
+            200,
+            json={
+                "text": " Book a follow-up ",
+                "language": "english",
+                "detected_language": "english",
+                "language_probabilities": {"en": 0.98, "bg": 0.02},
+            },
+        )
+
+    result = await transcribe_upload(
+        upload=_upload(_wav_bytes(duration=1.0)),
+        language="auto",
+        settings=settings,
+        transport=httpx.MockTransport(handler),
+    )
+    assert result.text == "Book a follow-up"
+    assert result.language == "en"
+    body = seen["body"]
+    assert isinstance(body, bytes)
+    assert b'name="language"' in body and b"auto" in body
+    assert b"verbose_json" in body
+
+    def bulgarian(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "text": " Утре в десет часа ",
+                "language_probabilities": {"bg": 0.99, "en": 0.01},
+            },
+        )
+
+    bulgarian_result = await transcribe_upload(
+        upload=_upload(_wav_bytes(duration=1.0)),
+        language="auto",
+        settings=settings,
+        transport=httpx.MockTransport(bulgarian),
+    )
+    assert bulgarian_result.language == "bg"
+
+    # A manual override must win over the model's detection.
+    fixed = await transcribe_upload(
+        upload=_upload(_wav_bytes(duration=1.0)),
+        language="bg",
+        settings=settings,
+        transport=httpx.MockTransport(handler),
+    )
+    assert fixed.language == "bg"
+
+
+def test_detected_language_handles_other_codes_and_fallbacks() -> None:
+    assert voice_service._detected_language(
+        {"language_probabilities": {"de": 0.99}}, requested="auto", text="Hallo"
+    ) == "de"
+    assert voice_service._detected_language(
+        {}, requested="auto", text="Здравей"
+    ) == "bg"
+    assert voice_service._detected_language({}, requested="auto", text="Hello") == "en"
+    assert voice_service._detected_language(
+        {}, requested="en", text="Здравей"
+    ) == "en"
+
+
+@requires_ffmpeg
+async def test_speech_client_rejects_unsupported_detected_language() -> None:
+    settings = load_settings(env_file=None)
+    settings.whisper_base_url = "http://speech.test"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "text": " Guten Tag ",
+                "language_probabilities": {"de": 0.99},
+            },
+        )
+
+    with pytest.raises(ValidationFailed) as rejected:
+        await transcribe_upload(
+            upload=_upload(_wav_bytes(duration=1.0)),
+            language="auto",
+            settings=settings,
+            transport=httpx.MockTransport(handler),
+        )
+    assert "Bulgarian and English only" in rejected.value.message
+
+
+@requires_ffmpeg
+async def test_transcription_rejects_unsupported_detected_language(
+    make_user, auth_client, monkeypatch
+) -> None:
+    doctor = await make_user(roles=("doctor",))
+    client = await auth_client(doctor)
+
+    async def fake_transcriber(wav_path, *, language, settings, transport=None):
+        return voice_service.WhisperResult(text="Guten Tag", language="de")
+
+    monkeypatch.setattr(voice_service, "_call_whisper", fake_transcriber)
+
+    response = await client.post(
+        "/api/v1/voice/transcriptions",
+        data={"language": "auto"},
+        files={"file": ("recording.wav", _wav_bytes(), "audio/wav")},
+        headers=csrf_headers(client),
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "validation_error"
+    assert "Bulgarian and English only" in response.json()["error"]["message"]
 
 
 @requires_ffmpeg

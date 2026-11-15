@@ -1,16 +1,27 @@
-"""Internal staff messages (Doctor/Admin only).
+"""Internal staff messages (Doctor/Nurse/Admin).
 
 `GET /messages?box=inbox|sent` returns only the caller's own messages;
-`GET /messages/recipients` exposes active Doctor/Admin recipients;
-`POST /messages` sends; `POST /messages/{id}/read` is recipient-only.
-The body/subject never appear in audit events.
+`GET /messages/recipients` exposes active staff recipients the caller may
+contact; `POST /messages` sends text; `POST /messages/attachments` sends one
+bounded file; `GET /messages/{id}/attachment` is sender/recipient-only; and
+`POST /messages/{id}/read` is recipient-only. Subject/body/filenames never
+appear in audit events.
 """
 from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import aliased
 
@@ -19,21 +30,40 @@ from app.audit.logger import write_audit_event
 from app.auth.identity import client_ip
 from app.authorization.policy import Principal, has_permission, require_permission
 from app.errors import Forbidden, NotFound, ValidationFailed
-from app.models import Message, Role, StaffUser, UserRole
+from app.models import Message, MessageAttachment, Role, StaffUser, UserRole
 from app.schemas.common import Page
 from app.schemas.message import (
+    MESSAGE_BODY_MAX,
+    MESSAGE_SUBJECT_MAX,
     MessageBox,
+    MessageAttachmentOut,
     MessageCreate,
     MessageCountsOut,
     MessageOut,
     MessageRecipientListOut,
     MessageRecipientOut,
 )
+from app.services.message_attachments import (
+    attachment_content_disposition,
+    prepare_attachment,
+)
 
 router = APIRouter(tags=["messages"])
 
 
-def _message_out(row) -> MessageOut:
+def _attachment_out(attachment: MessageAttachment | None) -> MessageAttachmentOut | None:
+    if attachment is None:
+        return None
+    return MessageAttachmentOut(
+        id=attachment.id,
+        filename=attachment.filename,
+        content_type=attachment.content_type,
+        size_bytes=attachment.size_bytes,
+        created_at=attachment.created_at,
+    )
+
+
+def _message_out(row, attachment: MessageAttachment | None = None) -> MessageOut:
     message, sender_name, recipient_name = row
     return MessageOut(
         id=message.id,
@@ -44,6 +74,7 @@ def _message_out(row) -> MessageOut:
         subject=message.subject,
         body=message.body,
         read_at=message.read_at,
+        attachment=_attachment_out(attachment),
         created_at=message.created_at,
         updated_at=message.updated_at,
     )
@@ -82,6 +113,50 @@ async def _recipient_roles(db, user_id: uuid.UUID) -> tuple[StaffUser | None, li
         ).all()
     )
     return user, [str(role) for role in roles]
+
+
+async def _resolve_recipient(
+    db, *, caller: uuid.UUID, recipient_id: uuid.UUID
+) -> StaffUser:
+    if recipient_id == caller:
+        raise ValidationFailed("You cannot send a message to yourself.")
+    recipient, roles = await _recipient_roles(db, recipient_id)
+    if recipient is None or not has_permission(roles, "message:read"):
+        raise ValidationFailed(
+            "The selected recipient is not available for internal messages."
+        )
+    return recipient
+
+
+def _normalize_multipart_fields(
+    subject: str | None, body: str
+) -> tuple[str | None, str]:
+    subject_value = (subject or "").strip() or None
+    if subject_value is not None and len(subject_value) > MESSAGE_SUBJECT_MAX:
+        raise ValidationFailed(
+            f"The subject must be at most {MESSAGE_SUBJECT_MAX} characters."
+        )
+    body_value = body.strip()
+    if len(body_value) > MESSAGE_BODY_MAX:
+        raise ValidationFailed(
+            f"The message must be at most {MESSAGE_BODY_MAX} characters."
+        )
+    return subject_value, body_value
+
+
+async def _attachment_map(
+    db, message_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, MessageAttachment]:
+    if not message_ids:
+        return {}
+    rows = (
+        await db.scalars(
+            select(MessageAttachment).where(
+                MessageAttachment.message_id.in_(message_ids)
+            )
+        )
+    ).all()
+    return {attachment.message_id: attachment for attachment in rows}
 
 
 @router.get("/messages/recipients", response_model=MessageRecipientListOut)
@@ -213,8 +288,12 @@ async def list_messages(
             )
         ).all()
     )
+    attachments = await _attachment_map(db, [row[0].id for row in rows])
     return Page[MessageOut](
-        items=[_message_out(row) for row in rows],
+        items=[
+            _message_out(row, attachments.get(row[0].id))
+            for row in rows
+        ],
         total=int(total),
         limit=pagination.limit,
         offset=pagination.offset,
@@ -230,11 +309,9 @@ async def send_message(
     principal: Principal = Depends(require_permission("message:write")),
 ) -> MessageOut:
     caller = _caller_id(principal)
-    if body.recipient_id == caller:
-        raise ValidationFailed("You cannot send a message to yourself.")
-    recipient, roles = await _recipient_roles(db, body.recipient_id)
-    if recipient is None or not has_permission(roles, "message:read"):
-        raise ValidationFailed("The selected recipient is not available for internal messages.")
+    recipient = await _resolve_recipient(
+        db, caller=caller, recipient_id=body.recipient_id
+    )
     message = Message(
         id=uuid.uuid4(),
         sender_id=caller,
@@ -258,17 +335,112 @@ async def send_message(
     sender_name = await db.scalar(
         select(StaffUser.display_name).where(StaffUser.id == caller)
     )
-    return MessageOut(
-        id=message.id,
+    return _message_out(
+        (message, sender_name or "Staff", recipient.display_name), None
+    )
+
+
+@router.post("/messages/attachments", response_model=MessageOut, status_code=201)
+async def send_message_with_attachment(
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    recipient_id: uuid.UUID = Form(...),
+    subject: str | None = Form(default=None),
+    body: str = Form(default=""),
+    file: UploadFile = File(...),
+    principal: Principal = Depends(require_permission("message:write")),
+) -> MessageOut:
+    """Send one message with one bounded, allowlisted attachment."""
+    caller = _caller_id(principal)
+    recipient = await _resolve_recipient(
+        db, caller=caller, recipient_id=recipient_id
+    )
+    subject_value, body_value = _normalize_multipart_fields(subject, body)
+    prepared = await prepare_attachment(
+        file, max_bytes=request.app.state.settings.message_attachment_max_bytes
+    )
+
+    message = Message(
+        id=uuid.uuid4(),
         sender_id=caller,
-        sender_display_name=str(sender_name or "Staff"),
-        recipient_id=message.recipient_id,
-        recipient_display_name=recipient.display_name,
-        subject=message.subject,
-        body=message.body,
-        read_at=message.read_at,
-        created_at=message.created_at,
-        updated_at=message.updated_at,
+        recipient_id=recipient_id,
+        subject=subject_value,
+        body=body_value,
+    )
+    db.add(message)
+    await db.flush()
+    attachment = MessageAttachment(
+        id=uuid.uuid4(),
+        message_id=message.id,
+        filename=prepared.filename,
+        content_type=prepared.content_type,
+        size_bytes=prepared.size_bytes,
+        sha256=prepared.sha256,
+        data=prepared.data,
+    )
+    db.add(attachment)
+    await db.flush()
+    await write_audit_event(
+        db,
+        actor_user_id=caller,
+        action="message.send",
+        resource_type="message",
+        resource_id=str(message.id),
+        outcome="success",
+        request_id=request_id,
+        ip=client_ip(request),
+    )
+    await db.commit()
+    sender_name = await db.scalar(
+        select(StaffUser.display_name).where(StaffUser.id == caller)
+    )
+    return _message_out(
+        (message, sender_name or "Staff", recipient.display_name), attachment
+    )
+
+
+@router.get("/messages/{message_id}/attachment")
+async def download_message_attachment(
+    message_id: uuid.UUID,
+    db: DbSession,
+    request: Request,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("message:read")),
+) -> Response:
+    """Download an attachment only as the sender or recipient of its message."""
+    caller = _caller_id(principal)
+    attachment = await db.scalar(
+        select(MessageAttachment)
+        .join(Message, Message.id == MessageAttachment.message_id)
+        .where(
+            Message.id == message_id,
+            or_(Message.sender_id == caller, Message.recipient_id == caller),
+        )
+    )
+    if attachment is None:
+        raise NotFound()
+    await write_audit_event(
+        db,
+        actor_user_id=caller,
+        action="message.attachment.download",
+        resource_type="message",
+        resource_id=str(message_id),
+        outcome="success",
+        request_id=request_id,
+        ip=client_ip(request),
+    )
+    await db.commit()
+    return Response(
+        content=attachment.data,
+        media_type=attachment.content_type,
+        headers={
+            "Content-Disposition": attachment_content_disposition(
+                attachment.filename
+            ),
+            "Content-Length": str(attachment.size_bytes),
+            "Cache-Control": "no-store",
+        },
     )
 
 

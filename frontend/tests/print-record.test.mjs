@@ -273,7 +273,7 @@ await check('report renders all sections, flags, ranges and safe text', () => {
     assert(report.includes(expected), `missing ${expected}`);
   }
   equal(record.querySelectorAll('.print-row--abnormal').length, 2, 'two abnormal lab rows');
-  equal(record.querySelectorAll('thead').length, 2, 'both data tables expose headers');
+  equal(record.querySelectorAll('thead').length, 3, 'running header and both data tables expose headers');
   equal(record.querySelectorAll('script').length, 0, 'no script element from clinical text');
   equal(record.querySelectorAll('img').length, 0, 'no image element from clinical text');
 });
@@ -380,6 +380,37 @@ await check('hostile clinical text is rendered as text, never as DOM', () => {
   equal(record.querySelectorAll('script').length, 0, 'no script node');
   equal(record.querySelectorAll('img').length, 0, 'no image node');
   assert(textOf(record).includes(hostile), 'hostile text should remain readable text');
+});
+
+await check('print record follows the selected EN/BG language', async () => {
+  const i18n = await import('../assets/js/i18n.js');
+  const { record } = mount();
+  i18n.setLanguage('bg');
+  printRecord.renderPrintRecord(record, {
+    patient: PATIENT,
+    summary: SUMMARY,
+    encounters: [ENCOUNTER],
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  }, '05 Nov 2026, 12:00');
+  const bulgarian = textOf(record);
+  assert(bulgarian.includes('Медицинска карта на пациента'), 'Bulgarian print title missing');
+  assert(bulgarian.includes('Информация за пациента'), 'Bulgarian patient section missing');
+  assert(bulgarian.includes('Лабораторни резултати'), 'Bulgarian lab section missing');
+  assert(bulgarian.includes('НАД НОРМАТА ↑'), 'Bulgarian high lab flag missing');
+  assert(bulgarian.includes('ПОД НОРМАТА ↓'), 'Bulgarian low lab flag missing');
+  assert(bulgarian.includes('Резултат'), 'Bulgarian resulted label missing');
+
+  i18n.setLanguage('en');
+  const { record: englishRecord } = mount();
+  printRecord.renderPrintRecord(englishRecord, {
+    patient: PATIENT,
+    summary: SUMMARY,
+    encounters: [ENCOUNTER],
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  }, '05 Nov 2026, 12:00');
+  assert(textOf(englishRecord).includes('Patient Medical Record'), 'English print title not restored');
 });
 
 for (const result of results) {

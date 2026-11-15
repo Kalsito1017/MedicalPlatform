@@ -50,8 +50,31 @@ class AppointmentOut(BaseModel):
     patient_display_name: str
     patient_mrn: str
     doctor_display_name: str
+    calendar_removed_at: Timestamp | None = None
     created_at: Timestamp
     updated_at: Timestamp
+
+
+class AppointmentEventOut(BaseModel):
+    """One immutable appointment lifecycle event (no clinical payloads)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    appointment_id: UUID
+    event_type: Literal[
+        "created", "updated", "rescheduled", "status_changed", "calendar_removed"
+    ]
+    actor_user_id: UUID | None = None
+    actor_display_name: str | None = None
+    old_start_at: Timestamp | None = None
+    old_end_at: Timestamp | None = None
+    new_start_at: Timestamp | None = None
+    new_end_at: Timestamp | None = None
+    old_status: AppointmentStatus | None = None
+    new_status: AppointmentStatus | None = None
+    request_id: str | None = None
+    created_at: Timestamp
 
 
 class AppointmentCreate(BaseModel):
@@ -163,6 +186,7 @@ class AppointmentConfigOut(BaseModel):
     timezone: str
     max_duration_minutes: int = DURATION_MAX
     max_range_days: int = 62
+    history_max_range_days: int = 366
 
 
 class AppointmentInterpretRequest(BaseModel):
@@ -177,6 +201,92 @@ class AppointmentInterpretRequest(BaseModel):
         if not stripped:
             raise ValueError("text must not be blank")
         return stripped
+
+
+class PatientSuggestionRequest(BaseModel):
+    """One transcript to check for likely patient-name/MRN corrections."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=3, max_length=INTERPRET_TEXT_MAX)
+
+    @field_validator("text")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("text must not be blank")
+        return stripped
+
+
+class PatientSuggestionOut(BaseModel):
+    """Name/MRN-only suggestion; no patient id or clinical content."""
+
+    display_name: str
+    mrn: str
+    matched_name_text: str | None = None
+    matched_mrn_text: str | None = None
+
+
+class PatientSuggestionListOut(BaseModel):
+    items: list[PatientSuggestionOut] = Field(default_factory=list, max_length=3)
+
+
+CorrectionLanguage = Literal["bg", "en"]
+CorrectionCategory = Literal[
+    "appointment_type",
+    "date",
+    "weekday",
+    "time",
+    "duration",
+    "medical_term",
+    "number",
+    "other",
+]
+CorrectionConfidence = Literal["high", "medium", "low"]
+
+
+class TranscriptionCorrectionRequest(BaseModel):
+    """One transcript to check for likely speech-recognition mistakes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=3, max_length=INTERPRET_TEXT_MAX)
+    language: CorrectionLanguage = "bg"
+
+    @field_validator("text")
+    @classmethod
+    def _strip_text(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("text must not be blank")
+        return stripped
+
+
+class TranscriptionCorrectionSuggestionOut(BaseModel):
+    """One non-persisted correction candidate; the doctor decides."""
+
+    original_text: str = Field(min_length=1, max_length=160)
+    suggested_text: str = Field(min_length=1, max_length=200)
+    reason: str = Field(
+        default="Possible speech recognition mismatch",
+        max_length=200,
+    )
+    confidence: CorrectionConfidence
+    category: CorrectionCategory
+
+
+class TranscriptionCorrectionResponse(BaseModel):
+    """Bounded correction analysis. No transcript is stored or echoed beyond it."""
+
+    language: CorrectionLanguage
+    has_suggestions: bool
+    suggestions: list[TranscriptionCorrectionSuggestionOut] = Field(
+        default_factory=list,
+        max_length=4,
+    )
+    analysis_available: bool = True
+    model: str | None = None
 
 
 class ProposedPatientOut(BaseModel):

@@ -3,6 +3,11 @@
 All queries are parameterized ORM statements, bounded, and exclude soft-deleted
 rows. Search terms are matched with escaped ILIKE patterns (wildcards in user
 input are treated literally) against the synthetic display name and MRN only.
+When that literal search finds nothing, a bounded transliteration-aware fallback
+compares the query with the patient names in Latin letters, so a doctor typing
+``Elena Georgieva`` finds ``Елена Георгиева`` (and one-letter misspellings are
+still recognized). The fallback never widens authorization: it reads the same
+active patient rows through the same caller permission gate.
 
 Time windows and derived ages all read ONE clock: `utc_now()` below. Tests
 freeze it (monkeypatch `app.services.patients.utc_now`) to pin "the last N
@@ -29,10 +34,16 @@ from app.errors import Conflict
 from app.models.lab import LabResult
 from app.models.medication import Prescription
 from app.models.patient import ClinicalNote, Diagnosis, Encounter, Patient, PatientAssignment
+from app.services.patient_names import (
+    MIN_TRANSLITERATION_SCORE,
+    name_match_score,
+    normalize_name,
+)
 from app.services.prescriptions import list_prescription_items
 
 # Bounds (docs/API.md: "filter parameters are bounded and validated").
 SEARCH_QUERY_MAX_LENGTH = 100
+TRANSLITERATION_SCAN_LIMIT = 1000
 SUMMARY_ENCOUNTER_LIMIT = 8
 SUMMARY_LATEST_LABS_PER_TEST = 2
 SUMMARY_LATEST_LABS_LIMIT = 20
@@ -135,8 +146,51 @@ async def soft_delete_patient(db: AsyncSession, patient: Patient) -> bool:
     return True
 
 
+async def _transliterated_patients(
+    db: AsyncSession, *, q: str, limit: int, offset: int, allow_fuzzy: bool
+) -> tuple[list[Patient], int]:
+    """Bounded fallback for a Latin spelling of a Cyrillic patient name.
+
+    Only used when the literal ILIKE search returned nothing. The scan is
+    capped, soft-deleted rows are excluded, and only high-similarity names are
+    returned; ordering is deterministic (score, display name, id).
+    """
+    normalized_query = normalize_name(q)
+    if len(normalized_query) < 2:
+        return [], 0
+    rows = list(
+        (
+            await db.scalars(
+                select(Patient)
+                .where(Patient.not_deleted())
+                .order_by(Patient.display_name, Patient.id)
+                .limit(TRANSLITERATION_SCAN_LIMIT)
+            )
+        ).all()
+    )
+    scored: list[tuple[float, str, str, Patient]] = []
+    for patient in rows:
+        score = name_match_score(
+            normalized_query,
+            normalize_name(patient.display_name),
+            allow_fuzzy=allow_fuzzy,
+        )
+        if score < MIN_TRANSLITERATION_SCORE:
+            continue
+        scored.append((score, patient.display_name, str(patient.id), patient))
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    total = len(scored)
+    window = scored[offset : offset + limit]
+    return [item[3] for item in window], total
+
+
 async def list_patients(
-    db: AsyncSession, *, q: str | None, limit: int, offset: int
+    db: AsyncSession,
+    *,
+    q: str | None,
+    limit: int,
+    offset: int,
+    allow_fuzzy: bool = True,
 ) -> tuple[list[Patient], int]:
     """Paginated patient list ordered by display name; optional synthetic name/MRN search."""
     filters = [Patient.not_deleted()]
@@ -150,6 +204,10 @@ async def list_patients(
         )
     base = select(Patient).where(*filters)
     total = (await db.scalar(select(func.count()).select_from(base.subquery()))) or 0
+    if total == 0 and q:
+        return await _transliterated_patients(
+            db, q=q, limit=limit, offset=offset, allow_fuzzy=allow_fuzzy
+        )
     rows = list(
         (await db.scalars(base.order_by(Patient.display_name, Patient.id).limit(limit).offset(offset))).all()
     )

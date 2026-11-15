@@ -131,6 +131,14 @@ MATRIX: tuple[EndpointCase, ...] = (
         201,
         body_kind="message_send",
     ),
+    EndpointCase(
+        "POST",
+        "/api/v1/messages/attachments",
+        "message:write",
+        201,
+        body_kind="message_attachment",
+    ),
+    EndpointCase("GET", "/api/v1/messages/{message_id}/attachment", "message:read", 404),
     EndpointCase("POST", "/api/v1/messages/{message_id}/read", "message:read", 404),
     # Appointments: doctors are scoped to their own calendar server-side; the
     # write probes use unknown ids, so an authorized caller reaches the route
@@ -142,6 +150,34 @@ MATRIX: tuple[EndpointCase, ...] = (
         "appointment:read",
         200,
         query_kind="appointments_list",
+    ),
+    EndpointCase("GET", "/api/v1/appointments/history", "appointment:read", 200),
+    EndpointCase(
+        "GET",
+        "/api/v1/appointments/history/export.csv",
+        "appointment:export",
+        200,
+        query_kind="history_export",
+    ),
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments/patient-suggestions",
+        "patient:read",
+        200,
+        body_kind="patient_suggest",
+    ),
+    EndpointCase(
+        "POST",
+        "/api/v1/appointments/transcription-corrections",
+        "appointment:write",
+        200,
+        body_kind="transcription_correction",
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/appointments/{appointment_id}/history",
+        "appointment:read",
+        404,
     ),
     EndpointCase(
         "POST",
@@ -269,6 +305,11 @@ async def _build_request(
             "start": (now - timedelta(days=1)).isoformat(),
             "end": (now + timedelta(days=30)).isoformat(),
         }
+    elif case.query_kind == "history_export":
+        params = {
+            "start": (now - timedelta(days=1)).isoformat(),
+            "end": (now + timedelta(days=1)).isoformat(),
+        }
     elif case.query_kind in {"doctor_scoped", "slots", "interpret"}:
         params = {}
         if case.query_kind == "slots":
@@ -304,6 +345,13 @@ async def _build_request(
             "subject": "Matrix message",
             "body": "Matrix-only internal message.",
         }
+    elif case.body_kind == "message_attachment":
+        target = await make_user(roles=("doctor",))
+        body = {"recipient_id": str(target.id)}
+    elif case.body_kind == "patient_suggest":
+        body = {"text": "Book a follow-up for Elena Georgievah, MRN-0001."}
+    elif case.body_kind == "transcription_correction":
+        body = {"text": "Book a follow-up tomorrow at 10:00.", "language": "en"}
     elif case.body_kind == "patient_create":
         body = {
             "given_name": "Probe" + uuid.uuid4().hex[:8],
@@ -345,6 +393,15 @@ async def _call(
     if case.body_kind == "voice_upload":
         kwargs["data"] = {"language": "en"}
         kwargs["files"] = {"file": ("empty.webm", b"", "audio/webm")}
+    elif case.body_kind == "message_attachment":
+        kwargs["data"] = {
+            "recipient_id": body["recipient_id"],
+            "subject": "Matrix attachment",
+            "body": "Matrix-only attachment message.",
+        }
+        kwargs["files"] = {
+            "file": ("matrix-note.txt", b"matrix attachment", "text/plain")
+        }
     elif body is not None:
         kwargs["json"] = body
     if params is not None:
@@ -540,6 +597,22 @@ async def test_nurse_reads_clinical_data_but_has_no_admin_panel_access(
             headers=csrf_headers(client),
         )
     ).status_code == 403
+    assert (await client.get("/api/v1/appointments/history")).status_code == 200
+    assert (
+        await client.get(
+            "/api/v1/appointments/history/export.csv",
+            params={
+                "start": now.isoformat(),
+                "end": (now + timedelta(days=1)).isoformat(),
+            },
+        )
+    ).status_code == 403
+
+    # Internal messaging is available to every staff role, including Nurse,
+    # without granting any administrative access.
+    assert (await client.get("/api/v1/messages")).status_code == 200
+    assert (await client.get("/api/v1/messages/counts")).status_code == 200
+    assert (await client.get("/api/v1/messages/recipients")).status_code == 200
 
     assert (await client.get("/api/v1/staff")).status_code == 403  # no staff:read
     assert (await client.get("/api/v1/audit")).status_code == 403  # no audit:read

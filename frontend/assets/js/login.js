@@ -9,6 +9,7 @@ import * as api from './api.js';
 import * as auth from './auth.js';
 import * as prefetch from './prefetch.js';
 import * as theme from './theme.js';
+import * as i18n from './i18n.js';
 import * as ui from './ui.js';
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -59,6 +60,10 @@ function fieldMessage(details, fieldName) {
 
 function renderSignedIn(user) {
   document.getElementById('login-card').hidden = true;
+  const heroCta = document.getElementById('landing-hero-cta');
+  const mobileCta = document.getElementById('landing-mobile-cta');
+  if (heroCta) heroCta.hidden = true;
+  if (mobileCta) mobileCta.hidden = true;
   const card = document.getElementById('signed-in-card');
   card.hidden = false;
 
@@ -191,7 +196,9 @@ function initLoginForm() {
 ui.onReady(async () => {
   ui.wireFooterDialogs();
   ui.setRetryHandler(() => window.location.reload());
-  theme.mountSwitcher(document.querySelector('.landing-header'));
+  const landingHeader = document.querySelector('.landing-header');
+  i18n.mountSwitcher(landingHeader);
+  theme.mountSwitcher(landingHeader);
   initLoginForm();
   // Pre-rendering (prefetch.js): a successful sign-in lands on the dashboard,
   // so warm its module on idle (link hint only — nothing is executed early).

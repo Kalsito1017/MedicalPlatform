@@ -9,8 +9,8 @@ later wave builds.
 | patient:read      | yes    | yes   | yes                    |
 | patient:write     | yes    | no    | yes                    |
 | patient:delete    | no     | no    | yes                    |
-| message:read      | yes    | no    | yes                    |
-| message:write     | yes    | no    | yes                    |
+| message:read      | yes    | yes   | yes                    |
+| message:write     | yes    | yes   | yes                    |
 | logs:read         | no     | no    | yes                    |
 | lab:read          | yes    | yes   | yes                    |
 | prescription:read | yes    | yes   | yes                    |
@@ -19,6 +19,10 @@ later wave builds.
 | role:assign       | no     | no    | yes                    |
 | audit:read        | no     | no    | yes                    |
 | analytics:read    | no     | no    | yes                    |
+| appointment:read  | yes    | yes   | yes                    |
+| appointment:write | yes    | no    | yes                    |
+| appointment:manage_availability | yes | no | yes             |
+| appointment:export | yes   | no    | yes                    |
 
 Deny by default: unknown roles have no permissions, unknown permissions are
 never granted, and the absence of an authenticated principal is a denial.
@@ -57,6 +61,7 @@ PermissionLiteral = Literal[
     "appointment:read",
     "appointment:write",
     "appointment:manage_availability",
+    "appointment:export",
 ]
 
 RoleLiteral = Literal["doctor", "nurse", "clinical_admin"]
@@ -79,6 +84,7 @@ class Permission(str, Enum):
     APPOINTMENT_READ = "appointment:read"
     APPOINTMENT_WRITE = "appointment:write"
     APPOINTMENT_MANAGE_AVAILABILITY = "appointment:manage_availability"
+    APPOINTMENT_EXPORT = "appointment:export"
 
 
 class Role(str, Enum):
@@ -103,11 +109,16 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             Permission.APPOINTMENT_READ.value,
             Permission.APPOINTMENT_WRITE.value,
             Permission.APPOINTMENT_MANAGE_AVAILABILITY.value,
+            Permission.APPOINTMENT_EXPORT.value,
         }
     ),
     Role.NURSE.value: frozenset(
         {
             Permission.PATIENT_READ.value,
+            # Internal staff messaging is available to every staff role; this
+            # grants no administrative or clinical write access.
+            Permission.MESSAGE_READ.value,
+            Permission.MESSAGE_WRITE.value,
             Permission.LAB_READ.value,
             Permission.PRESCRIPTION_READ.value,
             # Read-only clinic schedule; write/availability remain doctor/admin.

@@ -20,6 +20,7 @@ from sqlalchemy import (
     Text,
     Time,
     Uuid,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -155,4 +156,70 @@ class Appointment(TimestampMixin, Base):
 
 
 # Helpers for service-layer queries (kept next to the model vocabulary).
+class AppointmentEvent(Base):
+    """Immutable lifecycle event for an appointment.
+
+    Keeps the original/rescheduled times and status transitions that the single
+    current appointment row cannot preserve. It intentionally contains no
+    clinical notes, patient identifiers, or free-form payloads.
+    """
+
+    __tablename__ = "appointment_event"
+    __table_args__ = (
+        CheckConstraint(
+            "event_type IN ('created', 'updated', 'rescheduled', 'status_changed', 'calendar_removed')",
+            name="ck_appointment_event_type",
+        ),
+        CheckConstraint(
+            "old_status IS NULL OR old_status IN "
+            "('scheduled', 'confirmed', 'completed', 'cancelled', 'no_show')",
+            name="ck_appointment_event_old_status",
+        ),
+        CheckConstraint(
+            "new_status IS NULL OR new_status IN "
+            "('scheduled', 'confirmed', 'completed', 'cancelled', 'no_show')",
+            name="ck_appointment_event_new_status",
+        ),
+        Index(
+            "ix_appointment_event_appointment_created",
+            "appointment_id",
+            "created_at",
+        ),
+        {"schema": SCHEMA},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    appointment_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey(f"{SCHEMA}.appointment.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("admin.staff_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    old_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    old_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    new_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    new_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    old_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    new_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 ACTIVE_APPOINTMENT_STATUSES = ("scheduled", "confirmed")

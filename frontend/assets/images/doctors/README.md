@@ -10,3 +10,5 @@ the authorized UI Faces collection).
 - Replace them with approved, licensed staff photos (or a proper identity
   provider) before any real deployment.
 - Files: `doctor-1.jpg` … `doctor-4.jpg`, 128×128 JPEG.
+- The three canonical seeded staff accounts use separate synthetic portraits in
+  `../staff/` (see `../staff/README.md`).

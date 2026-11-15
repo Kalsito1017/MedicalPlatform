@@ -48,9 +48,13 @@ SECURITY_DOC_AUDIT_ACTIONS = {
     "appointment.update",
     "appointment.reschedule",
     "appointment.cancel",
+    "appointment.complete",
+    "appointment.no_show",
+    "appointment.history.export",
     "appointment.denied",
     "appointment.availability.update",
     "appointment.ai.propose",
+    "appointment.correction",
 }
 
 
@@ -185,6 +189,50 @@ async def test_security_doc_audit_inventory_is_emitted(
         f"/api/v1/appointments/{appointment_id}/cancel", headers=csrf_headers(client)
     )
     assert cancelled.status_code == 200, cancelled.text
+    completed_appointment = await client.post(
+        "/api/v1/appointments",
+        json={
+            "patient_id": str(clinical_data.patient_id),
+            "start_at": (start_at + timedelta(hours=2)).isoformat(),
+            "duration_minutes": 30,
+        },
+        headers=csrf_headers(client),
+    )
+    assert completed_appointment.status_code == 201, completed_appointment.text
+    completed_id = completed_appointment.json()["id"]
+    assert (
+        await client.patch(
+            f"/api/v1/appointments/{completed_id}",
+            json={"status": "completed"},
+            headers=csrf_headers(client),
+        )
+    ).status_code == 200
+    no_show_appointment = await client.post(
+        "/api/v1/appointments",
+        json={
+            "patient_id": str(clinical_data.patient_id),
+            "start_at": (start_at + timedelta(hours=3)).isoformat(),
+            "duration_minutes": 30,
+        },
+        headers=csrf_headers(client),
+    )
+    assert no_show_appointment.status_code == 201, no_show_appointment.text
+    no_show_id = no_show_appointment.json()["id"]
+    assert (
+        await client.patch(
+            f"/api/v1/appointments/{no_show_id}",
+            json={"status": "no_show"},
+            headers=csrf_headers(client),
+        )
+    ).status_code == 200
+    exported = await client.get(
+        "/api/v1/appointments/history/export.csv",
+        params={
+            "start": (start_at - timedelta(days=1)).isoformat(),
+            "end": (start_at + timedelta(days=1)).isoformat(),
+        },
+    )
+    assert exported.status_code == 200, exported.text
     denied = await client.post(
         "/api/v1/appointments",
         json={

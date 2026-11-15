@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Self-hosted whisper.cpp speech service (CPU only, Tiny multilingual model).
+# Self-hosted whisper.cpp speech service (CPU only, Base multilingual model).
 #
 # Pinned release and checksums: the source tarball and the model are both
 # verified before use, and the model is baked into the image so the runtime
@@ -40,16 +40,16 @@ RUN cmake -B build \
 # --- Verified model ----------------------------------------------------------
 FROM debian:bookworm-slim AS model
 
-ARG MODEL_SHA256=be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21
+ARG MODEL_SHA256=60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /models \
-    && curl -fsSL -o /models/ggml-tiny.bin \
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin" \
-    && echo "${MODEL_SHA256}  /models/ggml-tiny.bin" | sha256sum -c -
+    && curl -fsSL -o /models/ggml-base.bin \
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin" \
+    && echo "${MODEL_SHA256}  /models/ggml-base.bin" | sha256sum -c -
 
 # --- Runtime -----------------------------------------------------------------
 FROM debian:bookworm-slim AS runtime
@@ -65,7 +65,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid speech --home-dir /app --no-create-home speech
 
 COPY --from=builder /build/whisper.cpp-1.9.5/build/bin/whisper-server /usr/local/bin/whisper-server
-COPY --from=model --chown=speech:speech /models/ggml-tiny.bin /models/ggml-tiny.bin
+COPY --from=model --chown=speech:speech /models/ggml-base.bin /models/ggml-base.bin
 
 USER speech
 EXPOSE 8080
@@ -74,4 +74,4 @@ HEALTHCHECK --interval=20s --timeout=5s --start-period=20s --retries=6 \
     CMD curl -fsS "http://127.0.0.1:${WHISPER_PORT}/health" >/dev/null || exit 1
 
 # CPU only; the model path is fixed and baked into the image.
-ENTRYPOINT ["sh", "-c", "exec whisper-server -m /models/ggml-tiny.bin --host 0.0.0.0 --port \"${WHISPER_PORT}\" -t \"${WHISPER_THREADS}\" --no-gpu"]
+ENTRYPOINT ["sh", "-c", "exec whisper-server -m /models/ggml-base.bin --host 0.0.0.0 --port \"${WHISPER_PORT}\" -t \"${WHISPER_THREADS}\" --no-gpu"]

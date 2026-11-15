@@ -23,8 +23,8 @@ EXPECTED_MATRIX: dict[str, dict[str, bool]] = {
     "patient:read": {"doctor": True, "nurse": True, "clinical_admin": True},
     "patient:write": {"doctor": True, "nurse": False, "clinical_admin": True},
     "patient:delete": {"doctor": False, "nurse": False, "clinical_admin": True},
-    "message:read": {"doctor": True, "nurse": False, "clinical_admin": True},
-    "message:write": {"doctor": True, "nurse": False, "clinical_admin": True},
+    "message:read": {"doctor": True, "nurse": True, "clinical_admin": True},
+    "message:write": {"doctor": True, "nurse": True, "clinical_admin": True},
     "logs:read": {"doctor": False, "nurse": False, "clinical_admin": True},
     "lab:read": {"doctor": True, "nurse": True, "clinical_admin": True},
     "prescription:read": {"doctor": True, "nurse": True, "clinical_admin": True},
@@ -40,6 +40,7 @@ EXPECTED_MATRIX: dict[str, dict[str, bool]] = {
         "nurse": False,
         "clinical_admin": True,
     },
+    "appointment:export": {"doctor": True, "nurse": False, "clinical_admin": True},
 }
 
 
@@ -87,9 +88,12 @@ def test_matrix_exactly_matches_expected_sets() -> None:
             "appointment:read",
             "appointment:write",
             "appointment:manage_availability",
+            "appointment:export",
         },
         "nurse": {
             "patient:read",
+            "message:read",
+            "message:write",
             "lab:read",
             "prescription:read",
             "appointment:read",

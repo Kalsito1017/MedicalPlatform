@@ -14,7 +14,11 @@ MESSAGE_BODY_MAX = 5000
 
 
 class MessageCreate(BaseModel):
-    """Send one staff-to-staff message; no attachments or patient payloads."""
+    """Send one text-only staff-to-staff message.
+
+    Attachments use the separate multipart endpoint and are validated by
+    `app.services.message_attachments` before they are stored.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +43,18 @@ class MessageCreate(BaseModel):
         return stripped
 
 
+class MessageAttachmentOut(BaseModel):
+    """Safe attachment metadata; the bytes are fetched from the download route."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    filename: str
+    content_type: str
+    size_bytes: int = Field(ge=1)
+    created_at: Timestamp
+
+
 class MessageOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +66,7 @@ class MessageOut(BaseModel):
     subject: str | None = None
     body: str
     read_at: Timestamp | None = None
+    attachment: MessageAttachmentOut | None = None
     created_at: Timestamp
     updated_at: Timestamp
 

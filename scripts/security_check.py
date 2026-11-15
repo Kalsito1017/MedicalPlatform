@@ -104,6 +104,9 @@ THEME_STORAGE_FILES = {
     "frontend/assets/js/theme-init.js",
     "frontend/assets/js/theme.js",
 }
+LANGUAGE_STORAGE_FILES = {
+    "frontend/assets/js/i18n.js",
+}
 
 FORBIDDEN_PATHS = [
     ("env-file", re.compile(r"(^|/)\.env(\.[^/]+)?$"), {".env.example"}),
@@ -297,10 +300,17 @@ def check_frontend_hygiene() -> tuple[list[str], int]:
             (JS_WEB_STORAGE, "web-storage", "keep data out of local/session storage"),
         ):
             if name == "web-storage" and rel in THEME_STORAGE_FILES:
-                # The theme preference is the only sanctioned web-storage use.
+                # The theme preference is a sanctioned web-storage use.
                 if "medicore-theme" not in source and "THEME_STORAGE_KEY" not in source:
                     findings.append(
                         f"{rel} [web-storage] theme storage must use the medicore-theme key only"
+                    )
+                continue
+            if name == "web-storage" and rel in LANGUAGE_STORAGE_FILES:
+                # The language preference is the other sanctioned web-storage use.
+                if "medicore-language" not in source:
+                    findings.append(
+                        f"{rel} [web-storage] language storage must use the medicore-language key only"
                     )
                 continue
             for match in pattern.finditer(source):

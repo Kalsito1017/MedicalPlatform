@@ -88,7 +88,7 @@ services:
   #   docker compose --profile speech up --build
   # and set WHISPER_BASE_URL=http://speech:8080 for the app (see
   # docs/SPEECH_RECOGNITION.md). No published port: only this compose network
-  # can reach it. The image bakes the checksum-verified Tiny multilingual model.
+  # can reach it. The image bakes the checksum-verified Base multilingual model.
   speech:
     profiles: ["speech"]
     build:
