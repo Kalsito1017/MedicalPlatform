@@ -20,9 +20,11 @@ from app.api.deps import DbSession, Pagination, RequestId, reject_unknown_query
 from app.audit.logger import write_audit_event
 from app.auth.identity import client_ip
 from app.authorization.policy import Principal, require_permission
-from app.errors import NotFound
+from app.errors import NotFound, ValidationFailed
 from app.schemas.common import Page
 from app.schemas.patient import (
+    DiagnosisCodeUpdate,
+    DiagnosisOut,
     EncounterOut,
     LabResultOut,
     LabTrendsOut,
@@ -31,6 +33,7 @@ from app.schemas.patient import (
     PatientSummaryOut,
     PrescriptionOut,
 )
+from app.services import icd10 as icd10_service
 from app.services import labs as labs_service
 from app.services import outcomes as outcomes_service
 from app.services import patients as patients_service
@@ -251,6 +254,126 @@ async def get_patient_summary(
         visit_count=visit_count,
         medication_responses=medication_responses,
     )
+
+
+@router.get("/patients/{patient_id}/diagnoses", response_model=Page[DiagnosisOut])
+async def get_patient_diagnoses(
+    patient_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    pagination: Pagination,
+    request_id: RequestId,
+    _unknown: None = Depends(reject_unknown_query("limit", "offset")),
+    principal: Principal = Depends(require_permission("patient:read")),
+) -> Page[DiagnosisOut]:
+    """Complete paginated diagnosis/problem list for the printable record."""
+    allowed = await check_patient_access(principal, patient_id, db=db)
+    if not allowed:
+        await _audit_read(
+            db,
+            request=request,
+            request_id=request_id,
+            principal=principal,
+            action="diagnoses.read",
+            resource_type="patient",
+            resource_id=str(patient_id),
+            outcome="denied",
+        )
+        raise NotFound()
+    rows, total = await patients_service.list_diagnoses_page(
+        db, patient_id, limit=pagination.limit, offset=pagination.offset
+    )
+    await _audit_read(
+        db,
+        request=request,
+        request_id=request_id,
+        principal=principal,
+        action="diagnoses.read",
+        resource_type="patient",
+        resource_id=str(patient_id),
+        outcome="success",
+    )
+    return Page[DiagnosisOut](
+        items=[DiagnosisOut.model_validate(item) for item in rows],
+        total=total,
+        limit=pagination.limit,
+        offset=pagination.offset,
+    )
+
+
+@router.patch(
+    "/patients/{patient_id}/diagnoses/{diagnosis_id}",
+    response_model=DiagnosisOut,
+)
+async def update_diagnosis_code(
+    patient_id: uuid.UUID,
+    diagnosis_id: uuid.UUID,
+    body: DiagnosisCodeUpdate,
+    request: Request,
+    db: DbSession,
+    request_id: RequestId,
+    principal: Principal = Depends(require_permission("patient:write")),
+) -> DiagnosisOut:
+    """Assign, change, or clear one diagnosis's ICD-10 code.
+
+    The code is validated against the configured local catalogue on the server;
+    the frontend is never trusted. The recorded diagnosis name is unchanged.
+    `null`/blank clears the code (an unclassified diagnosis is allowed).
+    """
+    allowed = await check_patient_access(principal, patient_id, db=db)
+    diagnosis = (
+        await patients_service.get_diagnosis(db, patient_id, diagnosis_id)
+        if allowed
+        else None
+    )
+    if diagnosis is None:
+        await write_audit_event(
+            db,
+            actor_user_id=principal.user_uuid,
+            action="diagnosis.code.update",
+            resource_type="diagnosis",
+            resource_id=str(diagnosis_id),
+            outcome="denied",
+            request_id=request_id,
+            ip=client_ip(request),
+        )
+        await db.commit()
+        raise NotFound()
+
+    normalized = icd10_service.normalize_code(body.code)
+    if normalized:
+        try:
+            icd10_service.require_active(normalized)
+        except icd10_service.Icd10CodeError as exc:
+            await write_audit_event(
+                db,
+                actor_user_id=principal.user_uuid,
+                action="diagnosis.code.update",
+                resource_type="diagnosis",
+                resource_id=str(diagnosis_id),
+                outcome="error",
+                request_id=request_id,
+                ip=client_ip(request),
+            )
+            await db.commit()
+            raise ValidationFailed(
+                str(exc), details={"fields": {"code": str(exc)}}
+            ) from None
+
+    diagnosis.code = normalized
+    icd10_service.decorate(diagnosis)
+    await write_audit_event(
+        db,
+        actor_user_id=principal.user_uuid,
+        action="diagnosis.code.update",
+        resource_type="diagnosis",
+        resource_id=str(diagnosis_id),
+        outcome="success",
+        request_id=request_id,
+        ip=client_ip(request),
+    )
+    await db.commit()
+    return DiagnosisOut.model_validate(diagnosis)
 
 
 @router.get("/patients/{patient_id}/encounters", response_model=Page[EncounterOut])

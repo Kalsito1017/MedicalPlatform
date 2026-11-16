@@ -61,6 +61,52 @@ const ENCOUNTER = {
   weight_kg: '70.50',
   height_cm: '165.00',
 };
+const DIAGNOSES = [
+  {
+    id: 'dx1',
+    code: 'E11.9',
+    name: 'Type 2 diabetes mellitus',
+    status: 'active',
+    onset_date: '2024-05-01',
+    code_description: 'Неинсулинозависим захарен диабет, без усложнения',
+    code_description_en: 'Type 2 diabetes mellitus without complications',
+    code_status: 'confirmed',
+    code_version: 'NCPHA-2026-08-06 + 2025/2026 updates',
+  },
+  {
+    id: 'dx2',
+    code: 'I10',
+    name: 'Хипертония',
+    status: 'active',
+    onset_date: null,
+    code_description: 'ЕСЕНЦИАЛНА [ПЪРВИЧНА] ХИПЕРТОНИЯ',
+    code_description_en: 'Essential (primary) hypertension',
+    code_status: 'confirmed',
+    code_version: 'NCPHA-2026-08-06 + 2025/2026 updates',
+  },
+  {
+    id: 'dx3',
+    code: null,
+    name: 'Неуточнена диагноза',
+    status: 'resolved',
+    onset_date: null,
+    code_description: null,
+    code_description_en: null,
+    code_status: 'missing',
+    code_version: null,
+  },
+  {
+    id: 'dx4',
+    code: 'R53.83',
+    name: 'Друга умора',
+    status: 'active',
+    onset_date: null,
+    code_description: null,
+    code_description_en: null,
+    code_status: 'unknown',
+    code_version: null,
+  },
+];
 const LABS = [
   {
     id: 'lab1',
@@ -140,7 +186,7 @@ function response(data, status = 200) {
   };
 }
 
-function makeFetch({ labs = LABS, prescriptions = PRESCRIPTIONS, encounters = [ENCOUNTER], labsStatus = 200, labsPageSize = 0 } = {}) {
+function makeFetch({ diagnoses = DIAGNOSES, labs = LABS, prescriptions = PRESCRIPTIONS, encounters = [ENCOUNTER], labsStatus = 200, labsPageSize = 0 } = {}) {
   const calls = [];
   const fetchStub = async (url) => {
     calls.push(String(url));
@@ -156,6 +202,9 @@ function makeFetch({ labs = LABS, prescriptions = PRESCRIPTIONS, encounters = [E
     });
     if (path.endsWith('/patients/p1')) return response(PATIENT);
     if (path.endsWith('/patients/p1/summary')) return response(SUMMARY);
+    if (path.endsWith('/patients/p1/diagnoses')) {
+      return page(diagnoses.slice(offset, offset + requestedLimit));
+    }
     if (path.endsWith('/patients/p1/labs')) {
       if (labsStatus !== 200) {
         return response({ error: { code: 'internal_error', message: 'load failed' } }, labsStatus);
@@ -237,6 +286,7 @@ await check('report renders all sections, flags, ranges and safe text', () => {
   printRecord.renderPrintRecord(record, {
     patient: PATIENT,
     summary: SUMMARY,
+    diagnoses: DIAGNOSES,
     encounters: [ENCOUNTER],
     labs: LABS,
     prescriptions: PRESCRIPTIONS,
@@ -251,7 +301,17 @@ await check('report renders all sections, flags, ranges and safe text', () => {
     'A+',
     'Patient Information',
     'Patient Summary',
+    'Diagnoses and ICD-10 Codes',
     'Type 2 diabetes mellitus',
+    'E11.9',
+    'Type 2 diabetes mellitus without complications',
+    'I10',
+    'Essential (primary) hypertension',
+    'Неуточнена диагноза',
+    'ICD-10 code: Not assigned/confirmed',
+    'R53.83',
+    'Review required',
+    'No description in the configured catalogue.',
     'fatigue and cold intolerance',
     'Encounter History',
     'annual exam',
@@ -273,9 +333,55 @@ await check('report renders all sections, flags, ranges and safe text', () => {
     assert(report.includes(expected), `missing ${expected}`);
   }
   equal(record.querySelectorAll('.print-row--abnormal').length, 2, 'two abnormal lab rows');
-  equal(record.querySelectorAll('thead').length, 3, 'running header and both data tables expose headers');
+  equal(record.querySelectorAll('thead').length, 4, 'running header and all three data tables expose headers');
   equal(record.querySelectorAll('script').length, 0, 'no script element from clinical text');
   equal(record.querySelectorAll('img').length, 0, 'no image element from clinical text');
+});
+
+await check('diagnosis table pairs each diagnosis with its code and flags missing/unknown', () => {
+  const { record } = mount();
+  printRecord.renderPrintRecord(record, {
+    patient: PATIENT,
+    summary: SUMMARY,
+    diagnoses: DIAGNOSES,
+    encounters: [ENCOUNTER],
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  }, '05 Nov 2026, 12:00');
+
+  const section = record.querySelector('.print-section--diagnoses');
+  assert(section, 'dedicated diagnosis section missing');
+  equal(section.querySelectorAll('tr').length, 5, 'header plus four diagnosis rows');
+  const text = textOf(section);
+  for (const expected of [
+    'Diagnoses and ICD-10 Codes',
+    'Diagnosis',
+    'ICD-10 Code',
+    'ICD-10 Description',
+    'Status',
+    'Type 2 diabetes mellitus',
+    'E11.9',
+    'Type 2 diabetes mellitus without complications',
+    'Хипертония',
+    'I10',
+    'Essential (primary) hypertension',
+    'Неуточнена диагноза',
+    'ICD-10 code: Not assigned/confirmed',
+    'R53.83',
+    'Review required',
+    'No description in the configured catalogue.',
+    'Resolved',
+  ]) {
+    assert(text.includes(expected), `missing diagnosis output: ${expected}`);
+  }
+  equal((text.match(/E11\.9/g) || []).length, 1, 'diabetes code appears once');
+  equal((text.match(/I10/g) || []).length, 1, 'hypertension code appears once');
+  equal(
+    (text.match(/ICD-10 code: Not assigned\/confirmed/g) || []).length,
+    1,
+    'missing-code label appears once',
+  );
+  equal((text.match(/Review required/g) || []).length, 1, 'only the unknown code is flagged');
 });
 
 await check('missing data is displayed honestly, never fabricated', () => {
@@ -283,12 +389,14 @@ await check('missing data is displayed honestly, never fabricated', () => {
   printRecord.renderPrintRecord(record, {
     patient: { display_name: 'No Data Patient', mrn: 'MRN-9999' },
     summary: {},
+    diagnoses: [],
     encounters: [],
     labs: [],
     prescriptions: [],
   }, '05 Nov 2026, 12:00');
   const report = textOf(record);
   for (const expected of [
+    'No diagnoses recorded.',
     'No encounters recorded.',
     'No laboratory results recorded.',
     'No prescriptions recorded.',
@@ -311,6 +419,7 @@ await check('prepareAndPrint fetches complete data and calls native print', asyn
   });
   equal(printed, 1, 'window.print called once');
   equal(button.disabled, false, 'button restored');
+  assert(calls.some((url) => url.includes('/patients/p1/diagnoses')), 'diagnoses fetched');
   assert(calls.some((url) => url.includes('/patients/p1/encounters')), 'encounters fetched');
   assert(textOf(record).includes('Routine follow-up.'), 'encounter printed');
   assert(textOf(record).includes('Glucose'), 'lab printed');
@@ -373,6 +482,7 @@ await check('hostile clinical text is rendered as text, never as DOM', () => {
   printRecord.renderPrintRecord(record, {
     patient: { ...PATIENT, display_name: hostile },
     summary: { ...SUMMARY, symptoms: hostile },
+    diagnoses: [],
     encounters: [{ ...ENCOUNTER, summary: hostile }],
     labs: [],
     prescriptions: [],
@@ -389,6 +499,7 @@ await check('print record follows the selected EN/BG language', async () => {
   printRecord.renderPrintRecord(record, {
     patient: PATIENT,
     summary: SUMMARY,
+    diagnoses: DIAGNOSES,
     encounters: [ENCOUNTER],
     labs: LABS,
     prescriptions: PRESCRIPTIONS,
@@ -396,6 +507,12 @@ await check('print record follows the selected EN/BG language', async () => {
   const bulgarian = textOf(record);
   assert(bulgarian.includes('Медицинска карта на пациента'), 'Bulgarian print title missing');
   assert(bulgarian.includes('Информация за пациента'), 'Bulgarian patient section missing');
+  assert(bulgarian.includes('Диагнози и кодове по МКБ-10'), 'Bulgarian diagnosis section missing');
+  assert(bulgarian.includes('ЕСЕНЦИАЛНА [ПЪРВИЧНА] ХИПЕРТОНИЯ'), 'Bulgarian ICD description missing');
+  assert(bulgarian.includes('МКБ-10 код: Не е въведен/потвърден'), 'Bulgarian missing-code label missing');
+  assert(bulgarian.includes('Изисква преглед'), 'Bulgarian review flag missing');
+  assert(bulgarian.includes('Разрешена'), 'Bulgarian diagnosis status missing');
+  assert(bulgarian.includes('Диагноза'), 'Bulgarian diagnosis header missing');
   assert(bulgarian.includes('Лабораторни резултати'), 'Bulgarian lab section missing');
   assert(bulgarian.includes('НАД НОРМАТА ↑'), 'Bulgarian high lab flag missing');
   assert(bulgarian.includes('ПОД НОРМАТА ↓'), 'Bulgarian low lab flag missing');
@@ -406,11 +523,14 @@ await check('print record follows the selected EN/BG language', async () => {
   printRecord.renderPrintRecord(englishRecord, {
     patient: PATIENT,
     summary: SUMMARY,
+    diagnoses: DIAGNOSES,
     encounters: [ENCOUNTER],
     labs: LABS,
     prescriptions: PRESCRIPTIONS,
   }, '05 Nov 2026, 12:00');
   assert(textOf(englishRecord).includes('Patient Medical Record'), 'English print title not restored');
+  assert(textOf(englishRecord).includes('Diagnoses and ICD-10 Codes'), 'English diagnosis section missing');
+  assert(textOf(englishRecord).includes('ICD-10 Code'), 'English ICD-10 header missing');
 });
 
 for (const result of results) {

@@ -23,6 +23,7 @@ from app.llm.provider import (
     LLMUnavailable,
     NullProvider,
     OpenCodeProvider,
+    build_correction_provider,
     build_provider,
 )
 from app.config import load_settings
@@ -435,6 +436,23 @@ def test_build_provider_configures_open_code_provider() -> None:
         update={"llm_enabled": True, "llm_api_key": SecretStr(SENTINEL_KEY), "llm_model": ""}
     )
     assert build_provider(defaulted).model_name == DEFAULT_LLM_MODEL
+
+
+def test_build_correction_provider_uses_separate_model() -> None:
+    base = load_settings(env_file=None)
+    settings = base.model_copy(
+        update={
+            "llm_enabled": True,
+            "llm_api_key": SecretStr(SENTINEL_KEY),
+            "llm_api_base_url": BASE_URL,
+            "llm_model": "deepseek-v4.1-flash",
+            "llm_correction_model": "gpt-6-luna",
+        }
+    )
+    correction = build_correction_provider(settings)
+    assert isinstance(correction, OpenCodeProvider)
+    assert correction.model_name == "gpt-6-luna"
+    assert build_provider(settings).model_name == "deepseek-v4.1-flash"
 
 
 # --- general-mode tool-call bound (docs/API.md "AI assistant") ------------

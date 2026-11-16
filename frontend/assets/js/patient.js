@@ -18,6 +18,7 @@ import * as aiHistory from './ai-history.js';
 import * as auth from './auth.js';
 import * as cache from './cache.js';
 import * as commandMenu from './command-menu.js?v=20261109j';
+import * as i18n from './i18n.js';
 import * as markdown from './markdown.js';
 import * as prefetch from './prefetch.js';
 import * as toast from './toast.js';
@@ -27,6 +28,7 @@ const PAGE_SIZE = 20;
 
 const state = {
   patientId: null,
+  user: null,
   labsOffset: 0,
   prescriptionsOffset: 0,
   labsTotal: 0,
@@ -153,6 +155,233 @@ function listItemLabel(entry) {
     );
   }
   return entry == null ? '' : String(entry);
+}
+
+function diagnosisStatusLabel(status) {
+  const labels = {
+    active: 'Active',
+    resolved: 'Resolved',
+    ruled_out: 'Ruled out',
+  };
+  return labels[status] || 'Unknown';
+}
+
+function diagnosisDescription(entry) {
+  if (i18n.getLanguage() === 'en') {
+    return firstValue(entry, ['code_description_en', 'code_description']);
+  }
+  return firstValue(entry, ['code_description', 'code_description_en']);
+}
+
+function renderDiagnosisItem(entry, canWrite) {
+  const id = firstValue(entry, ['id']);
+  const code = firstValue(entry, ['code']);
+  const codeStatus = firstValue(entry, ['code_status']) || (code ? 'unknown' : 'missing');
+  const description = diagnosisDescription(entry);
+  const review = Boolean(code && codeStatus !== 'confirmed');
+  const name = firstValue(entry, ['name', 'display_name']) || 'Unnamed diagnosis';
+  const status = firstValue(entry, ['status']) || 'active';
+  return ui.el('li', { class: 'diagnosis-item' },
+    ui.el('div', { class: 'diagnosis-item__body' },
+      ui.el('p', { class: 'diagnosis-item__name', text: name }),
+      ui.el('p', { class: 'diagnosis-item__code' },
+        ui.el('span', { class: 'mono', text: code || 'ICD-10 code: Not assigned/confirmed' }),
+        description
+          ? ui.el('span', { class: 'diagnosis-item__description', text: description })
+          : null,
+      ),
+      review
+        ? ui.el('p', {
+            class: 'field-hint',
+            text: 'Review required: code is not active in the configured catalogue.',
+          })
+        : null,
+    ),
+    ui.el('div', { class: 'diagnosis-item__side' },
+      statusBadge(diagnosisStatusLabel(status)),
+      canWrite && id
+        ? ui.el('button', {
+            class: 'btn btn-secondary btn-sm',
+            type: 'button',
+            onClick: () => openIcd10Dialog(entry),
+          }, code ? 'Change ICD-10 code' : 'Assign ICD-10 code')
+        : null,
+    ),
+  );
+}
+
+function openIcd10Dialog(diagnosis) {
+  const diagnosisId = firstValue(diagnosis, ['id']);
+  if (!diagnosisId) return;
+  const currentCode = firstValue(diagnosis, ['code']);
+  const currentDescription = diagnosisDescription(diagnosis);
+  let selected = null;
+  let timer = null;
+  let closeDialog = () => {};
+
+  const searchInput = ui.el('input', {
+    id: 'icd10-search-input',
+    type: 'search',
+    placeholder: 'Search by ICD-10 code or diagnosis name',
+    autocomplete: 'off',
+  });
+  const searchStatus = ui.el('p', {
+    class: 'field-hint',
+    role: 'status',
+    'aria-live': 'polite',
+    text: 'Type at least 2 characters.',
+  });
+  const results = ui.el('div', {
+    class: 'icd10-results',
+    role: 'listbox',
+    'aria-label': 'ICD-10 search results',
+  });
+  const selectedPreview = ui.el('p', {
+    class: 'icd10-selected',
+    text: currentCode
+      ? `${currentCode}${currentDescription ? ` \u2014 ${currentDescription}` : ''}`
+      : 'No code selected.',
+  });
+  const current = ui.el('p', {
+    class: 'text-muted',
+    text: currentCode
+      ? `${i18n.t('Current code')}: ${currentCode}`
+      : i18n.t('Current code: Not assigned/confirmed'),
+  });
+
+  const confirmButton = ui.el('button', {
+    class: 'btn btn-primary',
+    type: 'button',
+    disabled: true,
+    onClick: () => {
+      if (selected) save(selected.code);
+    },
+  }, 'Confirm code');
+  const clearButton = currentCode
+    ? ui.el('button', {
+        class: 'btn btn-ghost',
+        type: 'button',
+        onClick: () => save(null),
+      }, 'Clear code')
+    : null;
+  const cancelButton = ui.el('button', {
+    class: 'btn btn-secondary',
+    type: 'button',
+    onClick: () => closeDialog(),
+  }, 'Cancel');
+
+  async function save(code) {
+    confirmButton.disabled = true;
+    if (clearButton) clearButton.disabled = true;
+    searchStatus.textContent = i18n.t('Saving…');
+    try {
+      await api.patch(
+        `/patients/${encodeURIComponent(state.patientId)}/diagnoses/${encodeURIComponent(diagnosisId)}`,
+        { code },
+      );
+      const summaryFragment = `/patients/${encodeURIComponent(state.patientId)}/summary`;
+      cache.invalidate(summaryFragment);
+      cache.invalidate(`/patients/${encodeURIComponent(state.patientId)}/diagnoses`);
+      closeDialog();
+      loadSummary();
+      toast.showToast({
+        message: code ? i18n.t('ICD-10 code assigned.') : i18n.t('ICD-10 code cleared.'),
+        tone: 'success',
+      });
+    } catch (error) {
+      searchStatus.textContent = api.describeApiError(error).message;
+      confirmButton.disabled = !selected;
+      if (clearButton) clearButton.disabled = false;
+    }
+  }
+
+  function select(entry, button) {
+    selected = entry;
+    for (const node of results.querySelectorAll('.icd10-result')) {
+      const active = node === button;
+      node.classList.toggle('is-selected', active);
+      node.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    const name = i18n.getLanguage() === 'en'
+      ? (entry.name_en || entry.name_bg)
+      : entry.name_bg;
+    selectedPreview.textContent = `${entry.code} \u2014 ${name}`;
+    confirmButton.disabled = entry.status !== 'active';
+  }
+
+  function renderResults(items) {
+    ui.clear(results);
+    if (items.length === 0) {
+      searchStatus.textContent = i18n.t('No matching ICD-10 codes.');
+      return;
+    }
+    searchStatus.textContent = items.length === 1
+      ? i18n.t('1 result.')
+      : i18n.t('{count} results.', { count: items.length });
+    for (const entry of items) {
+      const name = i18n.getLanguage() === 'en'
+        ? (entry.name_en || entry.name_bg)
+        : entry.name_bg;
+      const button = ui.el('button', {
+        type: 'button',
+        class: 'icd10-result',
+        'aria-pressed': 'false',
+        disabled: entry.status !== 'active',
+        onClick: () => select(entry, button),
+      },
+        ui.el('span', { class: 'icd10-result__code mono', text: entry.code }),
+        ui.el('span', { class: 'icd10-result__name', text: name }),
+        entry.status !== 'active'
+          ? ui.el('span', { class: 'badge badge--warn', text: 'Review required' })
+          : null,
+      );
+      results.append(button);
+    }
+  }
+
+  async function runSearch() {
+    const q = searchInput.value.trim();
+    if (q.length < 2) {
+      ui.clear(results);
+      searchStatus.textContent = i18n.t('Type at least 2 characters.');
+      return;
+    }
+    searchStatus.textContent = i18n.t('Searching…');
+    try {
+      const response = await api.get('/icd10/search', { q, limit: 20 });
+      renderResults(Array.isArray(response.items) ? response.items : []);
+    } catch (error) {
+      ui.clear(results);
+      searchStatus.textContent = api.describeApiError(error).message;
+    }
+  }
+
+  searchInput.addEventListener('input', () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(runSearch, 250);
+  });
+
+  const handle = ui.openDialog({
+    title: 'Assign ICD-10 code',
+    bodyNodes: [
+      ui.el('p', {}, ui.el('strong', { text: firstValue(diagnosis, ['name']) || 'Diagnosis' })),
+      current,
+      ui.el('div', { class: 'field' },
+        ui.el('label', { for: 'icd10-search-input', text: 'ICD-10 code' }),
+        searchInput,
+      ),
+      searchStatus,
+      results,
+      selectedPreview,
+    ],
+    actionNodes: [cancelButton, clearButton, confirmButton],
+    onClose: () => {
+      if (timer) clearTimeout(timer);
+    },
+  });
+  closeDialog = handle.close;
+  searchInput.value = currentCode || firstValue(diagnosis, ['name']) || '';
+  if (searchInput.value.trim().length >= 2) runSearch();
 }
 
 /* ------------------------------------------------------------- sections */
@@ -346,6 +575,7 @@ function renderSummary(summary) {
 
   const encounters = asList(firstValue(summary, ['encounters']) || summary.encounters);
   const problems = asList(firstValue(summary, ['active_problems', 'problems']));
+  const diagnoses = asList(summary.diagnoses);
   const latestLabs = asList(
     firstValue(summary, ['latest_labs', 'latestLabs', 'labs']) || summary.latest_labs
   );
@@ -364,9 +594,12 @@ function renderSummary(summary) {
       contentNode,
     );
 
-  const problemsNode = problems.length > 0
-    ? ui.el('ul', { class: 'chip-list' }, problems.map((entry) => ui.el('li', { class: 'chip', text: listItemLabel(entry) })))
-    : ui.el('p', { class: 'text-muted', text: 'No active problems recorded.' });
+  const canWriteDiagnosis = auth.hasPermission(state.user, 'patient:write');
+  const diagnosisEntries = diagnoses.length > 0 ? diagnoses : problems;
+  const diagnosesNode = diagnosisEntries.length > 0
+    ? ui.el('ul', { class: 'diagnosis-list' },
+        diagnosisEntries.map((entry) => renderDiagnosisItem(entry, canWriteDiagnosis)))
+    : ui.el('p', { class: 'text-muted', text: 'No diagnoses recorded.' });
 
   const labsNode = latestLabs.length > 0
     ? ui.el('ul', { class: 'compact-list' }, latestLabs.map((entry) => {
@@ -397,10 +630,10 @@ function renderSummary(summary) {
       block('Last visit', lastVisitNode),
       block('Vitals', vitalsSummaryNode(vitals)),
       block('Observed treatment response', responseListNode(responses)),
-      block('Active problems', problemsNode),
       block('Latest labs', labsNode),
       block('Active medications', medsNode),
     ),
+    block('Diagnoses and ICD-10', diagnosesNode),
   );
 
   renderEncounters(encounters);
@@ -869,6 +1102,7 @@ ui.onReady(async () => {
   try {
     user = await auth.initAuthChrome({ active: 'patients' });
     if (!user) return;
+    state.user = user;
   } catch (error) {
     ui.renderErrorState(document.getElementById('page-body'), error, {
       describe: api.describeApiError,

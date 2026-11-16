@@ -111,6 +111,8 @@ User payload: `{ "id", "email", "display_name", "roles": ["doctor"], "permission
 | DELETE | `/api/v1/patients/{patient_id}` | `patient:delete` | **Admin-only soft delete.** `204` empty body; the patient row gets `deleted_at` and disappears from list/search/detail and appointment reads, while child clinical rows and audit history are retained internally. Unknown/already-deleted id is `404 not_found`. Audited `patient.delete` (metadata only). Doctor/Nurse `403`. |
 | GET | `/api/v1/patients/{patient_id}` | `patient:read` | Demographics. |
 | GET | `/api/v1/patients/{patient_id}/summary` | `patient:read` | Demographics, encounters, active problems, latest labs, active meds **plus** visit/vitals summaries and observed medication-response rows (additive extensions; latest 2026-11-11). |
+| GET | `/api/v1/patients/{patient_id}/diagnoses` | `patient:read` | Complete paginated diagnosis/problem list for the printable record; active first, then most recent. Each item carries the stored ICD-10 code plus catalogue-derived description/status (additive extension, 2026-11-16). |
+| PATCH | `/api/v1/patients/{patient_id}/diagnoses/{diagnosis_id}` | `patient:write` | Assign, change, or clear the ICD-10 code on one diagnosis. Body `{code: "I10" \| null}`. The server validates the code against the local catalogue; `null`/blank clears it. Audited `diagnosis.code.update` (metadata only). Doctor/Admin only; Nurse `403`. |
 | GET | `/api/v1/patients/{patient_id}/encounters` | `patient:read` | Paginated encounter history, newest first; `?limit=`/`?offset=` bounded 1–100; 404 concealment; additive extension, 2026-11-08. |
 | GET | `/api/v1/patients/{patient_id}/labs` | `lab:read` | Paginated. `?limit=` bounded. |
 | GET | `/api/v1/patients/{patient_id}/labs/trends` | `lab:read` | Bounded numeric lab trends; see the 2026-11-04 contract below. |
@@ -169,7 +171,9 @@ the tool bounds) so the UI and the AI report identical facts.
               "temperature_c", "oxygen_saturation",
               "previous_systolic_bp", "previous_diastolic_bp",
               "previous_heart_rate" },
-  "diagnoses": [ { "code", "name", "status", "onset_date" } ],
+  "diagnoses": [ { "id", "code", "name", "status", "onset_date",
+                   "code_description", "code_description_en",
+                   "code_status", "code_version" } ],
   "active_problems": [ { "code", "display_name", "status", "onset_date" } ],
   "problems": [ … same as active_problems … ],
   "symptoms": "…", "assessment": "…", "proposed_plan": "…",
@@ -210,7 +214,13 @@ Semantics of the added fields:
   observed synthetic-data direction and is **not a causal claim**. No new
   stored outcome table exists.
 - `diagnoses`: the problem list, **active entries first**, then most recent;
-  `active_problems`/`problems` are the active subset. `symptoms`/`assessment`/
+  `active_problems`/`problems` are the active subset. `code` is the stored
+  ICD-10 (МКБ-10) code and may be `null` when no code has been assigned.
+  `code_description`/`code_description_en` come from the configured local
+  catalogue, `code_status` is `confirmed`, `missing`, `review_required`, or
+  `unknown`, and `code_version` is set only for a confirmed code. The catalogue
+  never invents a code: a missing/unknown code is printed as not
+  assigned/confirmed or flagged for review. `symptoms`/`assessment`/
   `proposed_plan` come from the **most recent clinical note** (`null` when the
   patient has no note) — proposed treatment is what the record says was
   proposed, never advice.
@@ -221,6 +231,67 @@ Semantics of the added fields:
 - The MCP `get_patient_summary` response carries the same clinical facts plus
   the compact `last_visit`, `visit_count` and up to three
   `medication_responses`; it does not add a new MCP tool.
+
+### Diagnosis list and ICD-10 code assignment
+
+**Additive extension, 2026-11-16.** The existing `patients.diagnosis.code`
+column is reused as the ICD-10 (МКБ-10) code. It is nullable: an
+unclassified/pending diagnosis is legitimate and must print as
+“not assigned/confirmed”, never as an invented code.
+
+`GET /api/v1/patients/{patient_id}/diagnoses` returns the complete paginated
+list in the standard `Page` envelope (`limit` 1–100, default 20; `offset` ≥ 0).
+Items are ordered active first, then most recent. Each item has the shape:
+
+```json
+{
+  "id": "uuid",
+  "code": "I10",
+  "name": "Хипертония",
+  "status": "active",
+  "onset_date": "2024-05-01",
+  "code_description": "ЕСЕНЦИАЛНА [ПЪРВИЧНА] ХИПЕРТОНИЯ",
+  "code_description_en": "Essential (primary) hypertension",
+  "code_status": "confirmed",
+  "code_version": "NCPHA-2026-08-06 + 2025/2026 updates"
+}
+```
+
+`code_status` is `confirmed` (active catalogue entry), `missing` (no code),
+`review_required` (catalogue entry is not active), or `unknown` (stored code is
+not in the configured catalogue). The recorded `name` is always preserved; the
+catalogue description is supplementary.
+
+`PATCH /api/v1/patients/{patient_id}/diagnoses/{diagnosis_id}` assigns, changes,
+or clears the code:
+
+```json
+{ "code": "I10" }
+```
+
+- The server normalizes case/whitespace and validates membership in the local
+  catalogue. A malformed, unknown, or non-active code is
+  `400 validation_error` with a `code` field error.
+- `{ "code": null }` or `{ "code": "" }` clears the code.
+- The diagnosis must belong to the path patient; an unknown or mismatched id is
+  `404 not_found` (concealment).
+- `patient:write` is required: Doctor/Admin can assign; Nurse is read-only and
+  receives `403`.
+- The recorded diagnosis name and encounter association are unchanged.
+- Audited `diagnosis.code.update` (actor, diagnosis resource id, outcome,
+  request id; **never** the diagnosis text or code value in the audit row).
+  Listing diagnoses is audited `diagnoses.read`.
+
+### ICD-10 catalogue search
+
+| Method | Path | Permission | Notes |
+|---|---|---|---|
+| GET | `/api/v1/icd10/search` | `patient:write` | Bounded search by ICD-10 code, Bulgarian name, or English name. Query `q` is 2–100 chars; `limit` is 1–50 (default 20). Returns `{items, catalogue}` where each item is `{code, name_bg, name_en, status, level}` and `catalogue` carries version/source/retrieved/scope/licence metadata. Never returns the complete catalogue in one response. |
+
+The search is coding-only (Doctor/Admin). It never calls NCPHA or another
+external service at request time. The local catalogue is versioned; see
+`docs/ICD10_DIAGNOSIS_CODING.md` for sourcing, licensing, the full-XLSX import
+process, and clinical/legal review requirements.
 
 ### Encounter history (`GET /patients/{patient_id}/encounters`)
 

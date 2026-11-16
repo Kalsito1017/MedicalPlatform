@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     llm_api_base_url: str = "https://opencode.ai/inference/go"
     llm_api_key: SecretStr | None = None
     llm_model: str = ""
+    # The "Did you mean?" transcription check needs a fast, non-reasoning model:
+    # a reasoning model can spend the whole token budget on hidden reasoning and
+    # return an empty final message. This model is used only for that check.
+    llm_correction_model: str = "gpt-6-luna"
     llm_max_tool_calls: int = 4
     llm_request_timeout_seconds: int = 45
 

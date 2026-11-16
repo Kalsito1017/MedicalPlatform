@@ -91,6 +91,12 @@ const CORE_TERMS = {
   'Back to dashboard': 'Обратно към таблото',
   'View all patients': 'Всички пациенти',
   Born: 'Роден(а)',
+  Year: 'Година',
+  'Next month': 'Следващ месец',
+  'Previous month': 'Предишен месец',
+  'Next year': 'Следваща година',
+  'Previous year': 'Предишна година',
+  'Review every field. Nothing is created until you press “Create appointment”.': 'Прегледайте всяко поле. Нищо не се създава, докато не натиснете „Създай преглед“.',
 };
 
 await check('dictionary has no missing or empty Bulgarian entries', () => {
@@ -275,6 +281,36 @@ await check('dashboard patient cards localize birth and sex labels', async () =>
   i18n.setLanguage('en');
   assert(textOf(card).includes('Born'), 'birth label not restored');
   assert(textOf(card).includes('Female'), 'sex label not restored');
+});
+
+await check('multi-line text, textarea placeholders, and code content are handled', async () => {
+  installDom();
+  const i18n = await import('../assets/js/i18n.js');
+  const host = document.createElement('div');
+  host.append(document.createTextNode(
+    "Tap the circle, speak in Bulgarian or English — only these two languages are supported — then tap again to stop. The model detects which one automatically; you can still choose manually. Review the editable transcript before proposing an appointment.\n                Audio stays in this tab's memory, is never saved, and is cleared when you clear or leave."
+  ));
+  const textarea = document.createElement('textarea');
+  textarea.setAttribute('placeholder', 'The transcript appears here. You can type or edit it before asking the AI to propose an appointment.');
+  const code = document.createElement('code');
+  code.textContent = 'Dashboard';
+  host.append(textarea, code);
+  document.body.append(host);
+  i18n.setLanguage('bg');
+  i18n.applyLanguage(host);
+  assert(textOf(host).includes('Натиснете кръга'), `multi-line help not translated: ${textOf(host)}`);
+  equal(
+    textarea.getAttribute('placeholder'),
+    'Транскриптът се показва тук. Можете да го въведете или редактирате, преди да поискате от AI да предложи среща.',
+    'textarea placeholder',
+  );
+  equal(textOf(code), 'Dashboard', 'code content must not be translated');
+  i18n.setLanguage('en');
+  equal(
+    textarea.getAttribute('placeholder'),
+    'The transcript appears here. You can type or edit it before asking the AI to propose an appointment.',
+    'placeholder restored',
+  );
 });
 
 await check('attributes and browser default/persistence are handled', async () => {

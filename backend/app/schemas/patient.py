@@ -33,14 +33,24 @@ from app.schemas.common import Timestamp
 
 
 class DiagnosisOut(BaseModel):
-    """One problem-list entry (docs/API.md: code/name/status, active first)."""
+    """One problem-list entry (docs/API.md: code/name/status, active first).
+
+    `code` is the ICD-10 (МКБ-10) code stored on this diagnosis row. The
+    description/status fields are derived from the configured local catalogue;
+    they are supplementary and never replace the recorded `name`.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
-    code: str
+    id: UUID
+    code: str | None = None
     name: str
     status: str
     onset_date: date | None = None
+    code_description: str | None = None
+    code_description_en: str | None = None
+    code_status: Literal["confirmed", "missing", "review_required", "unknown"] = "missing"
+    code_version: str | None = None
 
 
 class ClinicalNoteOut(BaseModel):
@@ -138,6 +148,18 @@ class PatientCreate(BaseModel):
         if value is not None and value > datetime.now(timezone.utc).date():
             raise ValueError("date of birth cannot be in the future")
         return value
+
+
+class DiagnosisCodeUpdate(BaseModel):
+    """Assign, change, or clear the ICD-10 code on one diagnosis.
+
+    The code is validated against the local catalogue by the API/service; this
+    schema only bounds the input. `null` or an empty string clears the code.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str | None = Field(default=None, max_length=16)
 
 
 class EncounterOut(BaseModel):

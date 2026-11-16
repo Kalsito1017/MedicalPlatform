@@ -1,0 +1,157 @@
+{
+  "metadata": {
+    "classification": "ICD-10",
+    "classification_bg": "МКБ-10",
+    "source_organization": "Национален център по обществено здраве и анализи (НЦОЗА)",
+    "source_url": "https://ncpha.government.bg/index/301-mkb-10-mejdunarodna-statisticheska-klasifikacia-na-bolestite-i-problemite-svurzani-sus-zdraveto.html",
+    "source_documents": [
+      "ICD10_08062026.xlsx — three- and four-character rubrics (NCPHA, 2026-08-06)",
+      "НОВИ КОДОВЕ ЗА ДИАГНОЗИ по МКБ-10 през 2026 (DOCX)",
+      "New_code_MKB10 2025_2 за сайта (DOCX)"
+    ],
+    "version": "NCPHA-2026-08-06 + 2025/2026 updates",
+    "publication_year": 2026,
+    "retrieved_at": "2026-11-16",
+    "scope": "Curated demo subset. It covers the synthetic diagnosis seed and a few 2025/2026 update examples; it is not the complete official classification.",
+    "license_note": "The NCPHA website terms restrict reproduction, translation, modification, and use without prior written consent. This repository does not redistribute the complete NCPHA XLSX. The full catalogue must be imported locally from the official file after the deployment owner obtains the necessary permission. This small subset is included for synthetic-demo interoperability and must be reviewed by clinical/legal owners before production use.",
+    "regulatory_reference": "Наредба № 42 от 2004 г. за въвеждане на класификационни статистически системи за кодиране на болестите и проблемите, свързани със здравето, и на медицинските процедури; verify the latest amendments and effective dates in Държавен вестник before production use."
+  },
+  "entries": [
+    {
+      "code": "D50.9",
+      "name_bg": "Желязонедоимъчна анемия, неуточнена",
+      "name_en": "Iron deficiency anaemia, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "D64.9",
+      "name_bg": "Анемия, неуточнена",
+      "name_en": "Anaemia, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "E03.9",
+      "name_bg": "Хипотиреоидизъм, неуточнен",
+      "name_en": "Hypothyroidism, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "E11.9",
+      "name_bg": "Неинсулинозависим захарен диабет, без усложнения",
+      "name_en": "Type 2 diabetes mellitus without complications",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "E55.9",
+      "name_bg": "Недоимък на витамин D, неуточнен",
+      "name_en": "Vitamin D deficiency, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "E78.5",
+      "name_bg": "Хиперлипидемия, неуточнена",
+      "name_en": "Hyperlipidaemia, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "E87.5",
+      "name_bg": "Хиперкалиемия",
+      "name_en": "Hyperkalaemia",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "I10",
+      "name_bg": "ЕСЕНЦИАЛНА [ПЪРВИЧНА] ХИПЕРТОНИЯ",
+      "name_en": "Essential (primary) hypertension",
+      "status": "active",
+      "level": "three",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "J06.9",
+      "name_bg": "Остра инфекция на горните дихателни пътища, неуточнена",
+      "name_en": "Acute upper respiratory infection, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "J09",
+      "name_bg": "Грип, дължащ се на идентифициран зоонозен или пандемичен грипен вирус",
+      "name_en": "Influenza due to identified zoonotic or pandemic influenza virus",
+      "status": "active",
+      "level": "three",
+      "source": "ncpha-2026-update"
+    },
+    {
+      "code": "J30.4",
+      "name_bg": "Алергичен ринит, неуточнен",
+      "name_en": "Allergic rhinitis, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "J45.9",
+      "name_bg": "Астма, неуточнена",
+      "name_en": "Asthma, unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "K21.9",
+      "name_bg": "Гастроезофагеална рефлуксна болест без езофагит",
+      "name_en": "Gastro-oesophageal reflux disease without oesophagitis",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "M54.5",
+      "name_bg": "Ниска кръстна болка",
+      "name_en": "Low back pain",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "N18.3",
+      "name_bg": "Хронично бъбречно заболяване, стадии 3",
+      "name_en": "Chronic kidney disease, stage 3",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2025-update"
+    },
+    {
+      "code": "R74.0",
+      "name_bg": "Неспецифично повишено съдържание на трансаминаза или хидрогеназа на млечната киселина",
+      "name_en": "Nonspecific elevation of transaminases or lactic acid dehydrogenase",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-xlsx"
+    },
+    {
+      "code": "U04.9",
+      "name_bg": "Тежък остър респираторен синдром [ТОРС], неуточнен",
+      "name_en": "Severe acute respiratory syndrome [SARS], unspecified",
+      "status": "active",
+      "level": "four",
+      "source": "ncpha-2026-update"
+    }
+  ]
+}

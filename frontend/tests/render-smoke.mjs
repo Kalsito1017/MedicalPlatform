@@ -87,6 +87,13 @@ const PATIENT_WRITER = {
   ...DOCTOR,
   permissions: [...DOCTOR.permissions, 'patient:write'],
 };
+const PATIENT_NURSE = {
+  ...DOCTOR,
+  id: 'u-nurse',
+  display_name: 'Nora Nurse',
+  roles: ['nurse'],
+  permissions: ['patient:read', 'lab:read', 'prescription:read'],
+};
 const MESSAGING_DOCTOR = {
   ...DOCTOR,
   permissions: [...DOCTOR.permissions, 'message:read', 'message:write'],
@@ -959,7 +966,26 @@ const json = (status, body, headers = {}) => ({
   json: async () => body,
 });
 
-function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_TRENDS, prescriptions, encounters = ENCOUNTERS, staff, audit, ai, conversations, analytics, messages, messageRecipients, messageCounts, routes = [], calls = [] }) {
+const PATIENT_DIAGNOSES = {
+  items: [
+    {
+      id: 'dx1',
+      code: 'I10',
+      name: 'Hypertension',
+      status: 'active',
+      onset_date: null,
+      code_description: 'ЕСЕНЦИАЛНА [ПЪРВИЧНА] ХИПЕРТОНИЯ',
+      code_description_en: 'Essential (primary) hypertension',
+      code_status: 'confirmed',
+      code_version: 'NCPHA-2026-08-06 + 2025/2026 updates',
+    },
+  ],
+  total: 1,
+  limit: 20,
+  offset: 0,
+};
+
+function makeFetch({ me = DOCTOR, patients, patient, summary, diagnoses = PATIENT_DIAGNOSES, labs, trend = LAB_TRENDS, prescriptions, encounters = ENCOUNTERS, staff, audit, ai, conversations, analytics, messages, messageRecipients, messageCounts, routes = [], calls = [] }) {
   // A payload carrying a numeric `status` (and no `ok` flag) is an error
   // response: { status, code?, message?, retryAfter? }. A non-200 success
   // carries `ok: true` (e.g. { status: 204, ok: true }).
@@ -1016,6 +1042,7 @@ function makeFetch({ me = DOCTOR, patients, patient, summary, labs, trend = LAB_
     if (path.endsWith('/auth/login')) return json(200, me);
     if (path.endsWith('/auth/logout')) return json(204, null);
     if (/\/patients\/[^/]+\/labs\/trends$/.test(path)) return respond(trend);
+    if (/\/patients\/[^/]+\/diagnoses$/.test(path)) return respond(diagnoses);
     if (/\/patients\/[^/]+\/labs$/.test(path)) return respond(labs);
     if (/\/patients\/[^/]+\/prescriptions$/.test(path)) return respond(prescriptions);
     if (/\/patients\/[^/]+\/encounters$/.test(path)) return respond(encounters);
@@ -1265,7 +1292,7 @@ await check('patient detail renders demographics, summary, labs, prescriptions',
 
   const summary = textOf(document.getElementById('summary-region'));
   assertContains(summary, 'Amoxicillin (500 mg, Oral)', 'active medication missing');
-  assertContains(summary, 'No active problems recorded.', 'problems empty state missing');
+  assertContains(summary, 'No diagnoses recorded.', 'diagnosis empty state missing');
 
   const encounters = textOf(document.getElementById('encounters-region'));
   assertContains(encounters, 'Routine follow-up.', 'encounter missing');
@@ -1285,6 +1312,52 @@ await check('patient detail renders demographics, summary, labs, prescriptions',
   assertContains(rx, '500 mg', 'dose missing');
   assertContains(rx, 'Oral', 'route missing');
   assertContains(rx, 'Three times daily', 'frequency missing');
+});
+
+await check('patient diagnosis block shows ICD-10 codes and gates assignment by role', async () => {
+  const summaryWithDiagnoses = { ...SUMMARY, diagnoses: PATIENT_DIAGNOSES.items };
+
+  globalThis.fetch = makeFetch({
+    me: PATIENT_WRITER,
+    patient: PATIENT,
+    summary: summaryWithDiagnoses,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  let document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+
+  const doctorSummary = document.getElementById('summary-region');
+  const doctorText = textOf(doctorSummary);
+  assertContains(doctorText, 'Diagnoses and ICD-10', 'diagnosis block missing');
+  assertContains(doctorText, 'I10', 'ICD-10 code missing');
+  assertContains(doctorText, 'Essential (primary) hypertension', 'ICD-10 description missing');
+  const doctorButtons = doctorSummary.querySelectorAll('button').map(textOf);
+  assert(
+    doctorButtons.some((label) => label === 'Change ICD-10 code'),
+    'a patient:write account must get the code-assignment action',
+  );
+
+  globalThis.fetch = makeFetch({
+    me: PATIENT_NURSE,
+    patient: PATIENT,
+    summary: summaryWithDiagnoses,
+    labs: LABS,
+    prescriptions: PRESCRIPTIONS,
+  });
+  document = bootDom([...CHROME_IDS, ...PATIENT_IDS]);
+  globalThis.location.search = '?id=p1';
+  await freshPage('patient.js');
+  await settle();
+  const nurseSummary = document.getElementById('summary-region');
+  assertContains(textOf(nurseSummary), 'I10', 'nurse must still see the recorded code');
+  const nurseButtons = nurseSummary.querySelectorAll('button').map(textOf);
+  assert(
+    !nurseButtons.some((label) => label === 'Change ICD-10 code' || label === 'Assign ICD-10 code'),
+    'a read-only nurse must not get the code-assignment action',
+  );
 });
 
 await check('patient summary shows last visit, vitals and treatment response; Outcomes tab charts them', async () => {
@@ -1541,6 +1614,8 @@ await check('print action prepares a complete record without opening any tab', a
     'MRN-0001',
     'Patient Information',
     'Patient Summary',
+    'Diagnoses and ICD-10 Codes',
+    'Essential (primary) hypertension',
     'Encounter History',
     'Laboratory Results',
     'Prescriptions',
@@ -4885,6 +4960,7 @@ const APPT_IDS = [
       { tag: 'button', attrs: { 'data-view': 'month' }, text: 'Month' },
       { tag: 'button', attrs: { 'data-view': 'week' }, text: 'Week' },
       { tag: 'button', attrs: { 'data-view': 'day' }, text: 'Day' },
+      { tag: 'button', attrs: { 'data-view': 'year' }, text: 'Year' },
       { tag: 'button', attrs: { 'data-view': 'upcoming' }, text: 'Upcoming' },
     ],
   },
@@ -5109,6 +5185,63 @@ await check('appointments page renders the month calendar and role-aware nav', a
   const detailAvatar = doctorIdentity.querySelector('.avatar--photo');
   assert(detailAvatar && detailAvatar.querySelector('img'), 'appointment detail doctor must show the demo portrait');
   await clickButton(document.getElementById('app-dialog-actions'), 'Close');
+});
+
+await check('appointments year view and explicit month/year navigation', async () => {
+  const calls = [];
+  globalThis.fetch = makeFetch({
+    me: APPT_DOCTOR,
+    calls,
+    routes: appointmentRoutes(calls),
+  });
+  const document = bootDom([...CHROME_IDS, ...APPT_IDS]);
+  await freshPage('appointments.js');
+  await settle();
+
+  const prev = document.getElementById('calendar-prev');
+  const next = document.getElementById('calendar-next');
+  assertEqualLocal(textOf(prev), 'Previous month', 'month previous label');
+  assertEqualLocal(textOf(next), 'Next month', 'month next label');
+  const initialRange = textOf(document.getElementById('appointments-range'));
+  await next.dispatch('click');
+  await settle();
+  assert(
+    textOf(document.getElementById('appointments-range')) !== initialRange,
+    'next month did not move the range',
+  );
+
+  const yearButton = document
+    .getElementById('view-switcher')
+    .querySelectorAll('[data-view]')
+    .find((node) => node.dataset.view === 'year');
+  await yearButton.dispatch('click');
+  await settle(40);
+
+  const calendar = document.getElementById('appointments-calendar');
+  assert(calendar.querySelector('.year-grid'), 'year grid missing');
+  assertEqualLocal(calendar.querySelectorAll('.year-month').length, 12, 'year must show 12 months');
+  assertEqualLocal(
+    calendar.querySelectorAll('.year-month__day').length,
+    12 * 42,
+    'year day cells incomplete',
+  );
+  assertEqualLocal(textOf(prev), 'Previous year', 'year previous label');
+  assertEqualLocal(textOf(next), 'Next year', 'year next label');
+  assertContains(textOf(document.getElementById('appointments-range')), '2026', 'year range label missing');
+
+  const yearRange = textOf(document.getElementById('appointments-range'));
+  await next.dispatch('click');
+  await settle(40);
+  assert(
+    textOf(document.getElementById('appointments-range')) !== yearRange,
+    'next year did not move the range',
+  );
+
+  const monthHead = calendar.querySelector('.year-month__head');
+  await monthHead.dispatch('click');
+  await settle();
+  assert(calendar.querySelector('.calendar-grid'), 'month view did not open from year');
+  assertEqualLocal(textOf(prev), 'Previous month', 'month labels not restored');
 });
 
 await check('appointment detail Reschedule and Cancel work for a doctor under deferred dialog close', async () => {

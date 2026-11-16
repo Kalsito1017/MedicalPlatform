@@ -569,14 +569,17 @@ async def test_summary_extension_fields_are_additive_and_typed(
     assert body["encounters"][1]["weight_kg"] == "72.00"
 
     # Problem list: diagnoses active-first; active_problems is the active subset.
-    assert body["diagnoses"] == [
-        {
-            "code": "E11.9",
-            "name": "Type 2 diabetes mellitus",
-            "status": "active",
-            "onset_date": None,
-        }
-    ]
+    assert len(body["diagnoses"]) == 1
+    diagnosis = body["diagnoses"][0]
+    assert diagnosis["id"]
+    assert diagnosis["code"] == "E11.9"
+    assert diagnosis["name"] == "Type 2 diabetes mellitus"
+    assert diagnosis["status"] == "active"
+    assert diagnosis["onset_date"] is None
+    assert diagnosis["code_description"] == "Неинсулинозависим захарен диабет, без усложнения"
+    assert diagnosis["code_description_en"] == "Type 2 diabetes mellitus without complications"
+    assert diagnosis["code_status"] == "confirmed"
+    assert diagnosis["code_version"] == "NCPHA-2026-08-06 + 2025/2026 updates"
     assert body["active_problems"] == [
         {
             "code": "E11.9",

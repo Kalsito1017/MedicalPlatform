@@ -140,7 +140,13 @@ class Encounter(TimestampMixin, SoftDeleteMixin, Base):
 
 
 class Diagnosis(TimestampMixin, SoftDeleteMixin, Base):
-    """One problem-list entry (ICD-10-ish code + name).
+    """One problem-list entry (ICD-10 code + recorded name).
+
+    `code` is the ICD-10 (МКБ-10) code selected by a doctor. It is nullable:
+    an unclassified/pending diagnosis is legitimate and must print as
+    "not assigned/confirmed", never as an invented code. Membership in the
+    configured catalogue is validated by the service layer; the database also
+    enforces the code's format.
 
     `status` follows the problem-list lifecycle: `active`, `resolved`, or
     `ruled_out` (excluded after workup). `encounter_id` links the entry to the
@@ -168,7 +174,7 @@ class Diagnosis(TimestampMixin, SoftDeleteMixin, Base):
         ForeignKey(f"{SCHEMA}.encounter.id", ondelete="RESTRICT"),
         nullable=True,
     )
-    code: Mapped[str] = mapped_column(Text, nullable=False)
+    code: Mapped[str | None] = mapped_column(Text, nullable=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     onset_date: Mapped[date | None] = mapped_column(Date, nullable=True)

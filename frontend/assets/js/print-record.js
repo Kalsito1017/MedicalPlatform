@@ -172,9 +172,12 @@ async function loadSection(section, task) {
 /** Fetch the complete record. Every section is wrapped so errors name it. */
 export async function loadPrintData(patientId) {
   const base = `/patients/${encodeURIComponent(patientId)}`;
-  const [patient, summary, labs, prescriptions, encounters] = await Promise.all([
+  const [patient, summary, diagnoses, labs, prescriptions, encounters] = await Promise.all([
     loadSection('patient information', () => api.get(base)),
     loadSection('patient summary', () => api.get(`${base}/summary`)),
+    loadSection('diagnoses', () =>
+      fetchAllPages(({ limit, offset }) => api.get(`${base}/diagnoses`, { limit, offset })),
+    ),
     loadSection('laboratory results', () =>
       fetchAllPages(({ limit, offset }) => api.get(`${base}/labs`, { limit, offset })),
     ),
@@ -185,7 +188,7 @@ export async function loadPrintData(patientId) {
       fetchAllPages(({ limit, offset }) => api.get(`${base}/encounters`, { limit, offset })),
     ),
   ]);
-  return { patient, summary, labs, prescriptions, encounters };
+  return { patient, summary, diagnoses, labs, prescriptions, encounters };
 }
 
 function fact(label, value) {
@@ -249,17 +252,6 @@ function buildPatientSection(patient) {
 }
 
 function buildSummarySection(summary) {
-  const diagnoses = Array.isArray(summary.diagnoses) && summary.diagnoses.length > 0
-    ? summary.diagnoses
-    : (Array.isArray(summary.active_problems) ? summary.active_problems : []);
-  const diagnosisNode = diagnoses.length > 0
-    ? list(diagnoses.map((item) => {
-        const code = item.code ? `${item.code} \u2014 ` : '';
-        const onset = item.onset_date ? `, onset ${displayDate(item.onset_date)}` : '';
-        return `${code}${text(item.name || item.display_name, 'Unnamed problem')} (${text(item.status, 'status not recorded')}${onset})`;
-      }))
-    : empty('No diagnoses recorded.');
-
   const vitals = summary.vitals;
   const vitalRows = [];
   if (vitals) {
@@ -290,13 +282,81 @@ function buildSummarySection(summary) {
   if (clinicalParts.length === 0) clinicalParts.push(empty('No clinical summary recorded.'));
 
   return section('Patient Summary', [
-    ui.el('h3', { class: 'print-subhead', text: 'Diagnoses and conditions' }),
-    diagnosisNode,
     ui.el('h3', { class: 'print-subhead', text: 'Clinical summary' }),
     ...clinicalParts,
     ui.el('h3', { class: 'print-subhead', text: 'Vitals' }),
     vitalRows.length > 0 ? list(vitalRows) : empty('No vitals recorded.'),
   ]);
+}
+
+function diagnosisDescription(diagnosis) {
+  const bg = diagnosis && diagnosis.code_description ? String(diagnosis.code_description) : null;
+  const en = diagnosis && diagnosis.code_description_en
+    ? String(diagnosis.code_description_en)
+    : null;
+  if (i18n.getLanguage() === 'en') return en || bg;
+  return bg || en;
+}
+
+function diagnosisStatusLabel(status) {
+  const labels = {
+    active: 'Active',
+    resolved: 'Resolved',
+    ruled_out: 'Ruled out',
+  };
+  return labels[status] || status || 'Unknown';
+}
+
+function buildDiagnosisSection(diagnoses) {
+  if (!Array.isArray(diagnoses) || diagnoses.length === 0) {
+    return section('Diagnoses and ICD-10 Codes', empty('No diagnoses recorded.'));
+  }
+  const rows = diagnoses.map((diagnosis) => {
+    const code = diagnosis && diagnosis.code ? String(diagnosis.code) : '';
+    const codeStatus = diagnosis && diagnosis.code_status ? diagnosis.code_status : 'missing';
+    const description = code ? diagnosisDescription(diagnosis) : null;
+    const review = Boolean(code && codeStatus !== 'confirmed');
+    const onset = diagnosis && diagnosis.onset_date ? displayDate(diagnosis.onset_date) : null;
+    const nameCell = ui.el('td', {},
+      ui.el('div', { text: text(diagnosis && diagnosis.name, 'Unnamed diagnosis') }),
+      onset
+        ? ui.el('div', { class: 'print-meta', text: `${i18n.t('Onset')}: ${onset}` })
+        : null,
+    );
+    const codeCell = ui.el(
+      'td',
+      { class: `print-code${code ? '' : ' print-code--missing'}`.trim() },
+      ui.el('strong', {
+        text: code || i18n.t('ICD-10 code: Not assigned/confirmed'),
+      }),
+      review
+        ? ui.el('div', { class: 'print-meta', text: i18n.t('Review required') })
+        : null,
+    );
+    const descriptionCell = ui.el('td', {
+      text: description
+        || (code ? i18n.t('No description in the configured catalogue.') : '\u2014'),
+    });
+    const statusCell = ui.el('td', {
+      text: i18n.t(diagnosisStatusLabel(diagnosis && diagnosis.status)),
+    });
+    return ui.el('tr', {}, nameCell, codeCell, descriptionCell, statusCell);
+  });
+  return section('Diagnoses and ICD-10 Codes',
+    ui.el('table', { class: 'print-table' },
+      ui.el('caption', {
+        text: `${diagnoses.length} ${i18n.t('diagnoses')} \u00b7 ${i18n.t('all recorded')}`,
+      }),
+      ui.el('thead', {},
+        ui.el('tr', {},
+          ['Diagnosis', 'ICD-10 Code', 'ICD-10 Description', 'Status']
+            .map((header) => ui.el('th', { scope: 'col', text: header })),
+        ),
+      ),
+      ui.el('tbody', {}, rows),
+    ),
+    { className: 'print-section--diagnoses' },
+  );
 }
 
 function sortEncounters(encounters) {
@@ -458,6 +518,7 @@ export function renderPrintRecord(container, data, generatedAt) {
               buildDocumentHeader(generatedAt),
               buildPatientSection(patient),
               buildSummarySection(data.summary || {}),
+              buildDiagnosisSection(data.diagnoses || []),
               buildEncounterSection(sortEncounters(data.encounters || [])),
               buildLabSection(data.labs || []),
               buildPrescriptionSection(data.prescriptions || []),

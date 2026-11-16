@@ -19,6 +19,12 @@ Legend: `[ ]` = not yet done/verified.
 Expected cost: **$0/month baseline** (free tiers) + optional LLM pay-per-use **with a
 spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 
+> **Plan B (not implemented): AWS EKS + IAM.** If AWS hosting is required, read
+> **`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. It covers the
+> EKS/RDS/ECR/Secrets Manager architecture, Pod Identity/IRSA, ALB, CI OIDC,
+> least-privilege policies, cost guardrails, and the IAM mistakes to avoid.
+> EKS is not a free-tier path.
+
 ---
 
 ## 1. Prerequisites
@@ -147,6 +153,7 @@ real values.**
 | `LLM_API_BASE_URL` | OpenCode inference base URL (standard or Go) | Render | `https://opencode.ai/inference/go` |
 | `LLM_API_KEY` | service-account key ("Models: Request" only); present key auto-enables AI | Render (secret) | `oc_sk_replace_me` |
 | `LLM_MODEL` | default model | Render | `deepseek-v4.1-flash` (Go) / `gpt-6-luna` (standard) |
+| `LLM_CORRECTION_MODEL` | fast non-reasoning model for the “Did you mean?” transcription check; blank falls back to `LLM_MODEL` | Render | `gpt-6-luna` |
 | `LLM_MAX_TOOL_CALLS` | patient-scoped tool-call bound per question | Render | `4` |
 | `LLM_MAX_TOOL_CALLS_GENERAL` | general-lookup tool-call bound per question (clamped 1–20) | Render | `10` |
 | `LLM_REQUEST_TIMEOUT_SECONDS` | LLM request timeout | Render | `45` |

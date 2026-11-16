@@ -34,6 +34,7 @@ from app.errors import Conflict
 from app.models.lab import LabResult
 from app.models.medication import Prescription
 from app.models.patient import ClinicalNote, Diagnosis, Encounter, Patient, PatientAssignment
+from app.services import icd10 as icd10_service
 from app.services.patient_names import (
     MIN_TRANSLITERATION_SCORE,
     name_match_score,
@@ -308,7 +309,7 @@ async def list_diagnoses(
     db: AsyncSession, patient_id: uuid.UUID, *, limit: int = SUMMARY_DIAGNOSIS_LIMIT
 ) -> list[Diagnosis]:
     """Problem-list entries for a patient, active first, then most recent (bounded)."""
-    return list(
+    rows = list(
         (
             await db.scalars(
                 select(Diagnosis)
@@ -318,6 +319,43 @@ async def list_diagnoses(
             )
         ).all()
     )
+    return [icd10_service.decorate(row) for row in rows]
+
+
+async def list_diagnoses_page(
+    db: AsyncSession, patient_id: uuid.UUID, *, limit: int, offset: int
+) -> tuple[list[Diagnosis], int]:
+    """Paginated complete diagnosis list for the printable record."""
+    base = select(Diagnosis).where(Diagnosis.patient_id == patient_id, Diagnosis.not_deleted())
+    total = (await db.scalar(select(func.count()).select_from(base.subquery()))) or 0
+    rows = list(
+        (
+            await db.scalars(
+                base.order_by(
+                    _active_first(Diagnosis.status),
+                    Diagnosis.recorded_at.desc(),
+                    Diagnosis.id,
+                )
+                .limit(limit)
+                .offset(offset)
+            )
+        ).all()
+    )
+    return [icd10_service.decorate(row) for row in rows], int(total)
+
+
+async def get_diagnosis(
+    db: AsyncSession, patient_id: uuid.UUID, diagnosis_id: uuid.UUID
+) -> Diagnosis | None:
+    """One non-deleted diagnosis belonging to the patient, catalogue-decorated."""
+    row = await db.scalar(
+        select(Diagnosis).where(
+            Diagnosis.id == diagnosis_id,
+            Diagnosis.patient_id == patient_id,
+            Diagnosis.not_deleted(),
+        )
+    )
+    return icd10_service.decorate(row) if row is not None else None
 
 
 def _active_first(status_column: object) -> object:
@@ -553,7 +591,7 @@ async def _diagnoses_by_patient(
     )
     grouped: dict[uuid.UUID, list[Diagnosis]] = {}
     for row, _rank in result.all():
-        grouped.setdefault(row.patient_id, []).append(row)
+        grouped.setdefault(row.patient_id, []).append(icd10_service.decorate(row))
     return grouped
 
 

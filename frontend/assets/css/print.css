@@ -333,6 +333,19 @@ html[lang='en'] {
     white-space: nowrap;
   }
 
+  .print-table .print-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .print-table .print-code--missing {
+    font-family: inherit;
+    font-weight: 600;
+    color: #555555;
+    white-space: normal;
+  }
+
   /* Abnormal results are distinguishable without colour: the row gets a
      heavy left rule, bold text, and an explicit HIGH/LOW flag. */
   .print-row--abnormal td {

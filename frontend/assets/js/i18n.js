@@ -144,7 +144,7 @@ function setText(node, value) {
 }
 
 function excluded(node) {
-  let current = node;
+  let current = node.nodeType === 1 ? node : node.parent;
   while (current && current.nodeType === 1) {
     if (current.hasAttribute && current.hasAttribute('data-no-i18n')) return true;
     if (SKIP_TAGS.has(current.tagName)) return true;
@@ -153,13 +153,23 @@ function excluded(node) {
   return false;
 }
 
+function attributesExcluded(element) {
+  let current = element;
+  while (current && current.nodeType === 1) {
+    if (current.hasAttribute && current.hasAttribute('data-no-i18n')) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
 function translatedValue(source) {
   const trimmed = source.trim();
   if (!trimmed) return null;
-  if (Object.prototype.hasOwnProperty.call(BG, trimmed)) return BG[trimmed];
+  const normalized = trimmed.replace(/\s+/g, ' ');
+  if (Object.prototype.hasOwnProperty.call(BG, normalized)) return BG[normalized];
   if (language !== 'bg') return null;
   for (const [pattern, build] of PATTERNS) {
-    const match = trimmed.match(pattern);
+    const match = normalized.match(pattern);
     if (match) return build(match);
   }
   return null;
@@ -189,7 +199,7 @@ function translateTextNode(node) {
 }
 
 function translateElementAttributes(element) {
-  if (!element || element.nodeType !== 1 || excluded(element)) return;
+  if (!element || element.nodeType !== 1 || attributesExcluded(element)) return;
   if (!element.__i18nAttrs) element.__i18nAttrs = {};
   if (!element.__i18nTranslatedAttrs) element.__i18nTranslatedAttrs = {};
   for (const attr of ATTRS) {

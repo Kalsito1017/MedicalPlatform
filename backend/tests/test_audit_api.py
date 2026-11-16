@@ -25,6 +25,8 @@ KNOWN_ACTIONS = {
     "patient.read",
     "patient.suggest",
     "patient.summary.read",
+    "diagnoses.read",
+    "diagnosis.code.update",
     "patient.create",
     "patient.delete",
     "message.send",

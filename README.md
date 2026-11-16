@@ -275,6 +275,8 @@ MedicalPlatform/
 │   ├── BACKLOG.md           deferred production requirements
 │   ├── DEPLOYMENT.md        provider setup, verification, rollback
 │   ├── KUBERNETES.md        local Kubernetes workflow
+│   ├── ICD10_DIAGNOSIS_CODING.md  ICD-10 catalogue, assignment, print, limitations
+│   ├── AWS_EKS_IAM_PLAN.md  Plan B: AWS EKS + IAM deployment blueprint
 │   ├── TROUBLESHOOTING.md   failures and fixes
 │   └── INITIAL_ASSESSMENT.md Phase 0 findings
 └── .github/workflows/       CI

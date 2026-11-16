@@ -355,14 +355,20 @@ The Appointments page has two modes: **Calendar** and **History**.
 
 ### 8.1 Calendar views
 
-The calendar supports four views:
+The calendar supports five views:
 
 | View | What it shows |
 |---|---|
 | **Month** | A month grid with appointment chips per day |
 | **Week** | Seven day columns with appointment chips |
 | **Day** | A single clinic day with appointment chips and availability context |
+| **Year** | Twelve mini-month grids with appointment counts; click a month or day to open it |
 | **Upcoming** | The next 30 days grouped by day |
+
+The **Previous/Next** buttons are context-aware: they move one month in Month view,
+one week in Week view, one day in Day view, and one year in Year view. **Today**
+returns to the current clinic date. The Year view fetches only small per-month count
+requests, so it stays within the 62-day appointment-list limit.
 
 All clinic wall-clock interpretation uses **Europe/Sofia**. The server sends UTC
 timestamps; the frontend formats them in the clinic timezone, including daylight-saving
@@ -530,7 +536,10 @@ three name/MRN suggestions for the transcript. It:
 The correction layer works **after** Whisper and **before** the AI proposal:
 
 1. Deterministic vocabulary check against existing appointment types.
-2. Optional text-only AI check through the existing configured provider.
+2. Optional text-only AI check through a dedicated fast non-reasoning model
+   (`LLM_CORRECTION_MODEL`, default `gpt-6-luna`), separate from the main assistant
+   model. A reasoning model can spend the entire bounded token budget on hidden
+   reasoning and return an empty final message, so it is not used here.
 3. Strict validation:
    - `original_text` must be an exact substring of the current transcript;
    - at most 4 suggestions;
@@ -821,8 +830,16 @@ The patient record has a dedicated A4 print view:
 
 - **Print / Save as PDF** is available on the patient page.
 - The app lazily imports the print module, fetches the complete record (demographics,
-  summary, all encounters, all lab pages, all prescription pages), renders a dedicated
-  `#print-record` tree with text nodes only, and calls the browser print dialog.
+  summary, **all diagnoses**, all encounters, all lab pages, all prescription pages),
+  renders a dedicated `#print-record` tree with text nodes only, and calls the browser
+  print dialog.
+- A dedicated **Diagnoses and ICD-10 Codes** table shows every recorded diagnosis,
+  its stored ICD-10 code, the configured catalogue description, and status. A missing
+  code prints as “ICD-10 code: Not assigned/confirmed”; an unknown/superseded code is
+  shown with “Review required” and is never silently replaced. The original recorded
+  diagnosis name is preserved.
+- The diagnosis table uses the same repeating-header and no-row-split rules as the lab
+  and prescription tables.
 - The print stylesheet hides the application shell and uses A4 portrait margins.
 - The running header is a repeating table header (not `position: fixed`), so the
   patient name/MRN repeats on every page without overlapping content.
@@ -862,7 +879,7 @@ flowchart LR
   Bulgarian, otherwise English.
 - **Persistence** — the choice is stored in `localStorage` under
   `medicore-language`; no clinical data is stored.
-- **Dictionary** — 1,551 Bulgarian entries covering static HTML, rendered UI text,
+- **Dictionary** — 1,595 Bulgarian entries covering static HTML, rendered UI text,
   validation/error messages, legal pages, and print labels.
 - **Dynamic patterns** — counts, durations, relative times, status transitions, and
   Bulgarian pluralization for 0/1/2/5/11/21/25/101.
@@ -1055,11 +1072,11 @@ Last recorded results in this worktree:
 
 | Suite | Result |
 |---|---|
-| Backend | **685 passed, 5 skipped** (last full run; frontend-only changes since) |
+| Backend | **705 passed, 5 skipped** |
 | Frontend smoke | **256/256 passed** |
-| Render scenarios | **107/107 passed** |
-| Localization | **9/9 passed** |
-| Print record | **9/9 passed** |
+| Render scenarios | **109/109 passed** |
+| Localization | **13/13 passed** |
+| Print record | **10/10 passed** |
 | Graphify | **4/4 passed** |
 | Markdown | **21/21 passed** |
 | Security check | **PASS — 0 findings, 0 warnings** |
@@ -1165,7 +1182,9 @@ Use synthetic demo accounts only.
 - [SYSTEM_LOGS.md](SYSTEM_LOGS.md) — event catalogue, SSE, retention.
 - [AI_GUARDRAILS.md](AI_GUARDRAILS.md) — AI safety baseline and release gate.
 - [BULGARIAN_LOCALIZATION_REVIEW.md](BULGARIAN_LOCALIZATION_REVIEW.md) — dictionary review and decision log.
+- [ICD10_DIAGNOSIS_CODING.md](ICD10_DIAGNOSIS_CODING.md) — ICD-10 sources, catalogue, assignment, print, and limitations.
 - [DEPLOYMENT.md](DEPLOYMENT.md) — local/Docker/hosted deployment.
+- [AWS_EKS_IAM_PLAN.md](AWS_EKS_IAM_PLAN.md) — Plan B: AWS EKS + IAM deployment blueprint.
 - [BACKLOG.md](BACKLOG.md) — deferred production requirements.
 
 ---

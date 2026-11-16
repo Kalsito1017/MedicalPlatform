@@ -32,6 +32,11 @@ node_modules/
 db-data/
 postgres-data/
 
+# Full ICD-10 catalogue imported locally (NCPHA terms; do not redistribute)
+backend/app/data/icd10_bg.json
+backend/app/data/*.xlsx
+backend/app/data/*.docx
+
 # Logs and runtime
 *.log
 logs/

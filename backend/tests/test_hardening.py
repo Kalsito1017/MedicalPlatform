@@ -29,6 +29,8 @@ SECURITY_DOC_AUDIT_ACTIONS = {
     "authz.denied",
     "patient.read",
     "patient.summary.read",
+    "diagnoses.read",
+    "diagnosis.code.update",
     "labs.read",
     "prescriptions.read",
     "mcp.search_authorized_patients",
@@ -143,6 +145,32 @@ async def test_security_doc_audit_inventory_is_emitted(
         f"/api/v1/patients/{clinical_data.patient_id}/prescriptions",
     ):
         assert (await client.get(path)).status_code == 200, path
+
+    # --- Diagnosis list + ICD-10 code assignment ------------------------
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    from app.models import Diagnosis
+
+    async with AsyncSession(db_engine, expire_on_commit=False) as session:
+        diagnosis = Diagnosis(
+            patient_id=clinical_data.patient_id,
+            code=None,
+            name="Inventory diagnosis",
+            status="active",
+        )
+        session.add(diagnosis)
+        await session.commit()
+        diagnosis_id = diagnosis.id
+    diagnoses = await client.get(
+        f"/api/v1/patients/{clinical_data.patient_id}/diagnoses"
+    )
+    assert diagnoses.status_code == 200, diagnoses.text
+    assigned = await client.patch(
+        f"/api/v1/patients/{clinical_data.patient_id}/diagnoses/{diagnosis_id}",
+        json={"code": "I10"},
+        headers=csrf_headers(client),
+    )
+    assert assigned.status_code == 200, assigned.text
 
     # --- Appointment scheduling (availability, create, edit, cancel) ----
     availability = await client.put(

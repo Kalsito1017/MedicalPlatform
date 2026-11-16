@@ -48,7 +48,7 @@ from app.authorization.policy import Principal, has_permission
 from app.config import Settings
 from app.errors import RateLimited
 from app.llm.limiter import SlidingWindowRateLimiter
-from app.llm.provider import LLMError, LLMProvider, build_provider
+from app.llm.provider import LLMError, LLMProvider, build_correction_provider
 from app.models.patient import Patient
 from app.models.scheduling import Appointment
 
@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 
 CORRECTION_REQUESTS_PER_MINUTE = 6
 CORRECTION_MAX_SUGGESTIONS = 4
-CORRECTION_MAX_TOKENS = 700
+CORRECTION_MAX_TOKENS = 1600
 CORRECTION_TIMEOUT_SECONDS = 20
 CORRECTION_MAX_ORIGINAL = 160
 CORRECTION_MAX_SUGGESTED = 200
@@ -432,7 +432,7 @@ async def suggest_corrections(
     model_name: str | None = None
     model_suggestions: list[CorrectionSuggestion] = []
     try:
-        active_provider = provider or build_provider(settings)
+        active_provider = provider or build_correction_provider(settings)
         type_list = "; ".join(known_types) if known_types else "none available"
         result = await active_provider.complete(
             system=_system_prompt(language),

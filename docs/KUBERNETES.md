@@ -281,6 +281,15 @@ frontend) and `docs/BACKLOG.md` (hardening backlog). Mapping:
 | PVC as backup story | Automated Postgres backups/PITR (managed provider), restore drill; audit-log retention policy (`docs/SECURITY.md`) |
 | Demo seed Job | Never run the seed in production; bootstrap per `docs/DEPLOYMENT.md` §9 |
 
+**Plan B — AWS EKS + IAM.** If the project must move to AWS, read
+**`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. The local
+manifests are not directly production-safe: replace the in-cluster Postgres
+with RDS, replace `secret.yaml` with External Secrets + Secrets Manager, use
+an ALB Ingress with ACM instead of a public LoadBalancer, and add EKS Pod
+Identity/IRSA service accounts. IAM is the main risk: one role per workload,
+no wildcard policies, no long-lived keys, and GitHub OIDC instead of static CI
+credentials.
+
 Also carry over the non-k8s concerns already documented: CORS/HTTPS/cookie
 rules (`docs/DEPLOYMENT.md` §6), rollback procedure (§8), the verification
 checklist (§7), and the claims discipline in `docs/CONCEPT.md` (no clinical

@@ -127,7 +127,7 @@ async def test_valid_suggestions_are_bounded_and_patient_data_is_redacted(
         }
     )
     monkeypatch.setattr(
-        transcription_corrections, "build_provider", lambda settings: provider
+        transcription_corrections, "build_correction_provider", lambda settings: provider
     )
     text = (
         f"Book a follow-up for {clinical_data.patient_name}, "
@@ -176,7 +176,7 @@ async def test_malformed_model_output_degrades_without_blocking(
     client = await auth_client(doctor)
     provider = FakeProvider("this is not json")
     monkeypatch.setattr(
-        transcription_corrections, "build_provider", lambda settings: provider
+        transcription_corrections, "build_correction_provider", lambda settings: provider
     )
 
     response = await _post(
@@ -198,7 +198,7 @@ async def test_provider_unavailable_keeps_the_feature_optional(
     client = await auth_client(doctor)
     provider = FakeProvider(error=LLMUnavailable("provider down"))
     monkeypatch.setattr(
-        transcription_corrections, "build_provider", lambda settings: provider
+        transcription_corrections, "build_correction_provider", lambda settings: provider
     )
 
     response = await _post(

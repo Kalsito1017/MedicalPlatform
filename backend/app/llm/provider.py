@@ -327,13 +327,16 @@ def _parse_completion(response: httpx.Response, *, fallback_model: str) -> LLMRe
     )
 
 
-def build_provider(settings: Settings) -> LLMProvider:
+def build_provider(settings: Settings, model: str | None = None) -> LLMProvider:
     """The single provider factory (swap providers here).
 
     `LLM_ENABLED=None` (the default) auto-enables the provider when a key is
     present; `LLM_ENABLED=false` is an explicit kill switch. A missing/blank
     key always returns NullProvider, so the platform stays functional without
     an LLM.
+
+    `model` overrides the configured main model for a narrow task (for example
+    the transcription-correction check). It never changes the main model.
     """
     key = settings.llm_api_key
     key_value = key.get_secret_value().strip() if key is not None else ""
@@ -347,6 +350,17 @@ def build_provider(settings: Settings) -> LLMProvider:
     return OpenCodeProvider(
         api_key=key,
         base_url=settings.llm_api_base_url,
-        model=settings.llm_model or DEFAULT_LLM_MODEL,
+        model=model or settings.llm_model or DEFAULT_LLM_MODEL,
         timeout=float(settings.llm_request_timeout_seconds),
     )
+
+
+def build_correction_provider(settings: Settings) -> LLMProvider:
+    """Provider for the read-only transcription-correction check.
+
+    Reasoning models can consume the bounded correction token budget entirely
+    on hidden reasoning and return an empty final message. The correction check
+    therefore uses its own fast non-reasoning model by default; setting
+    `LLM_CORRECTION_MODEL` blank falls back to the main model.
+    """
+    return build_provider(settings, model=settings.llm_correction_model or None)

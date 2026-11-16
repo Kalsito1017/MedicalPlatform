@@ -276,6 +276,8 @@ Recorded in `admin.audit_event` (readable via `GET /api/v1/audit` with `audit:re
 | Logout | actor, timestamp, request id |
 | Permission denial (any `403`) | actor, attempted action, outcome, timestamp, request id |
 | Patient-record reads (patient, summary, labs, prescriptions, encounter) | actor, action, resource type + resource id, outcome, timestamp, request id |
+| Diagnosis list read (`diagnoses.read`) | actor, patient resource id, outcome, timestamp, request id; **never** diagnosis text or code values |
+| Diagnosis ICD-10 code update (`diagnosis.code.update`) | actor, diagnosis resource id, outcome, timestamp, request id; **never** the diagnosis text or the code value in the audit row |
 | Transcript patient suggestion (`patient.suggest`) | actor, resource type `patient`, outcome, timestamp, request id; **never** the transcript, suggested name/MRN or search text |
 | Patient creation (`patient.create`) | actor, new patient resource id, outcome, timestamp, request id; no clinical payload |
 | Patient removal (`patient.delete`) | actor, soft-deleted patient resource id, outcome, timestamp, request id; no clinical payload. The row is retained; child records and audit history are not erased |
@@ -387,6 +389,10 @@ Controls:
   var name, rotation touches no code.
 - Log redaction: authorization headers, cookies, tokens, and request bodies containing
   passwords are redacted before logging (Phase 11).
+- **Cloud IAM is a separate control plane.** Application RBAC does not replace AWS IAM.
+  If the project is deployed to AWS/EKS, use per-workload IAM roles, Secrets Manager,
+  and GitHub OIDC instead of static keys; see `docs/AWS_EKS_IAM_PLAN.md`. No cloud IAM
+  is configured by this repository today.
 
 ---
 
@@ -463,4 +469,5 @@ reports within a few working days; this demo has no formal SLA.
   `patient_data_ai_agent_security_guardrails.md`, including partial controls and
   open gaps; not a compliance certification.
 - `docs/BACKLOG.md` — deferred production security/compliance work.
+- `docs/AWS_EKS_IAM_PLAN.md` — Plan B AWS EKS/IAM deployment blueprint (not implemented).
 - `docs/TROUBLESHOOTING.md` — how to gather diagnostics without leaking secrets.

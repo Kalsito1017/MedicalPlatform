@@ -37,6 +37,7 @@ class EndpointCase:
     needs_encounter: bool = False
     needs_target_user: bool = False
     needs_conversation: bool = False
+    needs_diagnosis: bool = False
     target_roles: tuple[str, ...] = ()
     role_path: str = "doctor"
     # Appointment probes need role-aware scoping: an Admin must name a doctor,
@@ -62,6 +63,29 @@ MATRIX: tuple[EndpointCase, ...] = (
     EndpointCase("GET", "/api/v1/patients/{patient_id}", "patient:read", 200, needs_patient=True),
     EndpointCase(
         "GET", "/api/v1/patients/{patient_id}/summary", "patient:read", 200, needs_patient=True
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/patients/{patient_id}/diagnoses",
+        "patient:read",
+        200,
+        needs_patient=True,
+    ),
+    EndpointCase(
+        "PATCH",
+        "/api/v1/patients/{patient_id}/diagnoses/{diagnosis_id}",
+        "patient:write",
+        404,
+        body_kind="diagnosis_code",
+        needs_patient=True,
+        needs_diagnosis=True,
+    ),
+    EndpointCase(
+        "GET",
+        "/api/v1/icd10/search",
+        "patient:write",
+        200,
+        query_kind="icd10_search",
     ),
     EndpointCase(
         "GET",
@@ -284,8 +308,13 @@ async def _build_request(
     case: EndpointCase, *, clinical_data, make_user, actor_role: str | None = None
 ):
     path = case.template
-    if case.needs_patient:
-        path = path.format(patient_id=clinical_data.patient_id)
+    if case.needs_patient or case.needs_diagnosis:
+        values = {}
+        if case.needs_patient:
+            values["patient_id"] = clinical_data.patient_id
+        if case.needs_diagnosis:
+            values["diagnosis_id"] = uuid.uuid4()
+        path = path.format(**values)
     if case.needs_encounter:
         path = path.format(encounter_id=clinical_data.encounter_id)
     if case.needs_target_user:
@@ -310,6 +339,8 @@ async def _build_request(
             "start": (now - timedelta(days=1)).isoformat(),
             "end": (now + timedelta(days=1)).isoformat(),
         }
+    elif case.query_kind == "icd10_search":
+        params = {"q": "I10"}
     elif case.query_kind in {"doctor_scoped", "slots", "interpret"}:
         params = {}
         if case.query_kind == "slots":
@@ -350,6 +381,8 @@ async def _build_request(
         body = {"recipient_id": str(target.id)}
     elif case.body_kind == "patient_suggest":
         body = {"text": "Book a follow-up for Elena Georgievah, MRN-0001."}
+    elif case.body_kind == "diagnosis_code":
+        body = {"code": "I10"}
     elif case.body_kind == "transcription_correction":
         body = {"text": "Book a follow-up tomorrow at 10:00.", "language": "en"}
     elif case.body_kind == "patient_create":

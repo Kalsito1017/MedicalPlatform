@@ -90,6 +90,7 @@ const state = {
   view: 'month',
   anchorKey: '',
   appointments: [],
+  yearCounts: {},
   cancelledTimer: null,
   activeExpiryTimer: null,
   slots: null,
@@ -298,6 +299,11 @@ function shiftMonthKey(key, delta) {
   return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-01`;
 }
 
+function shiftYearKey(key, delta) {
+  const { year } = parseDateKey(key);
+  return `${year + delta}-01-01`;
+}
+
 function dateKeyObject(key) {
   const { year, month, day } = parseDateKey(key);
   return new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
@@ -316,6 +322,10 @@ function formatDay(key, options = {}) {
 
 function formatMonthYear(key) {
   return formatDay(startOfMonthKey(key), { month: 'long', year: 'numeric' });
+}
+
+function formatYear(key) {
+  return formatDay(`${parseDateKey(key).year}-01-01`, { year: 'numeric' });
 }
 
 function formatWeekRange(startKey) {
@@ -757,6 +767,80 @@ function renderUpcoming(root) {
   root.append(list);
 }
 
+function renderYear(root) {
+  const year = parseDateKey(state.anchorKey).year;
+  const today = clinicTodayKey();
+  const grid = ui.el('div', { class: 'year-grid', 'aria-label': formatYear(state.anchorKey) });
+  for (let month = 1; month <= 12; month += 1) {
+    const monthKey = `${year}-${pad2(month)}-01`;
+    const monthName = formatDay(monthKey, { month: 'long' });
+    const count = Number(state.yearCounts[month]) || 0;
+    const card = ui.el('section', {
+      class: 'year-month',
+      'aria-label': `${monthName} ${year}`,
+    });
+    const head = ui.el(
+      'button',
+      {
+        type: 'button',
+        class: 'year-month__head',
+        onClick: () => {
+          state.anchorKey = monthKey;
+          setView('month');
+        },
+      },
+      ui.el('span', { class: 'year-month__name', text: monthName }),
+      count > 0
+        ? ui.el('span', {
+            class: 'year-month__count-label',
+            text: `${count} appointment${count === 1 ? '' : 's'}`,
+          })
+        : null
+    );
+    const mini = ui.el('div', {
+      class: 'year-month__grid',
+      role: 'group',
+      'aria-label': `${monthName} ${year}`,
+    });
+    for (const day of DAY_NAMES) {
+      mini.append(ui.el('span', {
+        class: 'year-month__weekday',
+        'aria-hidden': 'true',
+        text: day,
+      }));
+    }
+    const gridStart = startOfWeekKey(monthKey);
+    for (let offset = 0; offset < 42; offset += 1) {
+      const key = addDaysKey(gridStart, offset);
+      if (key.slice(0, 7) !== monthKey.slice(0, 7)) {
+        mini.append(ui.el('span', {
+          class: 'year-month__day year-month__day--outside',
+          'aria-hidden': 'true',
+        }));
+        continue;
+      }
+      mini.append(
+        ui.el(
+          'button',
+          {
+            type: 'button',
+            class: `year-month__day${key === today ? ' year-month__day--today' : ''}`,
+            'aria-label': formatClinicLongDate(key),
+            onClick: () => {
+              state.anchorKey = key;
+              setView('day');
+            },
+          },
+          formatDay(key, { day: 'numeric' })
+        )
+      );
+    }
+    card.append(head, mini);
+    grid.append(card);
+  }
+  root.append(grid);
+}
+
 function renderCalendar() {
   const calendar = document.getElementById('appointments-calendar');
   const upcoming = document.getElementById('appointments-upcoming');
@@ -769,15 +853,39 @@ function renderCalendar() {
   if (isUpcoming) renderUpcoming(upcoming);
   else if (state.view === 'month') renderMonth(calendar);
   else if (state.view === 'week') renderWeek(calendar);
+  else if (state.view === 'year') renderYear(calendar);
   else renderDay(calendar, state.availability);
 }
 
+const NAV_LABELS = {
+  month: ['Previous month', 'Next month'],
+  week: ['Previous week', 'Next week'],
+  day: ['Previous day', 'Next day'],
+  year: ['Previous year', 'Next year'],
+};
+
+function updateNavLabels(view) {
+  const [prevLabel, nextLabel] = NAV_LABELS[view] || ['Previous', 'Next'];
+  const prev = document.getElementById('calendar-prev');
+  const next = document.getElementById('calendar-next');
+  if (prev) {
+    prev.textContent = prevLabel;
+    prev.setAttribute('aria-label', prevLabel);
+  }
+  if (next) {
+    next.textContent = nextLabel;
+    next.setAttribute('aria-label', nextLabel);
+  }
+}
+
 function updateRangeLabel() {
+  updateNavLabels(state.view);
   const node = document.getElementById('appointments-range');
   if (!node) return;
   if (state.view === 'month') node.textContent = formatMonthYear(state.anchorKey);
   else if (state.view === 'week') node.textContent = formatWeekRange(startOfWeekKey(state.anchorKey));
   else if (state.view === 'day') node.textContent = formatClinicLongDate(state.anchorKey);
+  else if (state.view === 'year') node.textContent = formatYear(state.anchorKey);
   else node.textContent = 'Next 30 days';
 }
 
@@ -812,6 +920,7 @@ function renderDoctorPicker() {
 function setView(view) {
   state.view = view;
   if (view === 'upcoming') state.anchorKey = clinicTodayKey();
+  if (view === 'year' && !state.anchorKey) state.anchorKey = clinicTodayKey();
   const switcher = document.getElementById('view-switcher');
   if (switcher) {
     for (const button of switcher.querySelectorAll('[data-view]')) {
@@ -820,6 +929,7 @@ function setView(view) {
       button.setAttribute('aria-pressed', active ? 'true' : 'false');
     }
   }
+  updateNavLabels(view);
   const prev = document.getElementById('calendar-prev');
   const next = document.getElementById('calendar-next');
   const today = document.getElementById('calendar-today');
@@ -1293,6 +1403,12 @@ function visibleRange() {
     return { start, end: addDaysKey(start, 6) };
   }
   if (state.view === 'day') return { start: state.anchorKey, end: state.anchorKey };
+  if (state.view === 'year') {
+    // Year view uses bounded per-month count requests; the appointments list
+    // endpoint itself is capped at 62 days and is not called with this range.
+    const { year } = parseDateKey(state.anchorKey);
+    return { start: `${year}-01-01`, end: `${year}-12-31` };
+  }
   const start = clinicTodayKey();
   return { start, end: addDaysKey(start, 29) };
 }
@@ -1320,6 +1436,45 @@ async function fetchAppointments(range) {
   return { items, total };
 }
 
+async function fetchYearCounts(year) {
+  const requests = [];
+  for (let month = 1; month <= 12; month += 1) {
+    const startKey = `${year}-${pad2(month)}-01`;
+    const endKey = addDaysKey(shiftMonthKey(startKey, 1), -1);
+    const start = clinicWallToUtc(startKey, '00:00');
+    const end = clinicWallToUtc(addDaysKey(endKey, 1), '00:00');
+    if (!start || !end) throw new Error('Unable to resolve clinic dates.');
+    requests.push(
+      api
+        .get('/appointments', {
+          start,
+          end,
+          ...scopedQuery(),
+          limit: 1,
+          offset: 0,
+        })
+        .then((payload) => Number(payload.total) || 0)
+    );
+  }
+  const results = await Promise.allSettled(requests);
+  const counts = {};
+  let failed = 0;
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      counts[index + 1] = result.value;
+    } else {
+      counts[index + 1] = 0;
+      failed += 1;
+    }
+  });
+  if (failed > 0) {
+    setStatus(
+      'Some monthly appointment counts could not be loaded. Open a month to see its schedule.'
+    );
+  }
+  return counts;
+}
+
 async function fetchSlots(key) {
   if (key < clinicTodayKey()) return null;
   const payload = await api.get('/appointments/slots', scopedQuery({ date: key }));
@@ -1344,6 +1499,7 @@ async function loadData() {
     clearCancelledCleanup();
     clearActiveExpiryCleanup();
     state.appointments = [];
+    state.yearCounts = {};
     state.slots = null;
     renderCalendar();
     updateRangeLabel();
@@ -1359,6 +1515,17 @@ async function loadData() {
   setStatus('');
   updateRangeLabel();
   try {
+    if (state.view === 'year') {
+      clearCancelledCleanup();
+      clearActiveExpiryCleanup();
+      state.slots = null;
+      const { year } = parseDateKey(state.anchorKey);
+      state.yearCounts = await fetchYearCounts(year);
+      state.appointments = [];
+      renderCalendar();
+      updateContext();
+      return;
+    }
     const range = visibleRange();
     const [appointments] = await Promise.all([
       fetchAppointments(range),
@@ -3663,13 +3830,15 @@ function wireToolbar() {
     }
   }
   document.getElementById('calendar-prev')?.addEventListener('click', () => {
-    if (state.view === 'month') state.anchorKey = shiftMonthKey(state.anchorKey, -1);
+    if (state.view === 'year') state.anchorKey = shiftYearKey(state.anchorKey, -1);
+    else if (state.view === 'month') state.anchorKey = shiftMonthKey(state.anchorKey, -1);
     else if (state.view === 'day') state.anchorKey = addDaysKey(state.anchorKey, -1);
     else state.anchorKey = addDaysKey(state.anchorKey, -7);
     loadData();
   });
   document.getElementById('calendar-next')?.addEventListener('click', () => {
-    if (state.view === 'month') state.anchorKey = shiftMonthKey(state.anchorKey, 1);
+    if (state.view === 'year') state.anchorKey = shiftYearKey(state.anchorKey, 1);
+    else if (state.view === 'month') state.anchorKey = shiftMonthKey(state.anchorKey, 1);
     else if (state.view === 'day') state.anchorKey = addDaysKey(state.anchorKey, 1);
     else state.anchorKey = addDaysKey(state.anchorKey, 7);
     loadData();

@@ -97,15 +97,8 @@
           </div>
         </div>
 
-        <section class="card voice-card" id="voice-region" aria-labelledby="voice-heading" hidden>
-          <div class="voice-card__head">
-            <div>
-              <h2 class="card__title" id="voice-heading">Voice scheduling</h2>
-              <p class="text-muted" id="voice-help">
-                Tap the circle, speak in Bulgarian or English — only these two languages are supported — then tap again to stop. The model detects which one automatically; you can still choose manually. Review the editable transcript before proposing an appointment.
-                Audio stays in this tab's memory, is never saved, and is cleared when you clear or leave.
-              </p>
-            </div>
+        <section class="card voice-card" id="voice-region" aria-label="Voice scheduling" hidden>
+          <div class="voice-card__head voice-card__head--compact">
             <label class="field field--inline">
               <span class="visually-hidden">Transcript language (auto-detect or manual)</span>
               <select id="voice-language">
@@ -179,6 +172,7 @@
               <button type="button" data-view="month" class="is-active" aria-pressed="true">Month</button>
               <button type="button" data-view="week" aria-pressed="false">Week</button>
               <button type="button" data-view="day" aria-pressed="false">Day</button>
+              <button type="button" data-view="year" aria-pressed="false">Year</button>
               <button type="button" data-view="upcoming" aria-pressed="false">Upcoming</button>
             </div>
             <div class="calendar-nav">
