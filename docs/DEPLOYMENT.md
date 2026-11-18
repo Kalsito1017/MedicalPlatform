@@ -20,10 +20,10 @@ Expected cost: **$0/month baseline** (free tiers) + optional LLM pay-per-use **w
 spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 
 > **Plan B (not implemented): AWS EKS + IAM.** If AWS hosting is required, read
-> **`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. It covers the
-> EKS/RDS/ECR/Secrets Manager architecture, Pod Identity/IRSA, ALB, CI OIDC,
-> least-privilege policies, cost guardrails, and the IAM mistakes to avoid.
-> EKS is not a free-tier path.
+> **`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. For the
+> $100–$200 Free Tier demo, the cheaper path is **one EC2 + Docker Compose**,
+> with optional **k3s** for the Kubernetes bonus: see
+> **`docs/AWS_FREE_TIER_DEMO_PLAN.md`**. EKS is not a free-tier path.
 
 ---
 
@@ -40,7 +40,8 @@ spend cap set in the OpenCode Console**. $0 is not guaranteed forever; see §9.
 2. [ ] Create the **least-privilege application role** (no superuser, no CREATEDB, rights
    limited to the app schemas/tables) and its database.
 3. [ ] Optionally create a separate `migrator` role for migrations when elevated rights
-   are needed (matches `MIGRATION_DATABASE_URL` in `.env.example`).
+   are needed (matches `MIGRATION_DATABASE_URL` in the deployment template in
+   `Instructions.md`).
 4. [ ] Copy the connection string; it must use TLS (`sslmode=require` — Neon enforces TLS
    by default). It becomes `DATABASE_URL` in Render (SQLAlchemy async form:
    `postgresql+asyncpg://…`).

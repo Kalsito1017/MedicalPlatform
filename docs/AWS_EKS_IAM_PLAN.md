@@ -27,6 +27,11 @@ Choose AWS EKS only if at least one of these is true:
   controls;
 - the team already operates EKS and has Terraform/platform ownership.
 
+For the **$100–$200 AWS Free Tier demo**, do not start with EKS. Use
+`docs/AWS_FREE_TIER_DEMO_PLAN.md`: one EC2 + Docker Compose, with optional k3s
+on the same instance for the Kubernetes bonus. EKS’s control plane alone is
+roughly $73/month before nodes or storage.
+
 Do **not** choose EKS for a free demo. Even a minimal cluster has a fixed
 control-plane cost and several moving parts (ALB, NAT, RDS, Secrets Manager,
 CloudWatch). The current Render/Neon/Cloudflare path is much cheaper and

@@ -1,7 +1,7 @@
 # Troubleshooting
 
 **Scope:** common failures in local development and in the deployed demo, with symptoms, likely causes, and fixes — plus how to gather diagnostics without leaking secrets.
-**Status:** living document, updated as phases land. Written at Phase 1; entries are based on the behavior defined in `docs/API.md` and `.env.example`. Commands previously marked *(unverified until Phase 13)* are verified against the local Docker stack as of Phase 13.
+**Status:** living document, updated as phases land. Written at Phase 1; entries are based on the behavior defined in `docs/API.md` and `backend/app/config.py`. Commands previously marked *(unverified until Phase 13)* are verified against the local Docker stack as of Phase 13.
 
 ---
 
@@ -31,7 +31,8 @@ name, never by value); readiness never becomes healthy.
 (`backend/app/config.py`, Phase 2) fails fast on purpose.
 
 **Fix:**
-1. Compare your `.env` (local) or Render dashboard env (deployed) against `.env.example`.
+1. Compare your `.env` (local) or Render dashboard env (deployed) against the
+   deployment template in `Instructions.md`.
 2. Set every required variable. Placeholder values like `change-me-…` are detected and rejected.
 3. Restart the service. Locally: `cd backend && uv run uvicorn app.main:app --reload`
    (or `docker compose restart app`, which re-runs the entrypoint first).
@@ -92,7 +93,8 @@ from the UI.
 **Fix:**
 1. `ALLOWED_ORIGINS` on the backend must contain **exactly** the origin the browser is
    on — scheme + host + port must match (`https://<frontend-domain>` in production;
-   `http://localhost:5173` or `http://localhost:8000` locally per `.env.example`).
+   `http://localhost:5173` or `http://localhost:8000` locally per the deployment
+   template in `Instructions.md`).
 2. After changing it, restart the backend (env changes need a restart).
 3. No wildcards (`*`) in production; no trailing slash or path in origin values.
 4. Preflight (`OPTIONS`) failures usually mean a custom header (e.g. `X-CSRF-Token`) is

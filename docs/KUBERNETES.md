@@ -197,8 +197,8 @@ Helpers: `scripts/k8s/up.sh`, `down.sh`, `seed.sh`, `status.sh`,
 ## 7. Environment variables
 
 Configuration arrives as environment variables (ConfigMap `app-config` +
-Secret `app-secret` via `envFrom`); the canonical list is `.env.example` and
-`backend/app/config.py`. Names and purpose only — values live in
+Secret `app-secret` via `envFrom`); the canonical list is `backend/app/config.py`
+and the deployment template in `Instructions.md`. Names and purpose only — values live in
 `k8s/secret.yaml` locally and are never documented here.
 
 | Variable | Source | Purpose |
@@ -282,13 +282,15 @@ frontend) and `docs/BACKLOG.md` (hardening backlog). Mapping:
 | Demo seed Job | Never run the seed in production; bootstrap per `docs/DEPLOYMENT.md` §9 |
 
 **Plan B — AWS EKS + IAM.** If the project must move to AWS, read
-**`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. The local
-manifests are not directly production-safe: replace the in-cluster Postgres
-with RDS, replace `secret.yaml` with External Secrets + Secrets Manager, use
-an ALB Ingress with ACM instead of a public LoadBalancer, and add EKS Pod
-Identity/IRSA service accounts. IAM is the main risk: one role per workload,
-no wildcard policies, no long-lived keys, and GitHub OIDC instead of static CI
-credentials.
+**`docs/AWS_EKS_IAM_PLAN.md`** before creating any resource. For a
+$100–$200 Free Tier demo, use **one EC2 + Docker Compose** and optionally
+**k3s on the same instance** for the Kubernetes bonus; see
+**`docs/AWS_FREE_TIER_DEMO_PLAN.md`**. The local manifests are not directly
+production-safe: replace the in-cluster Postgres with RDS, replace
+`secret.yaml` with External Secrets + Secrets Manager, use an ALB Ingress with
+ACM instead of a public LoadBalancer, and add EKS Pod Identity/IRSA service
+accounts. IAM is the main risk: one role per workload, no wildcard policies, no
+long-lived keys, and GitHub OIDC instead of static CI credentials.
 
 Also carry over the non-k8s concerns already documented: CORS/HTTPS/cookie
 rules (`docs/DEPLOYMENT.md` §6), rollback procedure (§8), the verification

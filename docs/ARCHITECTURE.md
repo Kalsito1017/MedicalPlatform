@@ -463,7 +463,7 @@ derived at read time; no separate outcome table duplicates clinical data.
 MedicalPlatform/
 ├── PLAN.md                     execution plan (phases 0–15) — owned by the lead
 ├── README.md                   front door: quickstart, demo accounts, limitations
-├── .env.example                placeholder env vars (never real values)
+├── Instructions.md             deployment template and AWS/Cloudflare runbook
 ├── docker-compose.yml          local dev stack (Postgres service, etc.)
 ├── frontend/                   buildless vanilla HTML/CSS/JS (Cloudflare Pages)
 │   ├── index.html, dashboard.html, patients.html, patient.html,
@@ -553,8 +553,8 @@ the stack can be moved later without code changes.
 ## 8. Open items
 
 - The exact local mechanism for serving `frontend/` (static server on `:5173` vs
-  backend-served static on `:8000`) is finalized in Phase 9/13; `.env.example`
-  currently allows both origins. Not an architectural difference — production serving
-  is Cloudflare Pages either way.
+  backend-served static on `:8000`) is finalized in Phase 9/13; the deployment
+  template in `Instructions.md` allows both origins. Not an architectural
+  difference — production serving is Cloudflare Pages either way.
 - Session table naming/columns are the data agent's call; the contract that matters is
   server-side storage, expiry (`SESSION_TTL_HOURS`), and revocation.

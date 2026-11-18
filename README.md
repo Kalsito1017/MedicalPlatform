@@ -55,7 +55,8 @@ the AI can only propose an appointment and a doctor must confirm it. Full detail
 **`docs/API.md`**. Voice design/limits: **`docs/SPEECH_RECOGNITION.md`**.
 Presentation/defense overview (problem, example questions, agent-vs-REST comparison,
 diagrams): **`docs/CONCEPT.md`**. Feature-by-feature guide with diagrams and a demo
-script: **`docs/FEATURES_EXPLAINED.md`**.
+script: **`docs/FEATURES_EXPLAINED.md`**. AWS/Cloudflare step-by-step deployment:
+**`Instructions.md`**.
 
 ---
 
@@ -77,11 +78,10 @@ Steps *(local commands verified in Phase 13 against the Docker stack)*:
 git clone <repository-url> MedicalPlatform
 cd MedicalPlatform
 
-# 2. Configure environment (placeholder values — fill them in; never commit .env)
-cp .env.example .env
-# edit .env: set APP_SECRET_KEY, DATABASE_URL (match docker-compose db credentials),
-# DEMO_* accounts. The LLM auto-enables when LLM_API_KEY is set; leave the
-# key blank (or set LLM_ENABLED=false) when you do not want AI calls.
+# 2. Configure environment (create .env; never commit it)
+# A full template is in Instructions.md. Set APP_SECRET_KEY, DATABASE_URL
+# (match docker-compose db credentials), and DEMO_* accounts. The LLM
+# auto-enables when LLM_API_KEY is set; leave it blank for no AI calls.
 
 # 3. Start the local database (named volume, persists across restarts)
 docker compose up -d db
@@ -102,7 +102,8 @@ uv run uvicorn app.main:app --reload
 # 8. Open the frontend
 # The backend serves the static frontend at http://localhost:8000 (single origin:
 # API at /api/v1, health at /health/*). http://localhost:5173 remains pre-allowed
-# in .env.example for anyone serving frontend/ with a separate static server.
+# in the deployment environment for anyone serving frontend/ with a separate
+# static server (see Instructions.md for the full environment template).
 ```
 
 Health check: `curl http://localhost:8000/health/ready` should return 200 once the
@@ -256,8 +257,9 @@ pull requests from forks receive nothing sensitive.
 MedicalPlatform/
 ├── PLAN.md                  execution plan (phases 0–15) and progress log
 ├── README.md                this file
-├── .env.example             environment template (placeholders only)
+├── Instructions.md          AWS EC2 + Cloudflare Tunnel step-by-step
 ├── docker-compose.yml       local stack (Postgres + app container)
+├── docker-compose.tunnel.yml optional Cloudflare Tunnel overlay
 ├── frontend/                static HTML/CSS/JS (Cloudflare Pages)
 ├── backend/                 FastAPI app (auth, authorization, services, MCP, LLM)
 │   ├── app/                 application code
@@ -275,6 +277,7 @@ MedicalPlatform/
 │   ├── BACKLOG.md           deferred production requirements
 │   ├── DEPLOYMENT.md        provider setup, verification, rollback
 │   ├── KUBERNETES.md        local Kubernetes workflow
+│   ├── AWS_FREE_TIER_DEMO_PLAN.md  one-EC2 Docker/k3s demo plan
 │   ├── ICD10_DIAGNOSIS_CODING.md  ICD-10 catalogue, assignment, print, limitations
 │   ├── AWS_EKS_IAM_PLAN.md  Plan B: AWS EKS + IAM deployment blueprint
 │   ├── TROUBLESHOOTING.md   failures and fixes

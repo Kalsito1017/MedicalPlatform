@@ -1184,6 +1184,7 @@ Use synthetic demo accounts only.
 - [BULGARIAN_LOCALIZATION_REVIEW.md](BULGARIAN_LOCALIZATION_REVIEW.md) — dictionary review and decision log.
 - [ICD10_DIAGNOSIS_CODING.md](ICD10_DIAGNOSIS_CODING.md) — ICD-10 sources, catalogue, assignment, print, and limitations.
 - [DEPLOYMENT.md](DEPLOYMENT.md) — local/Docker/hosted deployment.
+- [AWS_FREE_TIER_DEMO_PLAN.md](AWS_FREE_TIER_DEMO_PLAN.md) — one-EC2 Docker/k3s demo plan.
 - [AWS_EKS_IAM_PLAN.md](AWS_EKS_IAM_PLAN.md) — Plan B: AWS EKS + IAM deployment blueprint.
 - [BACKLOG.md](BACKLOG.md) — deferred production requirements.
 

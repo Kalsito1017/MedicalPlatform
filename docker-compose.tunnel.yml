@@ -1,0 +1,26 @@
+# Optional Cloudflare Tunnel overlay for the one-EC2 demo.
+#
+# Usage (from the repository root):
+#   export CLOUDFLARE_TUNNEL_TOKEN=...        # or put it in .env (gitignored)
+#   docker compose -f docker-compose.yml -f docker-compose.tunnel.yml up -d
+#
+# The tunnel makes an outbound connection to Cloudflare; no inbound 80/443
+# ports are required. The public hostname route is configured in the Cloudflare
+# Zero Trust dashboard and points at:
+#   http://app:8000
+#
+# The token is a credential. Never commit it, print it, or put it in an image.
+# For a host-only demo, also set APP_PORT=127.0.0.1:8000 so the app port is not
+# reachable from outside the instance even if the security group is misconfigured.
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # cloudflared reads TUNNEL_TOKEN; the repo-side variable is explicit.
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      app:
+        condition: service_healthy

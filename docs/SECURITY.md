@@ -96,7 +96,7 @@ browser storage.
 - Only the hash is stored (`admin.staff_user.password_hash`). Plaintext passwords exist
   only transiently at login/seed time and are never logged, echoed, or committed.
 - Demo account passwords are supplied at **seed time** via `DEMO_*` environment
-  variables (see `.env.example`), never committed to the repository.
+  variables (see `Instructions.md`), never committed to the repository.
 
 ### Sessions
 
@@ -376,7 +376,8 @@ Controls:
 ## 5. Secrets handling
 
 - All secrets live in **environment variables** (local `.env`; host dashboard in
-  production). `.env` is gitignored; only `.env.example` with placeholders is committed.
+  production). `.env` is gitignored; the deployment template in `Instructions.md`
+  contains placeholders only and no real values.
 - Nothing secret is committed: no keys, no passwords, no database dumps, no real data.
   This is verified before each publish (repo + git history review).
 - The LLM key is an OpenCode Console **service-account key** (`oc_sk_…`) restricted to
