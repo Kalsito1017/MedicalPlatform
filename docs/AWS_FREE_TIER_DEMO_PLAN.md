@@ -158,8 +158,6 @@ PUBLIC_ORIGIN=https://demo.example.com
 API_BASE_URL=https://demo.example.com
 ALLOWED_ORIGINS=https://demo.example.com
 APP_SECRET_KEY=<generated>
-DATABASE_URL=postgresql+asyncpg://app:<password>@db:5432/clinical_demo
-MIGRATION_DATABASE_URL=postgresql+asyncpg://app:<password>@db:5432/clinical_demo
 POSTGRES_USER=app
 POSTGRES_PASSWORD=<generated>
 POSTGRES_DB=clinical_demo
@@ -183,6 +181,9 @@ DEMO_NURSE_PASSWORD=<generated>
 - `APP_ENV=production` only behind real HTTPS. On plain HTTP, use
   `APP_ENV=development` for the demo and accept the security caveat.
 - Do not reuse local demo passwords. Generate fresh values.
+- Do not set `DATABASE_URL` or `MIGRATION_DATABASE_URL` by hand. Compose builds
+  both from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`, pointing at
+  the `db` service on port `5432`.
 - `LLM_API_KEY` is optional; the app works without AI. If used, set a budget cap
   in the OpenCode Console.
 - `WHISPER_BASE_URL` can be empty to disable voice; manual scheduling still works.
